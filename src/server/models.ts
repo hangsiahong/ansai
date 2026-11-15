@@ -204,34 +204,49 @@ const fileSize = (path: string) => {
   }
 };
 
-/** On screen, the agent's answer to a slash command sits under it, marked ⎿ (Claude and agy alike). */
-export function answeredOnScreen(screen: string, command: string): boolean {
+/**
+ * On screen, the agent's answer to a slash command sits under its echo, marked ⎿
+ * (Claude and agy alike). Found by the command's name: agy echoes "/effort" without
+ * its argument.
+ */
+export function answeredOnScreen(screen: string, name: string): boolean {
   const lines = screen.split("\n");
   let i = -1;
-  lines.forEach((l, n) => l.includes(command) && (i = n));
+  lines.forEach((l, n) => l.includes(name) && (i = n));
   return i >= 0 && lines.slice(i + 1).some((l) => l.trimStart().startsWith("⎿"));
 }
 
 /**
- * Type a slash command and wait (up to ~5 s) until the agent has answered it, so
- * the next command isn't typed while it's still busy and lost. Claude logs every
- * command's answer as <local-command-stdout>; agy only shows it on screen.
+ * Type a slash command and wait until the agent has answered it, so the next one
+ * isn't typed while it's busy. The screen shows the answer at once; Claude's log
+ * has it too, but its first /model in a session lands there seconds late, so only
+ * this command's own answer counts. Claude can also swallow a command typed just
+ * after that first /model: if this one never reached the screen, type it once more.
  */
 async function runCommand(s: SessionRow, command: string): Promise<boolean> {
+  const name = command.split(" ")[0]!; // "/model"
+  const own = new RegExp(`<local-command-stdout>[^<]*\\b${name.slice(1)}\\b`, "i");
   const log = s.tool === "claude" ? s.transcript : null;
   const from = log ? fileSize(log) : 0;
-  const before = log ? "" : await captureHistory(s.id, 60).catch(() => "");
-  await sendText(s.id, command);
-  for (let i = 0; i < 25; i++) {
-    await Bun.sleep(200);
-    if (log) {
-      if (fileSize(log) > from && (await Bun.file(log).slice(from).text()).includes("<local-command-stdout>")) return true;
-    } else {
-      const screen = await captureHistory(s.id, 60).catch(() => "");
-      if (screen !== before && answeredOnScreen(screen, command)) return true;
+  const screen = () => captureHistory(s.id, 60).catch(() => "");
+  const echoes = (text: string) => text.split(name).length - 1;
+  const before = await screen();
+  const answered = async () => {
+    const now = await screen();
+    if (echoes(now) > echoes(before) && answeredOnScreen(now, name)) return true;
+    return !!log && fileSize(log) > from && own.test(await Bun.file(log).slice(from).text());
+  };
+  const wait = async (ms: number) => {
+    for (let t = 0; t < ms; t += 200) {
+      await Bun.sleep(200);
+      if (await answered()) return true;
     }
-  }
-  return false;
+    return false;
+  };
+  await sendText(s.id, command);
+  if (await wait(3000)) return true;
+  if (echoes(await screen()) <= echoes(before)) await sendText(s.id, command); // swallowed: never shown
+  return wait(5000);
 }
 
 /**
