@@ -156,12 +156,13 @@ export function deleteTask(id: string) {
 }
 
 /** The first message an agent gets for a backlog task: the task, plus how to work it. */
-function taskPrompt(task: Task): string {
+function taskPrompt(task: Task & { notes?: string[] }): string {
   return [
     `Backlog task: ${task.title}`,
     task.worktree_path
       ? `Worktree: ${task.worktree_path} (branch ${task.worktree_branch}). This is your own checkout: commit your work on this branch as you go, with clear messages. The user reviews the diff and merges it from ansai.`
       : "",
+    task.notes?.length ? ["Set up in this worktree:", ...task.notes.map((n) => `- ${n}`)].join("\n") : "",
     task.body.trim(),
     [
       "How to work this task:",
@@ -189,7 +190,7 @@ export async function runTask(id: string, o: { tool: ToolId; yolo?: boolean; acc
     const project = getProject(task.project_id);
     if (!project) throw conflict("this task's project no longer exists");
     const worktree = await ensureTaskWorktree(task, project.path);
-    const launchTask = worktree ? { ...task, worktree_path: worktree.path, worktree_branch: worktree.branch } : task;
+    const launchTask = worktree ? { ...task, worktree_path: worktree.path, worktree_branch: worktree.branch, notes: worktree.notes } : task;
     const session = await createSession({
       projectId: task.project_id,
       cwd: worktree?.cwd,
