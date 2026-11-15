@@ -379,11 +379,20 @@ export async function renameSession(id: string, title: string) {
 
 // --------------------------------------------------------------- interaction
 
+// tmux has lost the session (killed, or its server died); the row catches up on the next reconcile.
+const PANE_GONE = /can't find (session|pane|window)|no server running|error connecting/i;
+
+/** The error for a failed tmux command on a session's pane: 409 when tmux has lost the pane, else a server fault. */
+export function paneError(err: string): Error {
+  return PANE_GONE.test(err) ? conflict("this session isn't running; restart it") : new Error(`tmux: ${err}`);
+}
+
+/** Readable after the agent exits too (remain-on-exit keeps the pane); 409 once tmux has lost it. */
 export async function captureHistory(id: string, lines = 3000): Promise<string> {
   const s = getSession(id);
   if (!s) throw notFound("no such session");
   const r = await tmux(["capture-pane", "-p", "-J", "-S", `-${lines}`, "-t", s.tmux_name]);
-  if (r.code !== 0) throw new Error(`tmux: ${r.err}`);
+  if (r.code !== 0) throw paneError(r.err);
   return r.out.replace(/\s+$/, "") + "\n";
 }
 
@@ -412,14 +421,16 @@ export async function sendText(id: string, text: string, enter = true) {
   if (inMode) await tmux(["send-keys", "-t", t, "-X", "cancel"]);
   if (text) {
     const buf = `ansai-${s.id}`;
+    // The row lags tmux by up to a reconcile tick, so a just-killed pane fails here: 409, not 500.
     let r = await tmux(["load-buffer", "-b", buf, "-"], text);
-    if (r.code !== 0) throw new Error(`tmux: ${r.err}`);
+    if (r.code !== 0) throw paneError(r.err);
     r = await tmux(["paste-buffer", "-p", "-d", "-b", buf, "-t", t]);
-    if (r.code !== 0) throw new Error(`tmux: ${r.err}`);
+    if (r.code !== 0) throw paneError(r.err);
   }
   if (enter) {
     if (text) await Bun.sleep(120); // let TUIs finish ingesting the paste
-    await tmux(["send-keys", "-t", t, "Enter"]);
+    const r = await tmux(["send-keys", "-t", t, "Enter"]);
+    if (r.code !== 0) throw paneError(r.err);
   }
 }
 
@@ -429,9 +440,11 @@ const NAMED_KEYS = new Set(["Enter", "Escape", "Tab", "BTab", "Up", "Down", "Lef
 export async function sendKeys(id: string, keys: string[]) {
   const s = liveSession(id);
   for (const k of keys.slice(0, 20)) {
-    if (NAMED_KEYS.has(k)) await tmux(["send-keys", "-t", s.tmux_name, k]);
-    else if (/^[ -~]{1,8}$/.test(k)) await tmux(["send-keys", "-t", s.tmux_name, "-l", k]);
+    let r;
+    if (NAMED_KEYS.has(k)) r = await tmux(["send-keys", "-t", s.tmux_name, k]);
+    else if (/^[ -~]{1,8}$/.test(k)) r = await tmux(["send-keys", "-t", s.tmux_name, "-l", k]);
     else throw badRequest(`unsupported key: ${k}`);
+    if (r.code !== 0) throw paneError(r.err);
   }
 }
 
@@ -555,24 +568,31 @@ async function watchRewinds(at = Date.now()) {
 let lastStatusSig = "";
 let lastActivitySig = "";
 
+const PANE_FORMAT = "#{session_name}\t#{pane_dead}\t#{pane_dead_status}\t#{pane_current_command}\t#{window_activity}\t#{session_attached}";
+
+export type Pane = { dead: boolean; code: number | null } & Live;
+
+/** ansai's panes in `tmux list-panes -a -F PANE_FORMAT` output, by tmux session name. */
+export function parsePanes(out: string): Map<string, Pane> {
+  const panes = new Map<string, Pane>();
+  for (const line of out.split("\n")) {
+    if (!line.startsWith("ansai-")) continue;
+    const [name, dead, code, cmd, act, att] = line.split("\t");
+    panes.set(name!, { dead: dead === "1", code: code ? Number(code) : null, activity: Number(act) * 1000, command: cmd ?? "", attached: Number(att) || 0 });
+  }
+  return panes;
+}
+
 /** Sync DB status with what tmux actually has. Returns true if anything changed. */
 export async function reconcile(): Promise<boolean> {
-  const r = await tmux([
-    "list-panes",
-    "-a",
-    "-F",
-    "#{session_name}\t#{pane_dead}\t#{pane_dead_status}\t#{pane_current_command}\t#{window_activity}\t#{session_attached}",
-  ]);
-  const seen = new Map<string, { dead: boolean; code: number | null }>();
+  const r = await tmux(["list-panes", "-a", "-F", PANE_FORMAT]);
   if (r.code !== 0 && /no server running|error connecting/i.test(r.err)) serverChecked = false; // start it scoped again next time
-  if (r.code === 0) {
-    for (const line of r.out.split("\n")) {
-      if (!line.startsWith("ansai-")) continue;
-      const [name, dead, code, cmd, act, att] = line.split("\t");
-      seen.set(name!, { dead: dead === "1", code: code ? Number(code) : null });
-      live.set(name!, { activity: Number(act) * 1000, command: cmd ?? "", attached: Number(att) || 0 });
-    }
-  }
+  return applyPanes(r.code === 0 ? parsePanes(r.out) : new Map());
+}
+
+/** reconcile() once tmux has answered: each open row follows its pane (tests hand it panes directly). */
+export function applyPanes(seen: Map<string, Pane>): boolean {
+  for (const [name, p] of seen) live.set(name, { activity: p.activity, command: p.command, attached: p.attached });
   const running = db.query("SELECT id, tmux_name, status FROM sessions WHERE status != 'closed'").all() as Pick<
     SessionRow,
     "id" | "tmux_name" | "status"

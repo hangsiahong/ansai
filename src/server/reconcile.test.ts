@@ -5,7 +5,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 
 const { db, now } = await import("./db");
-const { getSession, reconcile } = await import("./sessions");
+const { applyPanes, getSession, parsePanes, reconcile, sessionView } = await import("./sessions");
 const { getTask } = await import("./tasks");
 const { handleHook, onExited } = await import("./hooks");
 const team = await import("./team");
@@ -93,6 +93,53 @@ describe("reconcile()", () => {
     const s = makeSession("s_closed", null, { status: "closed" });
     await reconcile();
     expect(getSession(s.id)!.status).toBe("closed");
+  });
+});
+
+// The test tmux socket is empty, so live and dead panes are handed in as `tmux list-panes` output.
+const pane = (name: string, dead: 0 | 1, code = "", cmd = "claude", activity = 1_763_250_000, attached = 0) =>
+  [name, dead, code, cmd, activity, attached].join("\t");
+
+describe("reconcile() over tmux panes", () => {
+  test("parsePanes reads ansai's panes and skips everyone else's", () => {
+    const panes = parsePanes([pane("ansai-s_a", 0, "", "claude", 1_763_250_000, 2), pane("ansai-s_b", 1, "2", "bash"), "work\t0\t\tvim\t1\t1", ""].join("\n"));
+    expect([...panes.keys()]).toEqual(["ansai-s_a", "ansai-s_b"]);
+    expect(panes.get("ansai-s_a")).toEqual({ dead: false, code: null, activity: 1_763_250_000_000, command: "claude", attached: 2 });
+    expect(panes.get("ansai-s_b")).toMatchObject({ dead: true, code: 2 });
+  });
+
+  test("a running session whose pane is alive stays running and its task stays doing", () => {
+    const t = makeTask("t_alive", { status: "doing" });
+    const s = makeSession("s_alive", t.id, { status: "running" });
+
+    applyPanes(parsePanes(pane(s.tmux_name, 0, "", "claude", 1_763_250_000, 1) + "\n"));
+
+    const after = getSession(s.id)!;
+    expect(after).toMatchObject({ status: "running", exit_code: null, ended_at: null });
+    expect(sessionView(after)).toMatchObject({ current_command: "claude", clients: 1, activity_at: 1_763_250_000_000 });
+    expect(getTask(t.id)!).toMatchObject({ status: "doing", summary: null });
+  });
+
+  test("a dead pane (exit status 2) becomes exited with code 2 and its task moves to review", () => {
+    const t = makeTask("t_dead", { status: "doing" });
+    const s = makeSession("s_dead", t.id, { status: "running" });
+
+    expect(applyPanes(parsePanes(pane(s.tmux_name, 1, "2") + "\n"))).toBe(true);
+
+    const after = getSession(s.id)!;
+    expect(after).toMatchObject({ status: "exited", exit_code: 2 });
+    expect(after.ended_at).not.toBeNull();
+    expect(getTask(t.id)!).toMatchObject({
+      status: "review",
+      summary: "The agent session exited with code 2 before the task was marked complete. Check the session, then rerun or update the task.",
+      last_failure: "the agent exited with code 2",
+    });
+
+    // The dead pane stays (remain-on-exit): later ticks leave the row and task alone.
+    db.query("UPDATE tasks SET summary = 'kept' WHERE id = ?").run(t.id);
+    applyPanes(parsePanes(pane(s.tmux_name, 1, "2")));
+    expect(getSession(s.id)!.exit_code).toBe(2);
+    expect(getTask(t.id)!.summary).toBe("kept");
   });
 });
 
