@@ -5,7 +5,7 @@ import { db, now } from "./db";
 import { emit } from "./events";
 import { notify } from "./push";
 import { isWatched } from "./viewers";
-import { dropClaims, editWarning, takePending, wakes } from "./team";
+import { dropClaims, editWarning, getPlaybook, takePending, wakes } from "./team";
 import { clearStartup, getSession, sessionView } from "./sessions";
 import { claudeStop, codexTurnEnded, shiftWorked } from "./shifts";
 
@@ -61,8 +61,21 @@ const AGENT_NOTE =
 const mcpUrl = (sessionId: string) => `http://127.0.0.1:${config.port}/mcp?s=${sessionId}`;
 const toml = (s: string) => JSON.stringify(s); // TOML basic strings share JSON's escaping for our text
 
-/** Add status hooks, the ansai MCP server and the backlog note to an agent's command line. */
-export function withHooks(tool: ToolId, argv: string[], sessionId: string): string[] {
+/** The project's playbook as a block for the agent's system-level instructions ("" when it has none). */
+export function playbookNote(projectId: string | null | undefined): string {
+  const text = projectId ? getPlaybook(projectId).trim() : "";
+  return text ? `The user's playbook for this project (standing instructions; follow them in all your work here):\n${text}` : "";
+}
+
+/**
+ * Add status hooks, the ansai MCP server and the backlog note to an agent's command line.
+ * The project's playbook rides along with the note as system-level instructions
+ * (Claude's --append-system-prompt, Codex's developer_instructions): agents follow
+ * those reliably, and it never becomes a prompt of its own. (MCP server instructions
+ * were tried first; neither agent acted on them.)
+ */
+export function withHooks(tool: ToolId, argv: string[], sessionId: string, playbook = ""): string[] {
+  const note = playbook ? `${AGENT_NOTE}\n\n${playbook}` : AGENT_NOTE;
   if (tool === "claude")
     return [
       argv[0]!,
@@ -71,7 +84,7 @@ export function withHooks(tool: ToolId, argv: string[], sessionId: string): stri
       "--mcp-config",
       JSON.stringify({ mcpServers: { ansai: { type: "http", url: mcpUrl(sessionId) } } }),
       "--append-system-prompt",
-      AGENT_NOTE,
+      note,
       ...argv.slice(1),
     ];
   if (tool === "codex")
@@ -85,7 +98,7 @@ export function withHooks(tool: ToolId, argv: string[], sessionId: string): stri
       "-c",
       `mcp_servers.ansai.default_tools_approval_mode="approve"`,
       "-c",
-      `developer_instructions=${toml(AGENT_NOTE)}`,
+      `developer_instructions=${toml(note)}`,
       ...argv.slice(1),
     ];
   return argv;

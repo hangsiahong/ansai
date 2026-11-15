@@ -3,7 +3,7 @@ import { HttpError } from "./errors";
 import { getSession } from "./sessions";
 import { JSON_LIMIT, readJson } from "./validate";
 import { createTask, finishTask, getTask } from "./tasks";
-import { getPlaybook, claimFiles, deliveryNote, describeAgents, describeHistory, postMessage, releaseFiles, takePending } from "./team";
+import { claimFiles, deliveryNote, describeAgents, describeHistory, postMessage, releaseFiles, takePending } from "./team";
 import { endShift, shiftView } from "./shifts";
 
 /**
@@ -186,12 +186,9 @@ function runTool(sessionId: string, name: string, args: any) {
   return text(`Unknown tool ${name}`, true);
 }
 
-/** ansai's own note, plus the project's playbook (your standing instructions) when it has one. */
-function instructionsFor(sessionId: string): string {
-  const base = "The user's ansai backlog for this project. Use add_task for follow-ups and finish_task when a backlog task is done.";
-  const pid = getSession(sessionId)?.project_id;
-  const playbook = pid ? getPlaybook(pid) : "";
-  return playbook ? `${base}\n\nThe user's playbook for this project (follow it in all your work here):\n${playbook}` : base;
+/** ansai's note for the MCP client. The project's playbook goes in the agent's system-level instructions instead (see withHooks). */
+function instructionsFor(_sessionId: string): string {
+  return "The user's ansai backlog for this project. Use add_task for follow-ups and finish_task when a backlog task is done.";
 }
 
 function handle(sessionId: string, msg: Rpc): object | null {
