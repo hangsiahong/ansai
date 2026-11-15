@@ -88,6 +88,20 @@ export function launchChoice(argv: string[]): { model?: string; effort?: string 
   return out;
 }
 
+/**
+ * What a restarted (or resumed) agent should run on: what it was last running,
+ * so a live /model or /effort switch survives, else what it was launched with.
+ * Right after /model, Claude's log names the model ("Haiku 5.5"), not its id;
+ * the family alias stands in until the next reply gives the id.
+ */
+export function relaunchChoice(argv: string[], last: { model: string | null; effort: string | null }): { model?: string; effort?: string } {
+  const out = launchChoice(argv);
+  const model = last.model && isModelId(last.model) ? last.model : last.model?.match(/^(fable|opus|sonnet|haiku)\b/i)?.[1]?.toLowerCase();
+  if (model) out.model = model;
+  if (last.effort && (EFFORTS as readonly string[]).includes(last.effort)) out.effort = last.effort;
+  return out;
+}
+
 export function isTool(t: unknown): t is ToolId {
   return typeof t === "string" && t in TOOLS;
 }
