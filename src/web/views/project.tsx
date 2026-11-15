@@ -27,7 +27,7 @@ function AutopilotCard({ project, openTodo }: { project: Project; openTodo: stri
         <label class="switch-row">
           <span>
             <b>Agents pick up new tasks</b>
-            <em>One at a time here. They ask before guessing.</em>
+            <em>In Git projects each task gets its own branch, so several can run at once. They ask before guessing.</em>
           </span>
           <input type="checkbox" class="switch" checked={ap.on} onChange={(e) => set({ on: (e.target as HTMLInputElement).checked })} />
         </label>

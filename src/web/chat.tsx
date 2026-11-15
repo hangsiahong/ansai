@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { api, wsUrl, type ChatItem, type Message, type Session } from "./api";
 import { toastError } from "./store";
-import { Icon, TOOL_LABEL, TOOL_SHORT, ToolBadge, sessionState } from "./ui";
+import { Icon, TOOL_LABEL, TOOL_SHORT, ToolBadge, compact, sessionState } from "./ui";
 import { Markdown } from "./md";
 import { TeamBubble, useSessionMessages } from "./team";
 
@@ -393,6 +393,33 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
+const CTX_WARM = 100_000;
+const CTX_LONG = 150_000;
+
+/**
+ * Every reply re-reads the whole conversation, so a long one costs more per turn
+ * the longer it gets. Past ~150k, offer to compact it (or start fresh for new work).
+ */
+function CompactCard({ s, ctx, onDismiss }: { s: Session; ctx: number; onDismiss: () => void }) {
+  return (
+    <div class="live-card">
+      <div class="lc-head">
+        <Icon name="layers" size={16} /> Long conversation · {compact(ctx)} tokens
+      </div>
+      <div class="lc-body strong">Every reply re-reads all of it, so each turn costs more than the last.</div>
+      <p class="lc-hint">Compact it to a summary and keep going, or start a new session for unrelated work.</p>
+      <div class="lc-actions two">
+        <button class="btn primary" onClick={() => api.send(s.id, "/compact", true).then(onDismiss).catch(toastError)}>
+          Compact
+        </button>
+        <button class="btn ghost" onClick={onDismiss}>
+          Not now
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /** Team messages slot into the conversation by time; the log's own order is kept. */
 function interleave(items: ChatItem[], team: Message[]): (ChatItem | Message)[] {
   if (!team.length) return items;
@@ -410,6 +437,8 @@ export function ChatView({ s }: { s: Session }) {
   const [items, setItems] = useState<ChatItem[]>([]);
   const [phase, setPhase] = useState<"loading" | "live" | "nofile" | "reconnecting">("loading");
   const [more, setMore] = useState(false);
+  const [ctx, setCtx] = useState<number | null>(null);
+  const [nudgeOff, setNudgeOff] = useState(false);
   const scroller = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   const [showJump, setShowJump] = useState(false);
@@ -433,8 +462,12 @@ export function ChatView({ s }: { s: Session }) {
           stick.current = true;
           setItems(m.items);
           setMore(!!m.more);
+          setCtx(m.ctx ?? null);
           setPhase(m.found ? "live" : "nofile");
+        } else if (m.t === "ctx") {
+          setCtx(m.tokens ?? null);
         } else if (m.t === "reset") {
+          setCtx(null);
           setItems([]);
           setPhase("live");
         } else if (m.t === "items") {
@@ -497,6 +530,11 @@ export function ChatView({ s }: { s: Session }) {
 
   return (
     <div class="chat">
+      {ctx !== null && ctx > 0 && (
+        <div class={`ctx-chip ${ctx >= CTX_LONG ? "hot" : ctx >= CTX_WARM ? "warm" : ""}`} title="How much the agent re-reads on every reply">
+          {compact(ctx)} context
+        </div>
+      )}
       <div class="chat-scroll" ref={scroller} onScroll={onScroll}>
         <div class="chat-inner">
           {more && <div class="chat-note">Earlier messages are in the terminal history.</div>}
@@ -504,8 +542,12 @@ export function ChatView({ s }: { s: Session }) {
           {phase !== "loading" && items.length === 0 && (
             <div class="chat-empty">
               <ToolBadge tool={s.tool} size={44} />
-              <h3>{phase === "nofile" ? `${TOOL_LABEL[s.tool]} is ready` : "No messages yet"}</h3>
-              <p>Send a message below. The conversation shows up here as the agent works — switch to Terminal any time for the full screen.</p>
+              <h3>{s.startup?.message ? `${TOOL_LABEL[s.tool]} hasn't started yet` : phase === "nofile" ? `${TOOL_LABEL[s.tool]} is ready` : "No messages yet"}</h3>
+              <p>
+                {s.startup?.message
+                  ? "It's waiting for an answer before it starts. Use the buttons below."
+                  : "Send a message below. The conversation shows up here as the agent works — switch to Terminal any time for the full screen."}
+              </p>
             </div>
           )}
           {groupSteps(interleave(items, team), running && st.cls === "working" ? lastToolId : undefined).map((it) => {
@@ -527,6 +569,7 @@ export function ChatView({ s }: { s: Session }) {
           {running && st.cls === "attn" && !pendingQuestion && !s.startup?.message && <ApprovalCard s={s} />}
           {pendingQuestion && <QuestionCard s={s} t={pendingQuestion} />}
           {running && st.cls === "working" && <WorkingRow s={s} />}
+          {running && st.cls === "turn" && ctx !== null && ctx >= CTX_LONG && !nudgeOff && <CompactCard s={s} ctx={ctx} onDismiss={() => setNudgeOff(true)} />}
           {s.status === "exited" && <div class="chat-note">{TOOL_LABEL[s.tool]} exited.</div>}
           {phase === "reconnecting" && <div class="chat-note warn-text">Reconnecting…</div>}
         </div>

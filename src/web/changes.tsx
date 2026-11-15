@@ -173,7 +173,9 @@ export function ChangesView({ load, actions }: { load: () => Promise<Changes>; a
 export function ChangesSheet(p: { taskId?: string; sessionId?: string; onClose: () => void }) {
   const task = useStore((s) => (p.taskId ? s.tasks.find((t) => t.id === p.taskId) : undefined));
   const session = useStore((s) => (p.sessionId ? s.sessions.find((x) => x.id === p.sessionId) : undefined));
-  const agentBusy = useStore((s) => !!p.taskId && s.sessions.some((x) => x.task_id === p.taskId && x.status === "running" && x.agent_state === "working"));
+  const agentBusy = useStore(
+    (s) => !!p.taskId && s.sessions.some((x) => x.task_id === p.taskId && x.status === "running" && (x.agent_state === "working" || x.agent_state === "needs-input")),
+  );
   const agentOpen = useStore((s) => !!p.taskId && s.sessions.some((x) => x.task_id === p.taskId && x.status === "running"));
   const [busy, setBusy] = useState(false);
   const title = task ? `Changes · ${task.title}` : session ? `Changes · ${session.title}` : "Changes";
@@ -221,7 +223,7 @@ export function ChangesSheet(p: { taskId?: string; sessionId?: string; onClose: 
   const actions = (c: Changes) =>
     task?.worktree_path && c.worktree ? (
       <div class="chg-actions">
-        <button class="btn primary" disabled={busy || agentBusy || !c.files.length} onClick={() => merge(c)}>
+        <button class="btn primary" disabled={busy || agentOpen || !c.files.length} onClick={() => merge(c)}>
           <Icon name="check" size={15} stroke={2.4} /> Merge into {c.base.label}
         </button>
         <button class="btn ghost danger-text" disabled={busy || agentOpen} onClick={discard}>
@@ -230,7 +232,7 @@ export function ChangesSheet(p: { taskId?: string; sessionId?: string; onClose: 
         {agentBusy ? (
           <p class="chg-note">The agent is still working. Merge when it's done.</p>
         ) : agentOpen ? (
-          <p class="chg-note">Close the agent's session before discarding its worktree.</p>
+          <p class="chg-note">Close the agent's session to merge or discard: both remove its worktree folder.</p>
         ) : null}
       </div>
     ) : null;

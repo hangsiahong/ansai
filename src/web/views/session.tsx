@@ -148,8 +148,8 @@ export function SessionPane({ id }: { id: string }) {
     setMenu(false);
     try {
       if (what === "restart") {
-        await api.restartSession(id);
-        toast("Restarted");
+        const r = await api.restartSession(id);
+        toast(r.argv.includes("resume") || r.argv.includes("--resume") ? "Restarted, picking the conversation back up" : "Restarted with a fresh conversation");
       }
       if (what === "close") {
         const ok = await confirmDialog({ title: `Close "${s.title}"?`, body: "The agent is stopped. Its history in this session is lost.", confirm: "Close session", danger: true });
