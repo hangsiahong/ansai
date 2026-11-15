@@ -237,7 +237,19 @@ export const api = {
 
   setAutopilot: (projectId: string, patch: Partial<Autopilot>) => call<Autopilot>("PUT", `/api/projects/${projectId}/autopilot`, patch),
   schedules: (projectId: string) => call<Schedule[]>("GET", `/api/projects/${projectId}/schedules`),
-  saveSchedule: (projectId: string, schedule: Partial<Schedule> & { title: string; prompt: string; tool: Exclude<ToolId, "shell">; cadence: Schedule["cadence"]; local_time: string; timezone: string }) => call<Schedule>("POST", `/api/projects/${projectId}/schedules`, { ...schedule, id: schedule.id, accountId: schedule.account_id }),
+  saveSchedule: (projectId: string, schedule: Partial<Schedule> & { title: string; prompt: string; tool: Exclude<ToolId, "shell">; cadence: Schedule["cadence"]; local_time: string; timezone: string }) => call<Schedule>("POST", `/api/projects/${projectId}/schedules`, {
+      // The server takes camelCase; the row it returns is snake_case.
+      id: schedule.id,
+      title: schedule.title,
+      prompt: schedule.prompt,
+      tool: schedule.tool,
+      accountId: schedule.account_id ?? null,
+      model: schedule.model ?? null,
+      effort: schedule.effort ?? null,
+      cadence: schedule.cadence,
+      localTime: schedule.local_time,
+      timezone: schedule.timezone,
+    }),
   toggleSchedule: (projectId: string, id: string, enabled: boolean) => call<{ ok: true }>("PATCH", `/api/projects/${projectId}/schedules/${id}`, { enabled }),
   deleteSchedule: (projectId: string, id: string) => call<{ ok: true }>("DELETE", `/api/projects/${projectId}/schedules/${id}`),
   runScheduleNow: (projectId: string, id: string) => call<{ task: Task; queued: boolean }>("POST", `/api/projects/${projectId}/schedules/${id}/run`),
