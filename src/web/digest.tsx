@@ -1,5 +1,5 @@
 import { useEffect, useState } from "preact/hooks";
-import { api, type Digest } from "./api";
+import type { Shift } from "./api";
 import { toastError, useStore } from "./store";
 import { Icon, Link } from "./ui";
 import { TaskRow } from "./views/tasks";
@@ -8,6 +8,24 @@ import { TaskRow } from "./views/tasks";
  * "While you were away" on the Now page: what the agents got done since you
  * last cleared it (on any device). Hidden when there's nothing new.
  */
+
+export type Digest = {
+  since: number;
+  finished: string[];
+  filed: string[];
+  shifts: (Shift & { title: string })[];
+  messages: number;
+  projects: { projectId: string; name: string; branch: string | null; count: number; commits: { sha: string; subject: string; at: number }[]; unmerged: number }[];
+};
+
+async function req<T>(method: "GET" | "POST", path: string): Promise<T> {
+  const res = await fetch(path, { method });
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(data?.error || `${res.status} ${res.statusText}`);
+  return data as T;
+}
+const fetchDigest = () => req<Digest>("GET", "/api/digest");
+const markSeen = () => req<{ ok: true }>("POST", "/api/digest/seen");
 
 const clock = (ts: number) => {
   const d = new Date(ts);
@@ -36,7 +54,7 @@ export function AwayDigest() {
   const signal = tasks.map((t) => `${t.id}:${t.status}`).join(",");
   useEffect(() => {
     let alive = true;
-    const load = () => api.digest().then((x) => alive && setD(x)).catch(() => {});
+    const load = () => fetchDigest().then((x) => alive && setD(x)).catch(() => {});
     const t = setTimeout(load, 300);
     const iv = setInterval(load, 120_000);
     return () => {
@@ -55,7 +73,7 @@ export function AwayDigest() {
 
   const clear = async () => {
     try {
-      await api.digestSeen();
+      await markSeen();
       setD({ ...d, finished: [], filed: [], shifts: [], projects: [], messages: 0 });
     } catch (e) {
       toastError(e);
