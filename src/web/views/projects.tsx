@@ -90,7 +90,7 @@ export function ProjectsPane() {
         </button>
         <div class="topbar-title">
           <h1>Projects</h1>
-          <div class="sub">{projects.length} git repos under ~/projects</div>
+          <div class="sub">{projects.length ? `${projects.length} git repos under ~/projects` : "Add a folder to get started"}</div>
         </div>
         <button class="icon-btn" onClick={rescan} title="Rescan for new repos" aria-label="Rescan">
           <Icon name="refresh" />
@@ -117,7 +117,21 @@ export function ProjectsPane() {
         )}
         <section class="sec">
           {pinned.length > 0 && <h2 class="sec-title">All</h2>}
-          <div class="panel">{rest.length ? rest.map(row) : <p class="hint pad">No project matches “{q}”.</p>}</div>
+          <div class="panel">
+            {rest.length ? rest.map(row) : !projects.length && !n ? (
+              <div class="first-run">
+                <span class="welcome-mark"><FolderIcon size={22} /></span>
+                <div class="welcome-copy">
+                  <h2>No projects yet</h2>
+                  <p>Add a project folder to group its agents, backlog, and shared instructions here.</p>
+                </div>
+                <div class="welcome-actions">
+                  <button class="btn primary" onClick={() => openSheet({ kind: "add-project" })}>Add a folder</button>
+                  <button class="btn" onClick={rescan}>Scan projects</button>
+                </div>
+              </div>
+            ) : <p class="hint pad">No project matches “{q}”.</p>}
+          </div>
         </section>
         <button class="linkish" onClick={showHidden}>
           {hidden ? "Hide hidden projects" : "Show hidden projects"}
