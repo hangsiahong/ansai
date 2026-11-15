@@ -138,10 +138,11 @@ const CLAUDE_DIALOGS: Dialog[] = [
   { kind: "apikey", match: /Do you want to use this API key\?/i, message: "Claude asks whether to use an API key from your environment.", accept: null, acceptKeys: [] },
 ];
 // Codex 0.169: "Trust this folder?" opens on "1. Trust and continue"; Esc goes back.
+// Patterns need the menu too, so an agent merely showing this text (say, this file) doesn't trip them.
 const CODEX_DIALOGS: Dialog[] = [
   {
     kind: "trust",
-    match: /Trust this folder\? Codex can read/i,
+    match: /Trust this folder\? Codex can read[\s\S]*1\. Trust and continue/i,
     message: "Codex asks whether you trust this folder before it starts.",
     accept: "Trust folder",
     acceptKeys: ["Enter"],
@@ -149,7 +150,19 @@ const CODEX_DIALOGS: Dialog[] = [
     declineKeys: ["Escape"],
   },
 ];
-const DIALOGS: Partial<Record<ToolId, Dialog[]>> = { claude: CLAUDE_DIALOGS, codex: CODEX_DIALOGS };
+// Antigravity CLI: "Do you trust the contents of this project?" opens on "Yes, I trust this folder".
+const AGY_DIALOGS: Dialog[] = [
+  {
+    kind: "trust",
+    match: /Do you trust the contents of this project\?[\s\S]*Yes, I trust this folder[\s\S]*No, exit/i,
+    message: "Antigravity asks whether you trust this folder before it starts.",
+    accept: "Trust folder",
+    acceptKeys: ["Enter"],
+    decline: "Exit",
+    declineKeys: ["Down", "Enter"],
+  },
+];
+const DIALOGS: Partial<Record<ToolId, Dialog[]>> = { claude: CLAUDE_DIALOGS, codex: CODEX_DIALOGS, agy: AGY_DIALOGS };
 
 export function sessionView(s: SessionRow) {
   const l = live.get(s.tmux_name);
@@ -365,7 +378,7 @@ async function watchCodexScreens() {
  */
 async function watchStartupScreens() {
   const rows = db
-    .query(`SELECT id, tool, tmux_name, cwd, agent_state FROM sessions WHERE tool IN ('claude', 'codex') AND status = 'running' AND (agent_state IS NULL OR agent_state = 'needs-input')`)
+    .query(`SELECT id, tool, tmux_name, cwd, agent_state FROM sessions WHERE tool IN ('claude', 'codex', 'agy') AND status = 'running' AND (agent_state IS NULL OR agent_state = 'needs-input')`)
     .all() as Pick<SessionRow, "id" | "tool" | "tmux_name" | "cwd" | "agent_state">[];
   for (const r of rows) {
     if (r.agent_state === "needs-input" && !startup.has(r.id)) continue; // a real approval, from hooks
