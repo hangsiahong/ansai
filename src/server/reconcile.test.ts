@@ -250,4 +250,23 @@ describe("handleHook() state moves", () => {
     expect(getTask(t.id)!.status).toBe("doing");
     expect(getSession(s.id)!.agent_state).toBe("working");
   });
+
+  test("reviewer UserPromptSubmit and Stop leave the task in Review", () => {
+    const t = makeTask("t_reviewer_hooks", { status: "review" });
+    const s = makeSession("s_reviewer_hooks", t.id, { status: "running", agentState: "waiting" });
+    db.query("INSERT INTO task_reviews (task_id, session_id, reviewer_tool, status, updated_at) VALUES (?, ?, 'claude', 'running', ?)").run(t.id, s.id, now());
+    handleHook("claude", "UserPromptSubmit", s.id, {});
+    expect(getTask(t.id)!.status).toBe("review");
+    handleHook("claude", "Stop", s.id, {});
+    expect(getTask(t.id)!.status).toBe("review");
+  });
+
+  test("an exited reviewer does not recover or autopilot-retry its task", () => {
+    const t = makeTask("t_reviewer_exit", { status: "review" });
+    const s = makeSession("s_reviewer_exit", t.id, { status: "running", tool: "claude" });
+    db.query("INSERT INTO task_reviews (task_id, session_id, reviewer_tool, status, updated_at) VALUES (?, ?, 'claude', 'running', ?)").run(t.id, s.id, now());
+    db.query("UPDATE sessions SET auto = 1 WHERE id = ?").run(s.id);
+    onExited(s.id, 1);
+    expect(getTask(t.id)!).toMatchObject({ status: "review", attempts: 0, last_failure: null });
+  });
 });
