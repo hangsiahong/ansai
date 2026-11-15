@@ -5,6 +5,7 @@ import { db, newId, now } from "./db";
 import { badRequest, conflict, notFound } from "./errors";
 import { TOOLS, relaunchChoice, type ToolId } from "./tools";
 import { runDeadline, sessionTokens } from "./runs";
+import { noteAgySignedOut } from "./agyauth";
 import { getProject, touchProject } from "./projects";
 import { emit } from "./events";
 import { shiftView } from "./shifts";
@@ -181,8 +182,26 @@ const AGY_DIALOGS: Dialog[] = [
     decline: "Exit",
     declineKeys: ["Down", "Enter"],
   },
+  // Signed out, agy opens on its sign-in menu. Signing in is a Google OAuth flow, so nothing is answered for you.
+  {
+    kind: "login",
+    match: /You are currently not signed i[n]\.[\s\S]*Select login method[\s\S]*1\. Google OAut[h]/i,
+    message: "agy isn't signed in. Run `agy` in a terminal on this laptop to sign in (it opens Google sign-in), then restart this session.",
+    accept: null,
+    acceptKeys: [],
+  },
 ];
 const DIALOGS: Partial<Record<ToolId, Dialog[]>> = { claude: CLAUDE_DIALOGS, codex: CODEX_DIALOGS, agy: AGY_DIALOGS };
+
+/**
+ * The startup screen an agent's terminal shows, if any. Agents re-wrap their text to the
+ * terminal's width (a phone's is narrow: "You are currently / not signed in.") and draw
+ * boxes, so borders and line breaks are flattened to single spaces before matching.
+ */
+export function startupDialog(tool: ToolId, screen: string) {
+  const flat = screen.replace(/[\u2500-\u257f]/g, " ").replace(/\s+/g, " ");
+  return (DIALOGS[tool] ?? []).find((x) => x.match.test(flat)) ?? null;
+}
 
 export function sessionView(s: SessionRow) {
   const l = live.get(s.tmux_name);
@@ -436,15 +455,19 @@ async function watchStartupScreens() {
   const rows = db
     .query(
       // Sessions with an entry are checked whatever their state, so a dialog that went away is forgotten promptly.
-      `SELECT id, tool, tmux_name, cwd, agent_state FROM sessions WHERE tool IN ('claude', 'codex', 'agy') AND status = 'running'
+      `SELECT id, tool, account_id, tmux_name, cwd, agent_state FROM sessions WHERE tool IN ('claude', 'codex', 'agy') AND status = 'running'
          AND (agent_state IS NULL OR agent_state = 'needs-input' OR id IN (SELECT value FROM json_each(?)))`,
     )
-    .all(JSON.stringify([...startup.keys()])) as Pick<SessionRow, "id" | "tool" | "tmux_name" | "cwd" | "agent_state">[];
+    .all(JSON.stringify([...startup.keys()])) as Pick<SessionRow, "id" | "tool" | "account_id" | "tmux_name" | "cwd" | "agent_state">[];
   for (const r of rows) {
     const cap = await tmux(["capture-pane", "-p", "-J", "-t", r.tmux_name]);
     if (cap.code !== 0) continue;
-    const d = (DIALOGS[r.tool] ?? []).find((x) => x.match.test(cap.out));
+    const d = startupDialog(r.tool, cap.out);
     const prev = startup.get(r.id);
+    if (d?.kind === "login" && r.tool === "agy" && prev?.kind !== "login") {
+      noteAgySignedOut(r.account_id ?? ""); // Accounts and autopilot see it right away
+      refreshAccountsSoon();
+    }
     if (r.agent_state === "needs-input" && !prev) {
       // Either a real approval (from hooks; leave it alone), or a startup screen this ansai
       // hasn't seen yet because it restarted while the agent sat on it: without the entry the
