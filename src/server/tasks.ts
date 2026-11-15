@@ -159,7 +159,9 @@ export function deleteTask(id: string) {
 function taskPrompt(task: Task): string {
   return [
     `Backlog task: ${task.title}`,
-    task.worktree_path ? `Worktree: ${task.worktree_path} (branch ${task.worktree_branch})` : "",
+    task.worktree_path
+      ? `Worktree: ${task.worktree_path} (branch ${task.worktree_branch}). This is your own checkout: commit your work on this branch as you go, with clear messages. The user reviews the diff and merges it from ansai.`
+      : "",
     task.body.trim(),
     [
       "How to work this task:",

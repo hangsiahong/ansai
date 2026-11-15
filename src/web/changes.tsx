@@ -1,6 +1,6 @@
 import { useEffect, useState } from "preact/hooks";
 import { api, type Changes, type FileChange } from "./api";
-import { useStore } from "./store";
+import { confirmDialog, openSheet, toast, toastError, useStore } from "./store";
 import { Icon, Sheet, ago } from "./ui";
 
 /**
@@ -173,11 +173,71 @@ export function ChangesView({ load, actions }: { load: () => Promise<Changes>; a
 export function ChangesSheet(p: { taskId?: string; sessionId?: string; onClose: () => void }) {
   const task = useStore((s) => (p.taskId ? s.tasks.find((t) => t.id === p.taskId) : undefined));
   const session = useStore((s) => (p.sessionId ? s.sessions.find((x) => x.id === p.sessionId) : undefined));
+  const agentBusy = useStore((s) => !!p.taskId && s.sessions.some((x) => x.task_id === p.taskId && x.status === "running" && x.agent_state === "working"));
+  const agentOpen = useStore((s) => !!p.taskId && s.sessions.some((x) => x.task_id === p.taskId && x.status === "running"));
+  const [busy, setBusy] = useState(false);
   const title = task ? `Changes · ${task.title}` : session ? `Changes · ${session.title}` : "Changes";
   const load = () => (p.taskId ? api.taskChanges(p.taskId) : api.sessionChanges(p.sessionId!));
+
+  const merge = async (c: Changes) => {
+    const n = c.files.length;
+    const ok = await confirmDialog({
+      title: `Merge into ${c.base.label}?`,
+      body: `${n} file${n === 1 ? "" : "s"} land on ${c.base.label} as one commit, “${task!.title}”. Anything the agent didn't commit is included. The worktree and branch are removed afterwards, and the task moves to Done.`,
+      confirm: "Merge",
+    });
+    if (!ok) return;
+    setBusy(true);
+    try {
+      const r = await api.mergeTask(task!.id);
+      toast(`Merged ${r.files} file${r.files === 1 ? "" : "s"} into ${r.into} (${r.sha.slice(0, 7)})`);
+      openSheet({ kind: "task", taskId: task!.id });
+    } catch (e) {
+      toastError(e);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const discard = async () => {
+    const ok = await confirmDialog({
+      title: "Throw this work away?",
+      body: `The worktree folder and branch ${task!.worktree_branch} are deleted, including commits that were never merged. This can't be undone.`,
+      confirm: "Delete worktree",
+      danger: true,
+    });
+    if (!ok) return;
+    setBusy(true);
+    try {
+      await api.discardWorktree(task!.id);
+      toast("Worktree and branch deleted");
+      openSheet({ kind: "task", taskId: task!.id });
+    } catch (e) {
+      toastError(e);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const actions = (c: Changes) =>
+    task?.worktree_path && c.worktree ? (
+      <div class="chg-actions">
+        <button class="btn primary" disabled={busy || agentBusy || !c.files.length} onClick={() => merge(c)}>
+          <Icon name="check" size={15} stroke={2.4} /> Merge into {c.base.label}
+        </button>
+        <button class="btn ghost danger-text" disabled={busy || agentOpen} onClick={discard}>
+          Discard
+        </button>
+        {agentBusy ? (
+          <p class="chg-note">The agent is still working. Merge when it's done.</p>
+        ) : agentOpen ? (
+          <p class="chg-note">Close the agent's session before discarding its worktree.</p>
+        ) : null}
+      </div>
+    ) : null;
+
   return (
     <Sheet title={title} full onClose={p.onClose}>
-      <ChangesView load={load} />
+      <ChangesView load={load} actions={actions} />
     </Sheet>
   );
 }

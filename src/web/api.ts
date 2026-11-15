@@ -163,6 +163,8 @@ export const api = {
     call<Task>("PATCH", `/api/tasks/${id}`, patch),
   deleteTask: (id: string) => call<{ ok: true }>("DELETE", `/api/tasks/${id}`),
   taskChanges: (id: string) => call<Changes>("GET", `/api/tasks/${id}/changes`),
+  mergeTask: (id: string) => call<{ sha: string; into: string; files: number }>("POST", `/api/tasks/${id}/merge`),
+  discardWorktree: (id: string) => call<{ ok: true }>("DELETE", `/api/tasks/${id}/worktree`),
   runTask: (id: string, o: { tool: ToolId; yolo?: boolean; accountId?: string | null }) => call<Session>("POST", `/api/tasks/${id}/run`, o),
 
   accounts: () => call<Account[]>("GET", "/api/accounts"),

@@ -1216,3 +1216,4 @@ i.del { color: var(--danger); }
 .chg-open > svg:first-child { color: var(--accent-text); }
 .chg-open > svg:last-child { color: var(--faint); }
 .icon-btn.spinning svg { animation: spin 0.9s linear infinite; }
+.danger-text { color: var(--danger); }

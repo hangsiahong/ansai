@@ -41,6 +41,8 @@ import { deliverIdle, listMessages, postMessage } from "./team";
 import { getSettings, setProjectAutopilot, startAutopilot, updateSettings } from "./autopilot";
 import { STATUSES, createTask, deleteTask, getTask, listTasks, runTask, updateTask } from "./tasks";
 import { changesIn, taskDir } from "./changes";
+import { discardTaskWorktree, mergeTaskWorktree } from "./worktrees";
+import { db } from "./db";
 import {
   AGENT_TOOLS,
   createAccount,
@@ -273,6 +275,27 @@ const server = Bun.serve<WSData>({
         const project = task.project_id ? getProject(task.project_id) : null;
         if (!project) throw conflict("this task isn't in a project, so it has no code changes");
         return json(await changesIn(await taskDir(task, project.path)));
+      }),
+    },
+    "/api/tasks/:id/merge": {
+      POST: guard(async (req) => {
+        const task = getTask(req.params.id!);
+        if (!task) throw notFound("no such task");
+        if (db.query("SELECT 1 FROM sessions WHERE task_id = ? AND status = 'running' AND agent_state = 'working'").get(task.id))
+          throw conflict("the agent is still working on this task; wait for it to finish (or stop it) first");
+        const r = await mergeTaskWorktree(task);
+        updateTask(task.id, { status: "done" });
+        return json(r);
+      }),
+    },
+    "/api/tasks/:id/worktree": {
+      DELETE: guard(async (req) => {
+        const task = getTask(req.params.id!);
+        if (!task) throw notFound("no such task");
+        if (db.query("SELECT 1 FROM sessions WHERE task_id = ? AND status = 'running'").get(task.id))
+          throw conflict("an agent session is still open on this task; close it first");
+        await discardTaskWorktree(task);
+        return json({ ok: true });
       }),
     },
     "/api/tasks/:id/run": {
