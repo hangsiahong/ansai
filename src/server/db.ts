@@ -200,6 +200,10 @@ const migrations: string[] = [
   );
   CREATE INDEX task_dependencies_prerequisite ON task_dependencies(depends_on_task_id);
   `,
+  // v15: per-project agent instructions, stored by ansai rather than in the repository.
+  `
+  ALTER TABLE projects ADD COLUMN playbook TEXT NOT NULL DEFAULT '';
+  `,
 ];
 
 export function getSetting<T>(key: string, fallback: T): T {

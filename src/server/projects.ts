@@ -13,6 +13,7 @@ export type Project = {
   created_at: number;
   last_used_at: number | null;
   autopilot: string | null;
+  playbook: string;
 };
 
 const SKIP = new Set(["node_modules", "target", "dist", "build", "vendor", ".git", "venv", "__pycache__"]);
@@ -94,10 +95,11 @@ export function getProject(id: string): Project | null {
   return db.query("SELECT * FROM projects WHERE id = ?").get(id) as Project | null;
 }
 
-export function updateProject(id: string, patch: { pinned?: boolean; hidden?: boolean }) {
+export function updateProject(id: string, patch: { pinned?: boolean; hidden?: boolean; playbook?: string }) {
   if (!getProject(id)) throw notFound("no such project");
   if (patch.pinned !== undefined) db.query("UPDATE projects SET pinned = ? WHERE id = ?").run(patch.pinned ? 1 : 0, id);
   if (patch.hidden !== undefined) db.query("UPDATE projects SET hidden = ? WHERE id = ?").run(patch.hidden ? 1 : 0, id);
+  if (patch.playbook !== undefined) db.query("UPDATE projects SET playbook = ? WHERE id = ?").run(patch.playbook, id);
   return getProject(id);
 }
 
