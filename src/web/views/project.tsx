@@ -82,6 +82,7 @@ function Schedules({ projectId }: { projectId: string }) {
 
 function AutopilotCard({ project, openTodo }: { project: Project; openTodo: string[] }) {
   const ap: Autopilot = project.autopilot ?? { on: false, tool: "claude", accountId: null, yolo: false };
+  const customLimit = ap.maxMinutes != null && !RUN_LIMITS.some(([minutes]) => minutes === ap.maxMinutes) ? ap.maxMinutes : null;
   const set = (patch: Partial<Autopilot>) => api.setAutopilot(project.id, patch).catch(toastError);
   // Signed out, agy can't take tasks: autopilot holds them in the queue (server), and says so here.
   // (useStore keeps its first selector, so the selector mustn't read props.)
@@ -140,6 +141,7 @@ function AutopilotCard({ project, openTodo }: { project: Project; openTodo: stri
                 value={ap.maxMinutes ?? ""}
                 onChange={(e) => set({ maxMinutes: Number((e.target as HTMLSelectElement).value) || null })}
               >
+                {customLimit !== null && <option value={customLimit}>{customLimit} min (custom)</option>}
                 {RUN_LIMITS.map(([m, label]) => (
                   <option value={m ?? ""}>{label}</option>
                 ))}
