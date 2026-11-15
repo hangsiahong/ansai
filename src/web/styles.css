@@ -1206,6 +1206,10 @@ a.prow:active, button.prow:active { background: var(--press); }
   .acct-section-head { gap: 6px; margin-bottom: 9px; }
   .acct-section-head .sec-title { font-size: 12px; }
   .acct-section-head > .btn { min-height: 40px; }
+  .acct-section-head:has(.add-acct) { flex-wrap: wrap; }
+  .acct-section-head:has(.add-acct) .add-acct { flex: 1 0 100%; display: grid; grid-template-columns: minmax(0, 1fr) auto; justify-content: stretch; }
+  .acct-section-head:has(.add-acct) .add-acct input { grid-column: 1 / -1; width: 100%; height: 44px; }
+  .acct-section-head:has(.add-acct) .add-acct .btn { min-height: 40px; }
   .acct-grid { gap: 10px; }
   .acct { gap: 12px; padding: 14px; }
   .acct-head { gap: 7px; }
