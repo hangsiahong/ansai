@@ -28,6 +28,17 @@ import {
 import { isTool, toolList } from "./tools";
 import { onChange, emit, type Topic } from "./events";
 import { createTask, deleteTask, listTasks, runTask, updateTask } from "./tasks";
+import {
+  createAccount,
+  deleteAccount,
+  ensureDefaultAccounts,
+  getAccount,
+  listAccounts,
+  loginArgv,
+  scanUsage,
+  startUsageLoop,
+  updateAccount,
+} from "./accounts";
 
 type WSData =
   | { kind: "events"; user: string }
@@ -74,12 +85,14 @@ function snapshot(t: Topic): string {
   if (t === "sessions") return JSON.stringify({ t, sessions: listSessions() });
   if (t === "tasks") return JSON.stringify({ t, tasks: listTasks() });
   if (t === "projects") return JSON.stringify({ t, projects: listProjects() });
+  if (t === "accounts") return JSON.stringify({ t, accounts: listAccounts() });
   return JSON.stringify({ t });
 }
 
 // ------------------------------------------------------------------- server
 
 writeTmuxConf();
+ensureDefaultAccounts();
 setTimeout(() => {
   try {
     const n = scanProjects();
@@ -99,6 +112,7 @@ const server = Bun.serve<WSData>({
     "/": index,
     "/p/*": index,
     "/backlog": index,
+    "/accounts": index,
     "/s/*": index,
     "/sw.js": asset(swPath, "text/javascript", "no-cache"),
     "/manifest.webmanifest": asset(manifestPath, "application/manifest+json"),
@@ -150,9 +164,39 @@ const server = Bun.serve<WSData>({
     },
     "/api/tasks/:id/run": {
       POST: guard(async (req) => {
-        const b = await body<{ tool?: string; yolo?: boolean; accountId?: string; extra?: string }>(req);
+        const b = await body<{ tool?: string; yolo?: boolean; accountId?: string | null }>(req);
         if (!isTool(b.tool)) return fail(400, "unknown tool");
-        return json(await runTask(req.params.id!, { ...b, tool: b.tool }));
+        return json(await runTask(req.params.id!, { tool: b.tool, yolo: b.yolo === true, accountId: b.accountId ? String(b.accountId) : null }));
+      }),
+    },
+
+    "/api/accounts": {
+      GET: guard(() => json(listAccounts())),
+      POST: guard(async (req) => {
+        const b = await body(req);
+        return json(createAccount(b.tool, b.name));
+      }),
+    },
+    "/api/accounts/refresh": {
+      POST: guard(async () => {
+        await scanUsage();
+        return json(listAccounts());
+      }),
+    },
+    "/api/accounts/:id": {
+      PATCH: guard(async (req) => json(updateAccount(req.params.id!, await body(req)))),
+      DELETE: guard((req) => {
+        deleteAccount(req.params.id!);
+        return json({ ok: true });
+      }),
+    },
+    "/api/accounts/:id/login": {
+      POST: guard(async (req) => {
+        const a = getAccount(req.params.id!);
+        if (!a) return fail(404, "no such account");
+        return json(
+          await createSession({ tool: a.tool, accountId: a.id, argv: loginArgv(a), title: `Sign in · ${a.name}` }),
+        );
       }),
     },
 
@@ -162,9 +206,18 @@ const server = Bun.serve<WSData>({
         return json(listSessions({ projectId: q.get("project") ?? undefined, includeClosed: q.has("all") }));
       }),
       POST: guard(async (req) => {
-        const b = await body<{ tool?: string; projectId?: string; cwd?: string; title?: string; prompt?: string; yolo?: boolean; accountId?: string }>(req);
+        const b = await body<{ tool?: string; projectId?: string; title?: string; prompt?: string; yolo?: boolean; accountId?: string | null }>(req);
         if (!isTool(b.tool)) return fail(400, "unknown tool");
-        return json(await createSession({ ...b, tool: b.tool }));
+        return json(
+          await createSession({
+            tool: b.tool,
+            projectId: b.projectId ? String(b.projectId) : undefined,
+            title: b.title ? String(b.title) : undefined,
+            prompt: b.prompt ? String(b.prompt) : undefined,
+            yolo: b.yolo === true,
+            accountId: b.accountId ? String(b.accountId) : null,
+          }),
+        );
       }),
     },
     "/api/sessions/:id": {
@@ -243,7 +296,7 @@ const server = Bun.serve<WSData>({
       const d = ws.data;
       if (d.kind === "events") {
         ws.subscribe("events");
-        for (const t of ["sessions", "tasks", "projects"] as Topic[]) ws.send(snapshot(t));
+        for (const t of ["sessions", "tasks", "projects", "accounts"] as Topic[]) ws.send(snapshot(t));
         return;
       }
       const s = getSession(d.sessionId)!;
@@ -296,6 +349,7 @@ const server = Bun.serve<WSData>({
 
 onChange((t) => server.publish("events", snapshot(t)));
 startReconcileLoop();
+startUsageLoop();
 
 console.log(`[ansai] listening on http://${server.hostname}:${server.port}`);
 tailscaleStatus().then((t) => {

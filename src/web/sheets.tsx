@@ -8,7 +8,7 @@ export function Sheets() {
   const sheet = useStore((s) => s.sheet);
   const close = () => openSheet(null);
   if (!sheet) return null;
-  if (sheet.kind === "new") return <NewSessionSheet projectId={sheet.projectId} tool={sheet.tool} onClose={close} />;
+  if (sheet.kind === "new") return <NewSessionSheet projectId={sheet.projectId} tool={sheet.tool} accountId={sheet.accountId} onClose={close} />;
   if (sheet.kind === "history") return <HistorySheet sessionId={sheet.sessionId} onClose={close} />;
   if (sheet.kind === "add-project") return <AddProjectSheet onClose={close} />;
   if (sheet.kind === "task") return <TaskSheet key={sheet.taskId} taskId={sheet.taskId} onClose={close} />;
@@ -40,11 +40,11 @@ function YoloCheck(p: { value: boolean; onChange: (v: boolean) => void }) {
   );
 }
 
-function NewSessionSheet(p: { projectId?: string; tool?: ToolId; onClose: () => void }) {
+function NewSessionSheet(p: { projectId?: string; tool?: ToolId; accountId?: string; onClose: () => void }) {
   const tools = useStore((s) => s.tools);
   const [projectId, setProjectId] = useState(p.projectId ?? getState().projects[0]?.id ?? "");
   const [tool, setTool] = useState<ToolId>(p.tool ?? "claude");
-  const [accountId, setAccountId] = useState<string | null>(null);
+  const [accountId, setAccountId] = useState<string | null>(p.accountId ?? null);
   const [prompt, setPrompt] = useState("");
   const [yolo, setYolo] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -72,7 +72,7 @@ function NewSessionSheet(p: { projectId?: string; tool?: ToolId; onClose: () => 
           <span>Agent</span>
           <div class="seg">
             {(tools.length ? tools : (["claude", "codex", "agy", "shell"] as ToolId[]).map((id) => ({ id, label: TOOL_LABEL[id], installed: true }))).map((t) => (
-              <button type="button" class={`seg-btn ${tool === t.id ? "on" : ""}`} disabled={!t.installed} onClick={() => setTool(t.id)}>
+              <button type="button" class={`seg-btn ${tool === t.id ? "on" : ""}`} disabled={!t.installed} onClick={() => (setTool(t.id), setAccountId(null))}>
                 <ToolDot tool={t.id} /> {t.label}
               </button>
             ))}

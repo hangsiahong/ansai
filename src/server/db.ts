@@ -77,6 +77,29 @@ const migrations: string[] = [
   CREATE INDEX tasks_project ON tasks(project_id, status, position);
   CREATE INDEX sessions_task ON sessions(task_id);
   `,
+  // v3: token usage read incrementally from each tool's local logs.
+  `
+  CREATE TABLE usage_files (
+    path TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    offset INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE TABLE usage_events (
+    account_id TEXT NOT NULL,
+    key TEXT NOT NULL,
+    ts INTEGER NOT NULL,
+    tokens INTEGER NOT NULL,
+    output INTEGER NOT NULL,
+    model TEXT,
+    PRIMARY KEY (account_id, key)
+  );
+  CREATE INDEX usage_events_ts ON usage_events(account_id, ts);
+  CREATE TABLE usage_limits (
+    account_id TEXT PRIMARY KEY,
+    data TEXT NOT NULL,
+    at INTEGER NOT NULL
+  );
+  `,
 ];
 
 {

@@ -48,7 +48,7 @@ export type Task = {
   sessions: { id: string; tool: ToolId; status: string }[];
 };
 
-export type UsageLimit = { id: string; label: string; used_percent: number; resets_at: number | null };
+export type UsageLimit = { id: string; label: string; used_percent: number; resets_at: number | null; reset: boolean };
 export type Account = {
   id: string;
   tool: ToolId;
@@ -62,7 +62,7 @@ export type Account = {
   usage: null | {
     limits: UsageLimit[];
     limits_at: number | null;
-    tokens: { five_hour: number; today: number; week: number };
+    tokens: { five_hour: number; today: number; week: number; daily: number[] };
     note?: string | null;
   };
 };
@@ -98,6 +98,13 @@ export const api = {
     call<Task>("PATCH", `/api/tasks/${id}`, patch),
   deleteTask: (id: string) => call<{ ok: true }>("DELETE", `/api/tasks/${id}`),
   runTask: (id: string, o: { tool: ToolId; yolo?: boolean; accountId?: string | null }) => call<Session>("POST", `/api/tasks/${id}/run`, o),
+
+  accounts: () => call<Account[]>("GET", "/api/accounts"),
+  createAccount: (tool: ToolId, name: string) => call<Account>("POST", "/api/accounts", { tool, name }),
+  updateAccount: (id: string, patch: { name?: string; preferred?: boolean }) => call<Account>("PATCH", `/api/accounts/${id}`, patch),
+  deleteAccount: (id: string) => call<{ ok: true }>("DELETE", `/api/accounts/${id}`),
+  loginAccount: (id: string) => call<Session>("POST", `/api/accounts/${id}/login`),
+  refreshAccounts: () => call<Account[]>("POST", "/api/accounts/refresh"),
 
   sessions: () => call<Session[]>("GET", "/api/sessions"),
   session: (id: string) => call<Session>("GET", `/api/sessions/${id}`),

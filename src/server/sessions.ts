@@ -4,6 +4,12 @@ import { db, newId, now } from "./db";
 import { TOOLS, type ToolId } from "./tools";
 import { getProject, touchProject } from "./projects";
 import { emit } from "./events";
+import { accountEnv, getAccount, refreshAccountsSoon, resolveAccount, type AccountRow } from "./accounts";
+
+/** Phase 4 adds status hooks here; identity for now. */
+function withHooks(_tool: ToolId, argv: string[]): string[] {
+  return argv;
+}
 
 // ---------------------------------------------------------------- tmux plumbing
 
@@ -111,7 +117,14 @@ export type CreateOpts = {
   yolo?: boolean;
   accountId?: string | null;
   taskId?: string | null;
+  /** Internal: run this exact command instead of the tool's normal one (e.g. a login flow). */
+  argv?: string[];
 };
+
+function sessionEnv(id: string, account: AccountRow | null): string[] {
+  const env: Record<string, string> = { ANSAI_SESSION_ID: id, ...accountEnv(account) };
+  return Object.entries(env).flatMap(([k, v]) => ["-e", `${k}=${v}`]);
+}
 
 export async function createSession(o: CreateOpts) {
   const tool = TOOLS[o.tool];
@@ -120,30 +133,24 @@ export async function createSession(o: CreateOpts) {
   if (!existsSync(cwd)) throw new Error(`directory does not exist: ${cwd}`);
   if (!Bun.which(tool.bin)) throw new Error(`${tool.label} (${tool.bin}) is not installed`);
 
-  let accountDir: string | null = null;
-  if (o.accountId) {
-    const acc = db.query("SELECT dir FROM accounts WHERE id = ?").get(o.accountId) as { dir: string | null } | null;
-    accountDir = acc?.dir ?? null;
-  }
-
-  const argv = tool.argv({ prompt: o.prompt?.trim() || undefined, yolo: o.yolo, accountDir });
+  const account = o.tool === "shell" ? null : resolveAccount(o.tool, o.accountId);
   const id = newId("s");
   const tmuxName = `ansai-${id}`;
-  const env: Record<string, string> = { ANSAI_SESSION_ID: id, ...(accountDir ? tool.accountEnv(accountDir) : {}) };
+  const argv = withHooks(o.tool, o.argv ?? tool.argv({ prompt: o.prompt?.trim() || undefined, yolo: o.yolo }));
   const title =
     o.title?.trim() ||
     (o.prompt?.trim() ? o.prompt.trim().split("\n")[0]!.slice(0, 60) : `${tool.label}${project ? " · " + project.name : ""}`);
 
-  const envArgs = Object.entries(env).flatMap(([k, v]) => ["-e", `${k}=${v}`]);
-  const r = await tmux(["new-session", "-d", "-s", tmuxName, "-x", "160", "-y", "48", "-c", cwd, ...envArgs, "--", ...argv]);
+  const r = await tmux(["new-session", "-d", "-s", tmuxName, "-x", "160", "-y", "48", "-c", cwd, ...sessionEnv(id, account), "--", ...argv]);
   if (r.code !== 0) throw new Error(`tmux: ${r.err || "failed to start session"}`);
 
   db.query(
     `INSERT INTO sessions (id, project_id, task_id, account_id, tool, title, cwd, argv, tmux_name, status, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?)`,
-  ).run(id, project?.id ?? null, o.taskId ?? null, o.accountId ?? null, tool.id, title, cwd, JSON.stringify(argv), tmuxName, now());
+  ).run(id, project?.id ?? null, o.taskId ?? null, account?.id ?? null, tool.id, title, cwd, JSON.stringify(argv), tmuxName, now());
   if (project) touchProject(project.id);
   await reconcile();
+  refreshAccountsSoon();
   return sessionView(getSession(id)!);
 }
 
@@ -152,17 +159,19 @@ export async function restartSession(id: string) {
   const s = getSession(id);
   if (!s) throw new Error("no such session");
   const argv = JSON.parse(s.argv) as string[];
-  // A restarted agent shouldn't replay the original prompt.
+  // A restarted agent shouldn't replay the original prompt (or a login flow).
   const tool = TOOLS[s.tool];
-  const base = s.tool === "shell" ? argv : tool.argv({ yolo: argv.some((a) => a.startsWith("--dangerously")) });
+  const base = s.tool === "shell" ? argv : withHooks(s.tool, tool.argv({ yolo: argv.some((a) => a.startsWith("--dangerously")) }));
+  const account = s.account_id ? getAccount(s.account_id) : null;
   const alive = (await tmux(["has-session", "-t", s.tmux_name])).code === 0;
   if (alive) {
     const r = await tmux(["respawn-pane", "-k", "-t", s.tmux_name, "-c", s.cwd, "--", ...base]);
     if (r.code !== 0) throw new Error(`tmux: ${r.err}`);
   } else {
-    const r = await tmux(["new-session", "-d", "-s", s.tmux_name, "-x", "160", "-y", "48", "-c", s.cwd, "-e", `ANSAI_SESSION_ID=${s.id}`, "--", ...base]);
+    const r = await tmux(["new-session", "-d", "-s", s.tmux_name, "-x", "160", "-y", "48", "-c", s.cwd, ...sessionEnv(s.id, account), "--", ...base]);
     if (r.code !== 0) throw new Error(`tmux: ${r.err}`);
   }
+  db.query("UPDATE sessions SET argv = ?, agent_state = NULL WHERE id = ?").run(JSON.stringify(base), id);
   db.query("UPDATE sessions SET status = 'running', exit_code = NULL, ended_at = NULL WHERE id = ?").run(id);
   await reconcile();
   return sessionView(getSession(id)!);

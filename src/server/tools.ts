@@ -5,8 +5,6 @@ export type ToolId = "claude" | "codex" | "agy" | "shell";
 export type LaunchOpts = {
   prompt?: string;
   yolo?: boolean;
-  /** Profile directory for a non-default account (phase 3). */
-  accountDir?: string | null;
 };
 
 type ToolDef = {
@@ -14,8 +12,6 @@ type ToolDef = {
   label: string;
   bin: string;
   argv: (o: LaunchOpts) => string[];
-  /** Env that points the CLI at a separate account/profile directory. */
-  accountEnv: (dir: string) => Record<string, string>;
 };
 
 export const TOOLS: Record<ToolId, ToolDef> = {
@@ -24,7 +20,6 @@ export const TOOLS: Record<ToolId, ToolDef> = {
     label: "Claude Code",
     bin: "claude",
     argv: (o) => ["claude", ...(o.yolo ? ["--dangerously-skip-permissions"] : []), ...(o.prompt ? [o.prompt] : [])],
-    accountEnv: (dir) => ({ CLAUDE_CONFIG_DIR: dir }),
   },
   codex: {
     id: "codex",
@@ -35,22 +30,18 @@ export const TOOLS: Record<ToolId, ToolDef> = {
       ...(o.yolo ? ["--dangerously-bypass-approvals-and-sandbox"] : []),
       ...(o.prompt ? [o.prompt] : []),
     ],
-    accountEnv: (dir) => ({ CODEX_HOME: dir }),
   },
   agy: {
     id: "agy",
     label: "Antigravity",
     bin: "agy",
     argv: (o) => ["agy", ...(o.yolo ? ["--dangerously-skip-permissions"] : []), ...(o.prompt ? ["-i", o.prompt] : [])],
-    // agy keeps its state under ~/.gemini; a separate HOME isolates the profile.
-    accountEnv: (dir) => ({ HOME: dir }),
   },
   shell: {
     id: "shell",
     label: "Shell",
     bin: config.shell,
     argv: () => [config.shell, "-l"],
-    accountEnv: () => ({}),
   },
 };
 

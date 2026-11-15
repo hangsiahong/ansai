@@ -3,7 +3,7 @@ import { api, wsUrl, type Account, type Me, type Project, type Session, type Tas
 
 export type SheetState =
   | null
-  | { kind: "new"; projectId?: string; tool?: ToolId }
+  | { kind: "new"; projectId?: string; tool?: ToolId; accountId?: string }
   | { kind: "history"; sessionId: string }
   | { kind: "add-project" }
   | { kind: "task"; taskId: string };
@@ -80,6 +80,7 @@ function connectEvents() {
         if (m.t === "sessions") setState({ sessions: m.sessions });
         else if (m.t === "tasks") setState({ tasks: m.tasks });
         else if (m.t === "projects") setState({ projects: m.projects });
+        else if (m.t === "accounts") setState({ accounts: m.accounts });
       } catch {}
     };
     ws.onclose = () => {
