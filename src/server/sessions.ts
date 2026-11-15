@@ -137,6 +137,19 @@ const CLAUDE_DIALOGS: Dialog[] = [
   { kind: "login", match: /Select login method/i, message: "This account isn't signed in. Open the terminal to sign in.", accept: null, acceptKeys: [] },
   { kind: "apikey", match: /Do you want to use this API key\?/i, message: "Claude asks whether to use an API key from your environment.", accept: null, acceptKeys: [] },
 ];
+// Codex 0.169: "Trust this folder?" opens on "1. Trust and continue"; Esc goes back.
+const CODEX_DIALOGS: Dialog[] = [
+  {
+    kind: "trust",
+    match: /Trust this folder\? Codex can read/i,
+    message: "Codex asks whether you trust this folder before it starts.",
+    accept: "Trust folder",
+    acceptKeys: ["Enter"],
+    decline: "Back",
+    declineKeys: ["Escape"],
+  },
+];
+const DIALOGS: Partial<Record<ToolId, Dialog[]>> = { claude: CLAUDE_DIALOGS, codex: CODEX_DIALOGS };
 
 export function sessionView(s: SessionRow) {
   const l = live.get(s.tmux_name);
@@ -326,6 +339,7 @@ const CODEX_ASK = /Would you like to (run the following command|make the followi
 async function watchCodexScreens() {
   const rows = db.query("SELECT id, tmux_name FROM sessions WHERE tool = 'codex' AND status = 'running'").all() as { id: string; tmux_name: string }[];
   for (const r of rows) {
+    if (startup.has(r.id)) continue; // a startup dialog, not an approval; watchStartupScreens owns it
     const cap = await tmux(["capture-pane", "-p", "-J", "-t", r.tmux_name]);
     if (cap.code !== 0) continue;
     const lines = cap.out.split("\n");
@@ -344,26 +358,25 @@ async function watchCodexScreens() {
 }
 
 /**
- * Claude shows a few screens before it runs hooks (so before ansai hears from it):
+ * Claude (and Codex) show a few screens before they run hooks (so before ansai hears from it):
  * the folder-trust question, the bypass-mode warning, first-run setup. Spot them on
  * screen so the session says "Needs you" instead of sitting there silently. Task
  * worktrees ansai made from your own project are trusted automatically.
  */
 async function watchStartupScreens() {
   const rows = db
-    .query(`SELECT id, tmux_name, cwd, agent_state FROM sessions WHERE tool = 'claude' AND status = 'running' AND (agent_state IS NULL OR agent_state = 'needs-input')`)
-    .all() as Pick<SessionRow, "id" | "tmux_name" | "cwd" | "agent_state">[];
+    .query(`SELECT id, tool, tmux_name, cwd, agent_state FROM sessions WHERE tool IN ('claude', 'codex') AND status = 'running' AND (agent_state IS NULL OR agent_state = 'needs-input')`)
+    .all() as Pick<SessionRow, "id" | "tool" | "tmux_name" | "cwd" | "agent_state">[];
   for (const r of rows) {
     if (r.agent_state === "needs-input" && !startup.has(r.id)) continue; // a real approval, from hooks
     const cap = await tmux(["capture-pane", "-p", "-J", "-t", r.tmux_name]);
     if (cap.code !== 0) continue;
-    const d = CLAUDE_DIALOGS.find((x) => x.match.test(cap.out));
+    const d = (DIALOGS[r.tool] ?? []).find((x) => x.match.test(cap.out));
     const prev = startup.get(r.id);
     if (d?.kind === "trust" && r.cwd.startsWith(config.dataDir + "/worktrees/")) {
       if (prev?.kind !== "trust-auto") {
         startup.set(r.id, { kind: "trust-auto", message: "", accept: null, acceptKeys: [], decline: null, declineKeys: [] });
-        await tmux(["send-keys", "-t", r.tmux_name, "Down"]);
-        await tmux(["send-keys", "-t", r.tmux_name, "Enter"]);
+        for (const k of d.acceptKeys) await tmux(["send-keys", "-t", r.tmux_name, k]);
       }
       continue;
     }
