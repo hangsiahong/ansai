@@ -38,6 +38,23 @@ export type Session = {
   clients: number;
   /** A dialog Claude shows before it starts (trust this folder, bypass warning…), with the keys that answer it. */
   startup: StartupPrompt | null;
+  /** The current or last shift ("keep working until…"); null if it never had one. */
+  shift: Shift | null;
+};
+
+export type Shift = {
+  session_id: string;
+  active: boolean;
+  until: number;
+  focus: string | null;
+  started_at: number;
+  nudges: number;
+  idle: number;
+  last_nudge_at: number | null;
+  ended_at: number | null;
+  end_reason: "time" | "agent" | "idle" | "you" | "exited" | "cap" | null;
+  summary: string | null;
+  report: { commits: { sha: string; subject: string }[]; moreCommits: number } | null;
 };
 
 export type StartupPrompt = { kind: string; message: string; accept: string | null; acceptKeys: string[]; decline: string | null; declineKeys: string[] };
@@ -186,6 +203,11 @@ export const api = {
   setDevices: (allowed: string[]) => call<DeviceList>("PUT", "/api/devices", { allowed }),
 
   setAutopilot: (projectId: string, patch: Partial<Autopilot>) => call<Autopilot>("PUT", `/api/projects/${projectId}/autopilot`, patch),
+  startShift: (sessionId: string, o: { until: number; focus?: string | null }) => call<Shift>("PUT", `/api/sessions/${sessionId}/shift`, o),
+  endShift: (sessionId: string) => call<Shift>("DELETE", `/api/sessions/${sessionId}/shift`),
+  startProjectShift: (projectId: string, o: { until: number; focus?: string | null }) =>
+    call<{ started: number }>("PUT", `/api/projects/${projectId}/shift`, o),
+  endProjectShift: (projectId: string) => call<{ ended: number }>("DELETE", `/api/projects/${projectId}/shift`),
   settings: () => call<Settings>("GET", "/api/settings"),
   updateSettings: (patch: Partial<Settings>) => call<Settings>("PUT", "/api/settings", patch),
 

@@ -193,6 +193,12 @@ function resultText(content: unknown): string {
   return "";
 }
 
+/** A shift's "keep going" prompt (typed in, or Claude's Stop hook feedback) becomes a one-line note. */
+function shiftNote(text: string): string | null {
+  const m = text.replace(/^Stop hook feedback:\s*/, "").match(/^ansai shift: you're on shift until (.+?) \(/);
+  return m ? `Kept going · on shift until ${m[1]}` : null;
+}
+
 /** Claude stores slash commands, reminders and command output as user text; keep only what a person typed. */
 function cleanClaudeUser(text: string): { kind: "user" | "note"; text: string } | null {
   let t = text
@@ -202,6 +208,8 @@ function cleanClaudeUser(text: string): { kind: "user" | "note"; text: string } 
     .trim();
   if (!t) return null;
   if (isTeamDelivery(t)) return null; // shown from the team channel instead
+  const shift = shiftNote(t);
+  if (shift) return { kind: "note", text: shift };
   if (t.startsWith("[Request interrupted")) return { kind: "note", text: "Interrupted" };
   const cmd = t.match(/<command-name>([\s\S]*?)<\/command-name>[\s\S]*?(?:<command-args>([\s\S]*?)<\/command-args>)?/);
   if (cmd) return { kind: "user", text: `${cmd[1]!.trim()} ${cmd[2]?.trim() ?? ""}`.trim() };
@@ -317,6 +325,8 @@ function parseCodex(line: string, st: ParseState, out: ChatItem[], key: string) 
         // environment, AGENTS.md and other instructions Codex injects as user turns
         if (text.startsWith("<") || text.startsWith("# AGENTS.md instructions") || text.includes("<INSTRUCTIONS>")) return;
         if (isTeamDelivery(text)) return;
+        const shift = shiftNote(text);
+        if (shift) return void out.push({ id: key, k: "note", text: shift, ts });
         if (!st.firstUser) st.firstUser = text;
         out.push({ id: key, k: "user", text, ts });
       } else if (p.role === "assistant") out.push({ id: key, k: "assistant", text: clip(text, 40000), ts });

@@ -5,6 +5,7 @@ import { AGENTS, Icon, Sheet, StatusPill, TOOL_LABEL, TOOL_SHORT, ToolBadge, ago
 import { AccountPicker } from "./accounts";
 import { NotifyPanel } from "./notify";
 import { ChangesSheet } from "./changes";
+import { ShiftSheet } from "./shift";
 
 export function Sheets() {
   const sheet = useStore((s) => s.sheet);
@@ -12,6 +13,7 @@ export function Sheets() {
   if (!sheet) return null;
   if (sheet.kind === "new") return <NewSessionSheet projectId={sheet.projectId} tool={sheet.tool} accountId={sheet.accountId} onClose={close} />;
   if (sheet.kind === "history") return <HistorySheet sessionId={sheet.sessionId} onClose={close} />;
+  if (sheet.kind === "shift") return <ShiftSheet sessionId={sheet.sessionId} projectId={sheet.projectId} onClose={close} />;
   if (sheet.kind === "changes") return <ChangesSheet taskId={sheet.taskId} sessionId={sheet.sessionId} onClose={close} />;
   if (sheet.kind === "add-project") return <AddProjectSheet onClose={close} />;
   if (sheet.kind === "task") return <TaskSheet key={sheet.taskId} taskId={sheet.taskId} onClose={close} />;

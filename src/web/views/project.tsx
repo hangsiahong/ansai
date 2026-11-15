@@ -6,6 +6,7 @@ import { AccountPicker } from "../accounts";
 import { Launchers, SessionCell } from "./now";
 import { QuickAdd, TaskList } from "./tasks";
 import { TeamPanel } from "../team";
+import { canShift } from "../shift";
 
 function AutopilotCard({ project, openTodo }: { project: Project; openTodo: string[] }) {
   const ap: Autopilot = project.autopilot ?? { on: false, tool: "claude", accountId: null, yolo: false };
@@ -123,7 +124,15 @@ export function ProjectPane({ id }: { id: string }) {
           </section>
           <div class={mine.length ? "first-narrow" : ""}>
           <section class="sec">
-            <h2 class="sec-title">Sessions</h2>
+            <div class="sec-head">
+              <h2 class="sec-title">Sessions</h2>
+              {mine.some(canShift) && (
+                <button class="sec-link" onClick={() => openSheet({ kind: "shift", projectId: id })}>
+                  <Icon name="moon" size={14} />
+                  {mine.some((s) => s.shift?.active) ? `${mine.filter((s) => s.shift?.active).length} on shift` : "Keep working"}
+                </button>
+              )}
+            </div>
             {mine.length ? (
               <div class="panel" style={{ "--sep": "66px" }}>
                 {mine.map((s) => (

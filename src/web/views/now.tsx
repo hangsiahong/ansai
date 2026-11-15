@@ -3,6 +3,7 @@ import type { Account, Session, ToolId } from "../api";
 import { openPalette, openSheet, useStore } from "../store";
 import { AGENTS, Empty, FolderIcon, Icon, Link, TOOL_SHORT, ToolBadge, ago, modelLabel, sessionOrder, sessionState, useTick } from "../ui";
 import { TaskRow } from "./tasks";
+import { ShiftTag } from "../shift";
 
 function greeting() {
   const h = new Date().getHours();
@@ -27,6 +28,7 @@ export function SessionCell({ s }: { s: Session }) {
             : `${s.project_name ?? "~"}${acc && !acc.is_default ? ` · ${acc.name}` : ""} · ${ago(s.activity_at ?? s.created_at)}${model ? ` · ${model}` : ""}`}
         </span>
       </span>
+      <ShiftTag shift={s.shift} />
       <span class={`cell-detail ${st.cls}`}>{st.label}</span>
       <Icon name="chevR" size={17} stroke={2.2} />
     </Link>

@@ -4,6 +4,7 @@ import { confirmDialog, openSheet, promptDialog, toast, toastError, useStore } f
 import { TerminalView, type TermHandle, type TermStatus } from "../Terminal";
 import { Icon, Link, StatusPill, TOOL_LABEL, ToolBadge, goBack, isTouch, modelLabel, nav, sessionState, useTick } from "../ui";
 import { ChatView } from "../chat";
+import { ShiftBar, canShift } from "../shift";
 
 type View = "chat" | "terminal";
 const VIEW_KEY = "ansai.view";
@@ -230,6 +231,9 @@ export function SessionPane({ id }: { id: string }) {
               <div class="menu">
                 <button onClick={() => (setMenu(false), openSheet({ kind: "history", sessionId: id }))}>History as text</button>
                 <button onClick={() => (setMenu(false), openSheet(task ? { kind: "changes", taskId: task.id } : { kind: "changes", sessionId: id }))}>Code changes</button>
+                {(canShift(s) || s.shift) && (
+                  <button onClick={() => (setMenu(false), openSheet({ kind: "shift", sessionId: id }))}>{s.shift?.active ? "Shift…" : "Keep working until…"}</button>
+                )}
                 <button onClick={() => act("rename")}>Rename</button>
                 <button onClick={() => act("restart")}>Restart {TOOL_LABEL[s.tool]}</button>
                 <div class="menu-row">
@@ -250,6 +254,8 @@ export function SessionPane({ id }: { id: string }) {
           )}
         </div>
       </header>
+
+      <ShiftBar s={s} />
 
       {view === "terminal" && s.status === "running" && s.agent_state === "needs-input" && (
         <div class="banner attn">
