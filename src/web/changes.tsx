@@ -129,13 +129,13 @@ export function ChangesView({ load, actions }: { load: () => Promise<Changes>; a
           )}
         </div>
         {c.commits.length > 0 && (
-          <ul class="chg-commits">
+          <div class="chg-commits">
             {c.commits.slice(0, 8).map((k) => (
-              <li>
+              <div>
                 <code>{k.sha.slice(0, 7)}</code> {k.subject} <span class="muted">{ago(k.at)}</span>
-              </li>
+              </div>
             ))}
-          </ul>
+          </div>
         )}
         {actions?.(c, reload)}
       </div>

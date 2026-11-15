@@ -1187,7 +1187,8 @@ i.add { color: var(--green); }
 i.del { color: var(--danger); }
 .chg-pill { padding: 2px 8px; border-radius: 99px; background: var(--warn-soft); color: var(--warn); font-size: 11.5px; font-weight: 600; }
 .chg-pill.ok { background: var(--green-soft); color: var(--green); }
-.chg-commits { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; font-size: 13px; }
+.chg-commits { display: flex; flex-direction: column; gap: 3px; font-size: 13px; }
+.chg-commits > div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chg-commits code { color: var(--muted); }
 .chg-tools { display: flex; justify-content: flex-end; padding: 0 4px; margin-bottom: -6px; }
 .chg-files { overflow: hidden; }
@@ -1216,4 +1217,4 @@ i.del { color: var(--danger); }
 .chg-open > svg:first-child { color: var(--accent-text); }
 .chg-open > svg:last-child { color: var(--faint); }
 .icon-btn.spinning svg { animation: spin 0.9s linear infinite; }
-.danger-text { color: var(--danger); }
+.danger-text, .btn.danger-text { color: var(--danger); }
