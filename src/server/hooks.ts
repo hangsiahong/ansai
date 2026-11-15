@@ -37,10 +37,41 @@ const codexNotify = () =>
   // TOML array; the literal string ('…') keeps the shell script's double quotes intact. Codex appends the JSON event as $1.
   `notify=["sh", "-c", 'curl -s -m 2 -X POST -H "content-type: application/json" --data-binary "$1" "${base()}/codex/turn?s=$ANSAI_SESSION_ID" >/dev/null 2>&1 || true', "ansai-notify"]`;
 
-/** Add status hooks to an agent's normal command line. */
-export function withHooks(tool: ToolId, argv: string[]): string[] {
-  if (tool === "claude") return [argv[0]!, "--settings", hooksFile, ...argv.slice(1)];
-  if (tool === "codex") return [argv[0]!, "-c", codexNotify(), ...argv.slice(1)];
+/** What every agent started from ansai is told about the backlog tools (kept short). */
+const AGENT_NOTE =
+  "You are running inside ansai, the user's control room for coding agents. " +
+  "An MCP server named \"ansai\" gives you the user's backlog: " +
+  "call add_task to record follow-up work you notice (bugs, refactors, missing tests) instead of doing it unasked; " +
+  "if you were given a backlog task, call finish_task with a 2-3 sentence summary when it is done. " +
+  "If a task is unclear or needs a decision, ask the user before changing anything.";
+
+const mcpUrl = (sessionId: string) => `http://127.0.0.1:${config.port}/mcp?s=${sessionId}`;
+const toml = (s: string) => JSON.stringify(s); // TOML basic strings share JSON's escaping for our text
+
+/** Add status hooks, the ansai MCP server and the backlog note to an agent's command line. */
+export function withHooks(tool: ToolId, argv: string[], sessionId: string): string[] {
+  if (tool === "claude")
+    return [
+      argv[0]!,
+      "--settings",
+      hooksFile,
+      "--mcp-config",
+      JSON.stringify({ mcpServers: { ansai: { type: "http", url: mcpUrl(sessionId) } } }),
+      "--append-system-prompt",
+      AGENT_NOTE,
+      ...argv.slice(1),
+    ];
+  if (tool === "codex")
+    return [
+      argv[0]!,
+      "-c",
+      codexNotify(),
+      "-c",
+      `mcp_servers.ansai.url=${toml(mcpUrl(sessionId))}`,
+      "-c",
+      `developer_instructions=${toml(AGENT_NOTE)}`,
+      ...argv.slice(1),
+    ];
   return argv;
 }
 

@@ -1,5 +1,6 @@
 export type ToolId = "claude" | "codex" | "agy" | "shell";
 
+export type Autopilot = { on: boolean; tool: ToolId; accountId: string | null; yolo: boolean };
 export type Project = {
   id: string;
   name: string;
@@ -7,7 +8,10 @@ export type Project = {
   pinned: number;
   hidden: number;
   last_used_at: number | null;
+  autopilot: Autopilot | null;
 };
+export type Plan = { done: number; total: number; current: string | null; items: { content: string; status: string }[] };
+export type Settings = { autopilotMax: number; trackSessions: boolean };
 
 export type Session = {
   id: string;
@@ -47,7 +51,11 @@ export type Task = {
   created_at: number;
   updated_at: number;
   done_at: number | null;
-  sessions: { id: string; tool: ToolId; status: string }[];
+  queued: number;
+  plan: Plan | null;
+  summary: string | null;
+  source: "you" | "agent" | "session";
+  sessions: { id: string; tool: ToolId; status: string; agent_state: string | null; auto: number }[];
 };
 
 export type UsageLimit = { id: string; label: string; used_percent: number; resets_at: number | null; reset: boolean };
@@ -106,7 +114,7 @@ export const api = {
   tasks: () => call<Task[]>("GET", "/api/tasks"),
   createTask: (o: { title: string; body?: string; projectId?: string | null; status?: TaskStatus; priority?: number }) =>
     call<Task>("POST", "/api/tasks", o),
-  updateTask: (id: string, patch: { title?: string; body?: string; status?: TaskStatus; projectId?: string | null; priority?: number; position?: number }) =>
+  updateTask: (id: string, patch: { title?: string; body?: string; status?: TaskStatus; projectId?: string | null; priority?: number; position?: number; queued?: boolean }) =>
     call<Task>("PATCH", `/api/tasks/${id}`, patch),
   deleteTask: (id: string) => call<{ ok: true }>("DELETE", `/api/tasks/${id}`),
   runTask: (id: string, o: { tool: ToolId; yolo?: boolean; accountId?: string | null }) => call<Session>("POST", `/api/tasks/${id}/run`, o),
@@ -128,6 +136,10 @@ export const api = {
   allProjects: () => call<Project[]>("GET", "/api/projects?all"),
   devices: () => call<DeviceList>("GET", "/api/devices"),
   setDevices: (allowed: string[]) => call<DeviceList>("PUT", "/api/devices", { allowed }),
+
+  setAutopilot: (projectId: string, patch: Partial<Autopilot>) => call<Autopilot>("PUT", `/api/projects/${projectId}/autopilot`, patch),
+  settings: () => call<Settings>("GET", "/api/settings"),
+  updateSettings: (patch: Partial<Settings>) => call<Settings>("PUT", "/api/settings", patch),
 
   sessions: () => call<Session[]>("GET", "/api/sessions"),
   session: (id: string) => call<Session>("GET", `/api/sessions/${id}`),

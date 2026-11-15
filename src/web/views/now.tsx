@@ -1,7 +1,7 @@
 import { useMemo } from "preact/hooks";
 import type { Account, Session, ToolId } from "../api";
 import { openPalette, openSheet, useStore } from "../store";
-import { AGENTS, Empty, Icon, Link, TOOL_SHORT, ToolBadge, ago, sessionOrder, sessionState, useTick } from "../ui";
+import { AGENTS, Empty, FolderIcon, Icon, Link, TOOL_SHORT, ToolBadge, ago, sessionOrder, sessionState, useTick } from "../ui";
 import { TaskRow } from "./tasks";
 
 function greeting() {
@@ -208,9 +208,7 @@ export function NowPane() {
               <div class="panel">
                 {shortcuts.map((p) => (
                   <Link href={`/p/${p.id}`} class="prow">
-                    <span class={`prow-icon ${p.pinned ? "pinned" : ""}`}>
-                      <Icon name={p.pinned ? "star" : "folder"} size={16} stroke={2.2} />
-                    </span>
+                    <FolderIcon size={32} pinned={!!p.pinned} />
                     <span class="prow-main">
                       <span class="prow-name">{p.name}</span>
                     </span>

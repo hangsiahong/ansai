@@ -6,6 +6,8 @@ import type { ToolId } from "./tools";
 
 export const STATUSES = ["todo", "doing", "review", "done"] as const;
 export type TaskStatus = (typeof STATUSES)[number];
+export type TaskSource = "you" | "agent" | "session";
+export type Plan = { done: number; total: number; current: string | null; items: { content: string; status: string }[] };
 
 export type Task = {
   id: string;
@@ -18,13 +20,34 @@ export type Task = {
   created_at: number;
   updated_at: number;
   done_at: number | null;
+  queued: number;
+  plan: string | null;
+  summary: string | null;
+  source: TaskSource;
 };
+
+export type Autopilot = { on: boolean; tool: ToolId; accountId: string | null; yolo: boolean };
 
 const isStatus = (s: unknown): s is TaskStatus => typeof s === "string" && (STATUSES as readonly string[]).includes(s);
 
 function topPosition(status: TaskStatus): number {
   const r = db.query("SELECT MIN(position) AS p FROM tasks WHERE status = ?").get(status) as { p: number | null };
   return r.p === null ? 0 : r.p - 1;
+}
+function bottomPosition(status: TaskStatus): number {
+  const r = db.query("SELECT MAX(position) AS p FROM tasks WHERE status = ?").get(status) as { p: number | null };
+  return r.p === null ? 0 : r.p + 1;
+}
+
+export function projectAutopilot(projectId: string | null): Autopilot | null {
+  if (!projectId) return null;
+  const r = db.query("SELECT autopilot FROM projects WHERE id = ?").get(projectId) as { autopilot: string | null } | null;
+  if (!r?.autopilot) return null;
+  try {
+    return JSON.parse(r.autopilot) as Autopilot;
+  } catch {
+    return null;
+  }
 }
 
 export function listTasks() {
@@ -38,38 +61,51 @@ export function listTasks() {
     )
     .all(cutoff) as (Task & { project_name: string | null })[];
   const links = db
-    .query(`SELECT id, task_id, tool, status FROM sessions WHERE task_id IS NOT NULL AND status != 'closed'`)
-    .all() as { id: string; task_id: string; tool: ToolId; status: string }[];
+    .query(`SELECT id, task_id, tool, status, agent_state, auto FROM sessions WHERE task_id IS NOT NULL AND status != 'closed'`)
+    .all() as { id: string; task_id: string; tool: ToolId; status: string; agent_state: string | null; auto: number }[];
   const byTask = new Map<string, typeof links>();
   for (const l of links) byTask.set(l.task_id, [...(byTask.get(l.task_id) ?? []), l]);
-  return rows.map((t) => ({ ...t, sessions: byTask.get(t.id) ?? [] }));
+  return rows.map((t) => ({ ...t, plan: t.plan ? (JSON.parse(t.plan) as Plan) : null, sessions: byTask.get(t.id) ?? [] }));
 }
 
 export function getTask(id: string): Task | null {
   return db.query("SELECT * FROM tasks WHERE id = ?").get(id) as Task | null;
 }
 
-export function createTask(o: { title?: unknown; body?: unknown; projectId?: unknown; status?: unknown; priority?: unknown }) {
+const clampPriority = (p: unknown) => Math.max(0, Math.min(3, Math.floor(Number(p) || 0)));
+
+export function createTask(o: {
+  title?: unknown;
+  body?: unknown;
+  projectId?: unknown;
+  status?: unknown;
+  priority?: unknown;
+  queued?: unknown;
+  source?: TaskSource;
+}) {
   const title = String(o.title ?? "").trim();
   if (!title) throw new Error("a task needs a title");
   const projectId = o.projectId ? String(o.projectId) : null;
   if (projectId && !getProject(projectId)) throw new Error("no such project");
   const status = isStatus(o.status) ? o.status : "todo";
+  const source = o.source ?? "you";
+  // Projects on autopilot queue every task you add; agents' own follow-ups wait for you.
+  const queued = o.queued !== undefined ? !!o.queued : source === "you" && status === "todo" && !!projectAutopilot(projectId)?.on;
   const id = newId("t");
   const t = now();
+  // Queued work runs oldest-first, so it goes to the bottom; everything else to the top.
+  const position = queued ? bottomPosition(status) : topPosition(status);
   db.query(
-    `INSERT INTO tasks (id, project_id, title, body, status, priority, position, created_at, updated_at, done_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(id, projectId, title.slice(0, 300), String(o.body ?? ""), status, clampPriority(o.priority), topPosition(status), t, t, status === "done" ? t : null);
+    `INSERT INTO tasks (id, project_id, title, body, status, priority, position, created_at, updated_at, done_at, queued, source)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(id, projectId, title.slice(0, 300), String(o.body ?? ""), status, clampPriority(o.priority), position, t, t, status === "done" ? t : null, queued ? 1 : 0, source);
   emit("tasks");
   return getTask(id)!;
 }
 
-const clampPriority = (p: unknown) => Math.max(0, Math.min(3, Math.floor(Number(p) || 0)));
-
 export function updateTask(
   id: string,
-  patch: { title?: unknown; body?: unknown; status?: unknown; projectId?: unknown; priority?: unknown; position?: unknown },
+  patch: { title?: unknown; body?: unknown; status?: unknown; projectId?: unknown; priority?: unknown; position?: unknown; queued?: unknown },
 ) {
   const cur = getTask(id);
   if (!cur) throw new Error("no such task");
@@ -92,13 +128,18 @@ export function updateTask(
       next.status = patch.status;
       next.done_at = patch.status === "done" ? now() : null;
       if (patch.position === undefined) next.position = topPosition(patch.status);
+      if (patch.status !== "todo") next.queued = 0;
     }
+  }
+  if (patch.queued !== undefined) {
+    next.queued = patch.queued ? 1 : 0;
+    if (next.queued && !next.project_id) throw new Error("pick a project first — the agent works inside it");
   }
   if (patch.position !== undefined && Number.isFinite(Number(patch.position))) next.position = Number(patch.position);
   next.updated_at = now();
   db.query(
-    `UPDATE tasks SET project_id = ?, title = ?, body = ?, status = ?, priority = ?, position = ?, updated_at = ?, done_at = ? WHERE id = ?`,
-  ).run(next.project_id, next.title, next.body, next.status, next.priority, next.position, next.updated_at, next.done_at, id);
+    `UPDATE tasks SET project_id = ?, title = ?, body = ?, status = ?, priority = ?, position = ?, updated_at = ?, done_at = ?, queued = ? WHERE id = ?`,
+  ).run(next.project_id, next.title, next.body, next.status, next.priority, next.position, next.updated_at, next.done_at, next.queued, id);
   emit("tasks");
   return next;
 }
@@ -108,23 +149,59 @@ export function deleteTask(id: string) {
   emit("tasks");
 }
 
-/** Start an agent on a task: the task text becomes the first prompt, and the task moves to "doing". */
-export async function runTask(id: string, o: { tool: ToolId; yolo?: boolean; accountId?: string | null; extra?: string }) {
+/** The first message an agent gets for a backlog task: the task, plus how to work it. */
+function taskPrompt(task: Task): string {
+  return [
+    `Backlog task: ${task.title}`,
+    task.body.trim(),
+    [
+      "How to work this task:",
+      "- First check it is clear. If it is ambiguous or needs a decision from me, ask me before changing anything, and wait for my answer.",
+      "- Keep to this task. Record unrelated problems you notice with the ansai add_task tool instead of fixing them now.",
+      "- When it is done, call the ansai finish_task tool with a 2-3 sentence summary, then tell me how to verify it.",
+    ].join("\n"),
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+/** Start an agent on a task: the task becomes its first prompt, and the task moves to "doing". */
+export async function runTask(id: string, o: { tool: ToolId; yolo?: boolean; accountId?: string | null; auto?: boolean }) {
   const task = getTask(id);
   if (!task) throw new Error("no such task");
   if (!task.project_id) throw new Error("pick a project for this task first");
   if (o.tool === "shell") throw new Error("pick an agent, not a shell");
-  const prompt = [task.title, task.body.trim(), o.extra?.trim()].filter(Boolean).join("\n\n");
   const session = await createSession({
     projectId: task.project_id,
     tool: o.tool,
-    prompt,
+    prompt: taskPrompt(task),
     title: task.title,
     yolo: o.yolo,
     accountId: o.accountId ?? null,
     taskId: task.id,
+    auto: o.auto,
   });
+  db.query("UPDATE tasks SET queued = 0, summary = NULL, plan = NULL WHERE id = ?").run(id);
   if (task.status === "todo" || task.status === "done") updateTask(id, { status: "doing" });
   else emit("tasks");
   return session;
+}
+
+/** Called by an agent (MCP finish_task): record its summary and hand the task back for review. */
+export function finishTask(id: string, summary: string) {
+  const task = getTask(id);
+  if (!task) throw new Error("no such task");
+  db.query("UPDATE tasks SET summary = ?, updated_at = ? WHERE id = ?").run(summary.slice(0, 4000), now(), id);
+  if (task.status !== "done") updateTask(id, { status: "review" });
+  else emit("tasks");
+}
+
+/** The agent's own plan (Claude TodoWrite / Codex update_plan) mirrored onto its task. */
+export function setPlan(taskId: string, items: { content: string; status: string }[]) {
+  const done = items.filter((i) => i.status === "completed").length;
+  const current = items.find((i) => i.status === "in_progress")?.content ?? null;
+  const plan: Plan = { done, total: items.length, current, items: items.slice(0, 40) };
+  const json = JSON.stringify(plan);
+  const r = db.query("UPDATE tasks SET plan = ? WHERE id = ? AND COALESCE(plan, '') != ?").run(json, taskId, json);
+  if (r.changes) emit("tasks");
 }

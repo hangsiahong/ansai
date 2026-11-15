@@ -121,6 +121,15 @@ const migrations: string[] = [
   `
   ALTER TABLE sessions ADD COLUMN transcript TEXT;
   `,
+  // v7: agents work the backlog — queue, plan progress, summaries, autopilot per project.
+  `
+  ALTER TABLE tasks ADD COLUMN queued INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE tasks ADD COLUMN plan TEXT;
+  ALTER TABLE tasks ADD COLUMN summary TEXT;
+  ALTER TABLE tasks ADD COLUMN source TEXT NOT NULL DEFAULT 'you';
+  ALTER TABLE projects ADD COLUMN autopilot TEXT;
+  ALTER TABLE sessions ADD COLUMN auto INTEGER NOT NULL DEFAULT 0;
+  `,
 ];
 
 export function getSetting<T>(key: string, fallback: T): T {

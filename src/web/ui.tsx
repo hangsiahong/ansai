@@ -196,6 +196,24 @@ export function ToolBadge({ tool, size = 24 }: { tool: ToolId; size?: number }) 
   );
 }
 
+/** iOS Files-style folder: light-blue body over a darker back tab. Pinned gets a star badge. */
+export function FolderIcon({ size = 30, pinned = false }: { size?: number; pinned?: boolean }) {
+  return (
+    <span class="folder-icon" style={{ width: `${size}px`, height: `${size}px` }} aria-hidden="true">
+      <svg viewBox="0 0 32 32" width={size} height={size}>
+        <path d="M2.5 8.2A2.7 2.7 0 0 1 5.2 5.5h6.6c.8 0 1.6.4 2.1 1l1.2 1.5c.4.5 1 .8 1.6.8h10.1a2.7 2.7 0 0 1 2.7 2.7v13.8a2.7 2.7 0 0 1-2.7 2.7H5.2a2.7 2.7 0 0 1-2.7-2.7z" fill="#2f9bf0" />
+        <path d="M2.5 13.4a2.4 2.4 0 0 1 2.4-2.4h22.2a2.4 2.4 0 0 1 2.4 2.4v11.1a2.7 2.7 0 0 1-2.7 2.7H5.2a2.7 2.7 0 0 1-2.7-2.7z" fill="#5fbefc" />
+        <path d="M2.5 13.4a2.4 2.4 0 0 1 2.4-2.4h22.2a2.4 2.4 0 0 1 2.4 2.4v.9H2.5z" fill="#fff" opacity=".28" />
+      </svg>
+      {pinned && (
+        <span class="folder-pin">
+          <Icon name="star" size={Math.max(8, Math.round(size * 0.3))} stroke={3} />
+        </span>
+      )}
+    </span>
+  );
+}
+
 export function StatusPill({ s, compact: small }: { s: Session; compact?: boolean }) {
   const st = sessionState(s);
   return (

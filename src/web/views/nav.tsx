@@ -1,7 +1,7 @@
 import { useMemo } from "preact/hooks";
 import type { Session } from "../api";
 import { openPalette, openSheet, useStore } from "../store";
-import { Icon, Link, StatusPill, ToolBadge, sessionOrder, useTick } from "../ui";
+import { FolderIcon, Icon, Link, StatusPill, ToolBadge, sessionOrder, useTick } from "../ui";
 
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
 
@@ -83,7 +83,7 @@ export function Sidebar({ route }: { route: string }) {
             <div class="side-title">Projects</div>
             {[...shortcut.pinned, ...shortcut.recent].map((p) => (
               <Link href={`/p/${p.id}`} class={`side-row ${p.id === activeProject ? "active" : ""}`}>
-                <Icon name={p.pinned ? "star" : "folder"} size={15} />
+                <FolderIcon size={18} pinned={!!p.pinned} />
                 <span class="side-label">{p.name}</span>
               </Link>
             ))}

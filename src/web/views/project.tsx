@@ -1,9 +1,61 @@
 import { useEffect, useState } from "preact/hooks";
-import { api, type Project } from "../api";
+import { api, type Autopilot, type Project, type ToolId } from "../api";
 import { confirmDialog, openSheet, refreshProjects, toast, toastError, useStore } from "../store";
-import { Empty, Icon, goBack, nav, shortPath, useTick } from "../ui";
+import { AGENTS, Empty, FolderIcon, Icon, TOOL_LABEL, ToolBadge, goBack, nav, shortPath, useTick } from "../ui";
+import { AccountPicker } from "../accounts";
 import { Launchers, SessionCell } from "./now";
 import { QuickAdd, TaskList } from "./tasks";
+
+function AutopilotCard({ project, openTodo }: { project: Project; openTodo: string[] }) {
+  const ap: Autopilot = project.autopilot ?? { on: false, tool: "claude", accountId: null, yolo: false };
+  const set = (patch: Partial<Autopilot>) => api.setAutopilot(project.id, patch).catch(toastError);
+  const queueAll = async () => {
+    try {
+      await Promise.all(openTodo.map((tid) => api.updateTask(tid, { queued: true })));
+      toast(`Queued ${openTodo.length} task${openTodo.length === 1 ? "" : "s"}`);
+    } catch (e) {
+      toastError(e);
+    }
+  };
+  return (
+    <section class="sec">
+      <h2 class="sec-title">Autopilot</h2>
+      <div class="panel autopilot">
+        <label class="switch-row">
+          <span>
+            <b>Agents pick up new tasks</b>
+            <em>One at a time here. They ask before guessing.</em>
+          </span>
+          <input type="checkbox" class="switch" checked={ap.on} onChange={(e) => set({ on: (e.target as HTMLInputElement).checked })} />
+        </label>
+        {ap.on && (
+          <div class="ap-body">
+            <div class="ap-agents" role="radiogroup" aria-label="Agent">
+              {AGENTS.map((t: ToolId) => (
+                <button role="radio" aria-checked={ap.tool === t} aria-label={TOOL_LABEL[t]} title={TOOL_LABEL[t]} class={`ap-agent ${ap.tool === t ? "on" : ""}`} onClick={() => set({ tool: t, accountId: null })}>
+                  <ToolBadge tool={t} size={44} />
+                </button>
+              ))}
+            </div>
+            <AccountPicker tool={ap.tool} value={ap.accountId} onChange={(v) => set({ accountId: v })} />
+            <label class="switch-row inner">
+              <span>
+                <b>Auto-approve</b>
+                <em>Off: approvals come to your phone</em>
+              </span>
+              <input type="checkbox" class="switch" checked={ap.yolo} onChange={(e) => set({ yolo: (e.target as HTMLInputElement).checked })} />
+            </label>
+            {openTodo.length > 0 && (
+              <button class="btn sm" onClick={queueAll}>
+                Queue the {openTodo.length} waiting task{openTodo.length === 1 ? "" : "s"}
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
 
 export function ProjectPane({ id }: { id: string }) {
   useTick();
@@ -40,6 +92,7 @@ export function ProjectPane({ id }: { id: string }) {
         <button class="icon-btn" onClick={() => goBack("/projects")} aria-label="Back">
           <Icon name="back" />
         </button>
+        <FolderIcon size={40} pinned={!!project.pinned} />
         <div class="topbar-title">
           <h1>{project.name}</h1>
           <div class="sub mono">{shortPath(project.path)}</div>
@@ -59,11 +112,12 @@ export function ProjectPane({ id }: { id: string }) {
 
         <div class="split">
           <section class="sec">
+            <AutopilotCard project={project} openTodo={tasks.filter((t) => t.status === "todo" && !t.queued).map((t) => t.id)} />
             <div class="sec-head">
               <h2 class="sec-title">Backlog</h2>
               {tasks.filter((t) => t.status !== "done").length > 0 && <span class="sec-count">{tasks.filter((t) => t.status !== "done").length} open</span>}
             </div>
-            <QuickAdd projectId={id} placeholder={`Add a task to ${project.name}`} />
+            <QuickAdd projectId={id} placeholder={`Add a task to ${project.name}`} autopilot={!!project.autopilot?.on} />
             <TaskList tasks={tasks} emptyText="No open tasks. Add one, then start an agent on it." />
           </section>
           <section class={`sec ${mine.length ? "first-narrow" : ""}`}>

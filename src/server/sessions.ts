@@ -14,6 +14,8 @@ set -g default-terminal "tmux-256color"
 set -as terminal-features ",xterm-256color:RGB"
 set -sg escape-time 0
 set -g history-limit 50000
+# Keep the server alive with no sessions; ansai starts it once in its own systemd scope.
+set -s exit-empty off
 set -g status off
 set -g mouse on
 set -g window-size latest
@@ -34,6 +36,33 @@ export function writeTmuxConf() {
 
 export function tmuxBase(): string[] {
   return ["tmux", "-u", "-L", config.tmuxSocket, "-f", config.tmuxConf];
+}
+
+let serverChecked = false;
+
+/**
+ * Agents must outlive ansai. Under systemd, everything in ansai.service's cgroup is
+ * signalled when the service stops (even with KillMode=process), so the tmux server is
+ * started in its own transient scope instead. Without systemd, a plain start is fine.
+ */
+async function ensureServer() {
+  if (serverChecked) return;
+  const probe = await tmux(["list-sessions"]);
+  if (probe.code === 0 || !/no server running|error connecting|No such file/i.test(probe.err)) {
+    serverChecked = true;
+    return;
+  }
+  const scoped = Bun.which("systemd-run") && process.env.XDG_RUNTIME_DIR;
+  const cmd = scoped
+    ? ["systemd-run", "--user", "--scope", "--quiet", "--collect", `--unit=ansai-tmux-${Date.now()}`, ...tmuxBase(), "start-server"]
+    : [...tmuxBase(), "start-server"];
+  const p = Bun.spawn(cmd, { stdout: "ignore", stderr: "pipe", env: cleanEnv() });
+  const err = await new Response(p.stderr).text();
+  if ((await p.exited) !== 0 && scoped) {
+    console.error("[ansai] systemd-run failed, starting tmux directly:", err.trim());
+    await tmux(["start-server"]);
+  }
+  serverChecked = true;
 }
 
 async function tmux(args: string[], stdin?: string) {
@@ -66,6 +95,7 @@ export type SessionRow = {
   agent_state_at: number | null;
   agent_message: string | null;
   transcript: string | null;
+  auto: number;
   created_at: number;
   ended_at: number | null;
 };
@@ -118,6 +148,8 @@ export type CreateOpts = {
   taskId?: string | null;
   /** Internal: run this exact command instead of the tool's normal one (e.g. a login flow). */
   argv?: string[];
+  /** Internal: started by autopilot from the queue. */
+  auto?: boolean;
 };
 
 function sessionEnv(id: string, account: AccountRow | null): string[] {
@@ -135,18 +167,19 @@ export async function createSession(o: CreateOpts) {
   const account = o.tool === "shell" ? null : resolveAccount(o.tool, o.accountId);
   const id = newId("s");
   const tmuxName = `ansai-${id}`;
-  const argv = o.argv ?? withHooks(o.tool, tool.argv({ prompt: o.prompt?.trim() || undefined, yolo: o.yolo }));
+  const argv = o.argv ?? withHooks(o.tool, tool.argv({ prompt: o.prompt?.trim() || undefined, yolo: o.yolo }), id);
   const title =
     o.title?.trim() ||
     (o.prompt?.trim() ? o.prompt.trim().split("\n")[0]!.slice(0, 60) : `${tool.label}${project ? " · " + project.name : ""}`);
 
+  await ensureServer();
   const r = await tmux(["new-session", "-d", "-s", tmuxName, "-x", "160", "-y", "48", "-c", cwd, ...sessionEnv(id, account), "--", ...argv]);
   if (r.code !== 0) throw new Error(`tmux: ${r.err || "failed to start session"}`);
 
   db.query(
-    `INSERT INTO sessions (id, project_id, task_id, account_id, tool, title, cwd, argv, tmux_name, status, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?)`,
-  ).run(id, project?.id ?? null, o.taskId ?? null, account?.id ?? null, tool.id, title, cwd, JSON.stringify(argv), tmuxName, now());
+    `INSERT INTO sessions (id, project_id, task_id, account_id, tool, title, cwd, argv, tmux_name, status, created_at, auto)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?)`,
+  ).run(id, project?.id ?? null, o.taskId ?? null, account?.id ?? null, tool.id, title, cwd, JSON.stringify(argv), tmuxName, now(), o.auto ? 1 : 0);
   if (project) touchProject(project.id);
   await reconcile();
   refreshAccountsSoon();
@@ -160,13 +193,14 @@ export async function restartSession(id: string) {
   const argv = JSON.parse(s.argv) as string[];
   // A restarted agent shouldn't replay the original prompt (or a login flow).
   const tool = TOOLS[s.tool];
-  const base = s.tool === "shell" ? argv : withHooks(s.tool, tool.argv({ yolo: argv.some((a) => a.startsWith("--dangerously")) }));
+  const base = s.tool === "shell" ? argv : withHooks(s.tool, tool.argv({ yolo: argv.some((a) => a.startsWith("--dangerously")) }), s.id);
   const account = s.account_id ? getAccount(s.account_id) : null;
   const alive = (await tmux(["has-session", "-t", s.tmux_name])).code === 0;
   if (alive) {
     const r = await tmux(["respawn-pane", "-k", "-t", s.tmux_name, "-c", s.cwd, "--", ...base]);
     if (r.code !== 0) throw new Error(`tmux: ${r.err}`);
   } else {
+    await ensureServer();
     const r = await tmux(["new-session", "-d", "-s", s.tmux_name, "-x", "160", "-y", "48", "-c", s.cwd, ...sessionEnv(s.id, account), "--", ...base]);
     if (r.code !== 0) throw new Error(`tmux: ${r.err}`);
   }
@@ -279,6 +313,7 @@ export async function reconcile(): Promise<boolean> {
     "#{session_name}\t#{pane_dead}\t#{pane_dead_status}\t#{pane_current_command}\t#{window_activity}\t#{session_attached}",
   ]);
   const seen = new Map<string, { dead: boolean; code: number | null }>();
+  if (r.code !== 0 && /no server running|error connecting/i.test(r.err)) serverChecked = false; // start it scoped again next time
   if (r.code === 0) {
     for (const line of r.out.split("\n")) {
       if (!line.startsWith("ansai-")) continue;

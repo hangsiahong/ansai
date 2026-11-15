@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import type { ToolId } from "./api";
 import { getState, openPalette, openSheet, setTheme, useStore } from "./store";
-import { Icon, StatusPill, TOOL_LABEL, ToolBadge, nav, shortPath } from "./ui";
+import { FolderIcon, Icon, StatusPill, TOOL_LABEL, ToolBadge, nav, shortPath } from "./ui";
 
-type Item = { id: string; group: string; label: string; hint?: string; icon?: string; tool?: ToolId; run: () => void; extra?: preact.ComponentChildren };
+type Item = { id: string; group: string; label: string; hint?: string; icon?: string; tool?: ToolId; folder?: boolean; run: () => void; extra?: preact.ComponentChildren };
 
 /** Subsequence match; consecutive and word-start hits score higher. */
 function score(q: string, text: string): number {
@@ -70,7 +70,7 @@ function PaletteInner() {
     all.push(...actions);
     for (const s of sessions)
       all.push({ id: `s-${s.id}`, group: "Sessions", label: s.title, hint: s.project_name ?? "~", tool: s.tool, run: go(`/s/${s.id}`), extra: <StatusPill s={s} compact /> });
-    for (const p of projects) all.push({ id: `p-${p.id}`, group: "Projects", label: p.name, hint: shortPath(p.path), icon: p.pinned ? "star" : "folder", run: go(`/p/${p.id}`) });
+    for (const p of projects) all.push({ id: `p-${p.id}`, group: "Projects", label: p.name, hint: shortPath(p.path), icon: p.pinned ? "star" : "folder", folder: true, run: go(`/p/${p.id}`) });
     for (const t of tasks.filter((t) => t.status !== "done"))
       all.push({ id: `t-${t.id}`, group: "Tasks", label: t.title, hint: t.project_name ?? "Inbox", icon: "list", run: () => (close(), openSheet({ kind: "task", taskId: t.id })) });
 
@@ -124,7 +124,15 @@ function PaletteInner() {
               <>
                 {head && <div class="palette-group">{head}</div>}
                 <button data-i={i} role="option" aria-selected={i === sel} class={`palette-item ${i === sel ? "sel" : ""}`} onMouseMove={() => setSel(i)} onClick={() => it.run()}>
-                  {it.tool ? <ToolBadge tool={it.tool} size={22} /> : <span class="pi-icon"><Icon name={it.icon ?? "dot"} size={16} /></span>}
+                  {it.tool ? (
+                    <ToolBadge tool={it.tool} size={24} />
+                  ) : it.folder ? (
+                    <FolderIcon size={24} pinned={it.icon === "star"} />
+                  ) : (
+                    <span class="pi-icon">
+                      <Icon name={it.icon ?? "dot"} size={16} />
+                    </span>
+                  )}
                   <span class="pi-main">
                     <span class="pi-label">{it.label}</span>
                     {it.hint && <span class="pi-hint">{it.hint}</span>}

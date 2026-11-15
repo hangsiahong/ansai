@@ -31,7 +31,9 @@ import { onChange, emit, type Topic } from "./events";
 import { handleHook, writeHookFiles } from "./hooks";
 import { getPrefs, publicKey, subscribe, testPush, unsubscribe } from "./push";
 import { setViewer } from "./viewers";
-import { subscribeChat, unsubscribeChat } from "./transcripts";
+import { startBackgroundTails, subscribeChat, unsubscribeChat } from "./transcripts";
+import { mcpHttp } from "./mcp";
+import { getSettings, setProjectAutopilot, startAutopilot, updateSettings } from "./autopilot";
 import { createTask, deleteTask, listTasks, runTask, updateTask } from "./tasks";
 import {
   createAccount,
@@ -197,6 +199,18 @@ const server = Bun.serve<WSData>({
       }),
     },
 
+    "/mcp": guard((req) => mcpHttp(req)),
+    "/api/settings": {
+      GET: guard(() => json(getSettings())),
+      PUT: guard(async (req) => json(updateSettings(await body(req)))),
+    },
+    "/api/projects/:id/autopilot": {
+      PUT: guard(async (req) => {
+        const ap = setProjectAutopilot(req.params.id!, await body(req));
+        emit("tasks");
+        return json(ap);
+      }),
+    },
     "/api/hooks/:tool/:event": {
       POST: guard(async (req) => {
         const sid = new URL(req.url).searchParams.get("s");
@@ -436,6 +450,8 @@ const server = Bun.serve<WSData>({
 onChange((t) => server.publish("events", snapshot(t)));
 startReconcileLoop();
 startUsageLoop();
+startBackgroundTails();
+startAutopilot();
 
 console.log(`[ansai] listening on http://${server.hostname}:${server.port}`);
 tailscaleStatus().then((t) => {

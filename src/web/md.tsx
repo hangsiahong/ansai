@@ -14,8 +14,14 @@ const INLINE =
 export function inline(text: string): ComponentChildren[] {
   const out: ComponentChildren[] = [];
   let last = 0;
-  INLINE.lastIndex = 0;
-  for (let m: RegExpExecArray | null; (m = INLINE.exec(text)); ) {
+  // A fresh regex per call: inline() recurses (bold inside a link, …) and a shared
+  // global regex would have its lastIndex reset underneath the outer loop.
+  const re = new RegExp(INLINE.source, "g");
+  for (let m: RegExpExecArray | null; (m = re.exec(text)); ) {
+    if (m[0].length === 0) {
+      re.lastIndex++;
+      continue;
+    }
     if (m.index > last) out.push(text.slice(last, m.index));
     if (m[1]) out.push(<code>{m[2]}</code>);
     else if (m[3] || m[4]) out.push(<strong>{inline(m[3] ?? m[4]!)}</strong>);

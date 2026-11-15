@@ -94,7 +94,7 @@ export function BacklogPane() {
         </div>
       ) : (
         <div class="scroll narrow">
-          <QuickAdd projectId={addTo} placeholder={`Add to ${addLabel}…`} />
+          <QuickAdd projectId={addTo} placeholder={`Add to ${addLabel}…`} autopilot={!!projects.find((x) => x.id === addTo)?.autopilot?.on} />
           <TaskList tasks={shown} showProject={filter === "all"} emptyText="No open tasks here." />
         </div>
       )}

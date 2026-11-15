@@ -6,6 +6,8 @@ import { db } from "./db";
 import { emit } from "./events";
 import { getAccount } from "./accounts";
 import { getSession, type SessionRow } from "./sessions";
+import { createTask, setPlan } from "./tasks";
+import { getSettings } from "./autopilot";
 
 /**
  * Chat view = the agent's own conversation log, rendered natively.
@@ -55,17 +57,23 @@ async function firstLine(path: string): Promise<string> {
 /** Find (and remember) which log file belongs to a session. */
 export async function resolveTranscript(s: SessionRow): Promise<string | null> {
   if (s.transcript && existsSync(s.transcript)) return s.transcript;
+  // Claude's hook already named the log; it just isn't written until the first message. Wait for it
+  // rather than guessing — a guess can pick another Claude conversation in the same folder.
+  if (s.tool === "claude" && s.transcript) return null;
   let found: string | null = null;
 
   if (s.tool === "claude") {
-    // Hooks normally tell us; otherwise: newest log in this folder's project dir since the session started.
+    // No hook data (older sessions): a log *created* after this session started, in this folder.
     const dir = join(claudeDir(s), "projects", s.cwd.replace(/[^a-zA-Z0-9]/g, "-"));
     if (existsSync(dir)) {
       const files = readdirSync(dir)
         .filter((f) => f.endsWith(".jsonl"))
-        .map((f) => ({ path: join(dir, f), mtime: statSync(join(dir, f)).mtimeMs }))
-        .filter((f) => f.mtime >= s.created_at - 2000 && !claimed(f.path, s.id))
-        .sort((a, b) => b.mtime - a.mtime);
+        .map((f) => {
+          const st = statSync(join(dir, f));
+          return { path: join(dir, f), born: st.birthtimeMs || st.ctimeMs };
+        })
+        .filter((f) => f.born >= s.created_at - 2000 && !claimed(f.path, s.id))
+        .sort((a, b) => a.born - b.born);
       found = files[0]?.path ?? null;
     }
   } else if (s.tool === "codex") {
@@ -233,6 +241,12 @@ function codexOutput(raw: unknown): string {
 }
 
 function codexTool(name: string, raw: string): { title: string; keep?: Record<string, unknown> } {
+  if (name === "update_plan") {
+    try {
+      const plan = (JSON.parse(raw)?.plan ?? []) as { step?: string; status?: string }[];
+      return { title: "Plan", keep: { todos: plan.slice(0, 40).map((p) => ({ content: one(String(p.step ?? ""), 160), status: String(p.status ?? "pending") })) } };
+    } catch {}
+  }
   if (name === "apply_patch" || raw.includes("*** Begin Patch")) {
     const files = [...raw.matchAll(/\*\*\* (?:Update|Add|Delete) File: (.+)/g)].map((m) => basename(m[1]!.trim()));
     return { title: files.length ? `Edit ${files.join(", ")}` : "Apply patch", keep: { patch: clip(raw, 8000) } };
@@ -400,6 +414,8 @@ class ChatTail {
       if (!firstLoad && changed.length) this.broadcast({ t: "items", items: changed });
       if (firstLoad) for (const ws of this.subs) this.sendInit(ws);
       this.autoTitle(s);
+      this.recordAsTask(s);
+      this.mirrorPlan(s, changed);
     } catch (e) {
       console.error("[ansai] chat tail:", e);
     } finally {
@@ -409,6 +425,33 @@ class ChatTail {
 
   sendInit(ws: Sub) {
     this.send(ws, { t: "init", items: this.items.slice(-FIRST_SEND), more: this.truncated || this.items.length > FIRST_SEND, found: !!this.path });
+  }
+
+  /** The latest plan (TodoWrite / update_plan) shows up on the session's backlog task. */
+  private mirrorPlan(s: SessionRow, changed: ChatItem[]) {
+    const taskId = getSession(s.id)?.task_id;
+    if (!taskId) return;
+    const plans = changed.filter((x): x is ToolItem => x.k === "tool" && Array.isArray((x.input as any)?.todos));
+    const last = plans[plans.length - 1];
+    if (last) setPlan(taskId, (last.input as any).todos);
+  }
+
+  /** Sessions you start by hand are recorded in the backlog (Settings → Backlog). */
+  private recordAsTask(s: SessionRow) {
+    const fresh = getSession(s.id);
+    if (!fresh || fresh.task_id || !this.st.firstUser || fresh.title.startsWith("Sign in")) return;
+    if (!getSettings().trackSessions) return;
+    const first = this.st.firstUser.trim();
+    const task = createTask({
+      title: one(first.split("\n")[0]!, 100),
+      body: first.includes("\n") || first.length > 100 ? clip(first, 4000) : "",
+      projectId: fresh.project_id,
+      status: "doing",
+      source: "session",
+      queued: false,
+    });
+    db.query("UPDATE sessions SET task_id = ? WHERE id = ? AND task_id IS NULL").run(task.id, s.id);
+    emit("sessions");
   }
 
   /** Sessions started without a name get Claude's own title, or the first thing you asked. */
@@ -432,7 +475,8 @@ class ChatTail {
       if (this.subs.size) return;
       if (this.timer) clearInterval(this.timer);
       this.timer = null;
-      tails.delete(this.sessionId);
+      // Running agents keep a (slow) background tail for plans and task tracking.
+      if (getSession(this.sessionId)?.status !== "running") tails.delete(this.sessionId);
     }, 60_000);
   }
 }
@@ -449,6 +493,20 @@ export async function subscribeChat(sessionId: string, ws: Sub) {
     await tail.poll();
     if (tail.offset === 0) tail.send(ws, { t: "init", items: [], more: false, found: !!tail.path }); // nothing written yet
   }
+}
+
+/** Follow every running Claude/Codex session in the background (every 3 s) so tasks show live plans. */
+export function startBackgroundTails(ms = 3000) {
+  setInterval(() => {
+    const running = db.query("SELECT id FROM sessions WHERE status = 'running' AND tool IN ('claude', 'codex')").all() as { id: string }[];
+    const ids = new Set(running.map((r) => r.id));
+    for (const { id } of running) {
+      let tail = tails.get(id);
+      if (!tail) tails.set(id, (tail = new ChatTail(id)));
+      if (!tail.subs.size) tail.poll();
+    }
+    for (const [id, tail] of tails) if (!ids.has(id) && !tail.subs.size && !tail.timer) tails.delete(id);
+  }, ms);
 }
 
 export function unsubscribeChat(sessionId: string, ws: Sub) {

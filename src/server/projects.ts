@@ -11,6 +11,7 @@ export type Project = {
   hidden: number;
   created_at: number;
   last_used_at: number | null;
+  autopilot: string | null;
 };
 
 const SKIP = new Set(["node_modules", "target", "dist", "build", "vendor", ".git", "venv", "__pycache__"]);
@@ -83,7 +84,9 @@ export function listProjects(includeHidden = false): (Project & { exists: boolea
        ORDER BY pinned DESC, COALESCE(last_used_at, 0) DESC, name COLLATE NOCASE`,
     )
     .all() as Project[];
-  return rows.map((r) => ({ ...r, exists: existsSync(r.path) })).filter((r) => r.exists || r.pinned);
+  return rows
+    .map((r) => ({ ...r, autopilot: r.autopilot ? JSON.parse(r.autopilot) : null, exists: existsSync(r.path) }))
+    .filter((r) => r.exists || r.pinned);
 }
 
 export function getProject(id: string): Project | null {

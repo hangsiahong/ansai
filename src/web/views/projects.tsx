@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { api, type Project } from "../api";
 import { openSheet, refreshProjects, toast, toastError, useStore } from "../store";
-import { Icon, Link, goBack, shortPath, useIsPhone } from "../ui";
+import { FolderIcon, Icon, Link, goBack, shortPath, useIsPhone } from "../ui";
 
 export function ProjectsPane() {
   const projects = useStore((s) => s.projects);
@@ -62,9 +62,7 @@ export function ProjectsPane() {
 
   const row = (p: Project) => (
     <Link href={`/p/${p.id}`} class="prow">
-      <span class={`prow-icon ${p.pinned ? "pinned" : ""}`}>
-        <Icon name={p.pinned ? "star" : "folder"} size={16} />
-      </span>
+      <FolderIcon size={32} pinned={!!p.pinned} />
       <span class="prow-main">
         <span class="prow-name">{p.name}</span>
         <span class="prow-path">{dupes.get(p.name)! > 1 || n ? shortPath(p.path) : shortPath(p.path).split("/").slice(-2, -1)[0]}</span>
@@ -129,8 +127,8 @@ export function ProjectsPane() {
             {hidden.length ? (
               hidden.map((p) => (
                 <div class="prow">
-                  <span class="prow-icon">
-                    <Icon name="eyeoff" size={16} />
+                  <span class="folder-dim">
+                    <FolderIcon size={32} />
                   </span>
                   <span class="prow-main">
                     <span class="prow-name">{p.name}</span>

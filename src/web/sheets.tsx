@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "preact/hooks";
-import { api, STATUS_LABEL, TASK_STATUSES, type DeviceList, type ToolId } from "./api";
+import { api, STATUS_LABEL, TASK_STATUSES, type DeviceList, type Settings, type ToolId } from "./api";
 import { confirmDialog, getState, openSheet, patchTaskLocal, refreshProjects, setTheme, toast, toastError, useStore, type ThemePref } from "./store";
 import { AGENTS, Icon, Sheet, StatusPill, TOOL_LABEL, TOOL_SHORT, ToolBadge, ago, nav, shortPath } from "./ui";
 import { AccountPicker } from "./accounts";
@@ -51,9 +51,17 @@ function AgentPicker(p: { value: ToolId; onChange: (t: ToolId) => void; withShel
       {list.map((t) => {
         const installed = tools.find((x) => x.id === t)?.installed !== false;
         return (
-          <button type="button" role="radio" aria-checked={p.value === t} class={`agent-opt ${p.value === t ? "on" : ""}`} disabled={!installed} onClick={() => p.onChange(t)}>
-            <ToolBadge tool={t} size={26} />
-            <span>{TOOL_SHORT[t]}</span>
+          <button
+            type="button"
+            role="radio"
+            aria-checked={p.value === t}
+            aria-label={TOOL_LABEL[t]}
+            title={TOOL_LABEL[t]}
+            class={`agent-opt ${p.value === t ? "on" : ""}`}
+            disabled={!installed}
+            onClick={() => p.onChange(t)}
+          >
+            <ToolBadge tool={t} size={52} />
           </button>
         );
       })}
@@ -240,12 +248,13 @@ const PRIORITIES = ["None", "Low", "Medium", "High"];
 
 function TaskSheet(p: { taskId: string; onClose: () => void }) {
   const task = useStore((s) => s.tasks.find((t) => t.id === p.taskId));
+  const autopilot = useStore((s) => s.projects.find((x) => x.id === task?.project_id)?.autopilot ?? null);
   const sessions = useStore((s) => s.sessions.filter((x) => x.task_id === p.taskId));
   const [title, setTitle] = useState(task?.title ?? "");
   const [body, setBody] = useState(task?.body ?? "");
   const [yolo, setYolo] = useState(false);
   const [accountByTool, setAccountByTool] = useState<Record<string, string | null>>({});
-  const [agent, setAgent] = useState<ToolId>("claude");
+  const [agent, setAgent] = useState<ToolId>(() => getState().projects.find((x) => x.id === task?.project_id)?.autopilot?.tool ?? "claude");
   const [busy, setBusy] = useState(false);
   const dirty = useRef(false);
 
@@ -365,6 +374,33 @@ function TaskSheet(p: { taskId: string; onClose: () => void }) {
           </label>
         </div>
 
+        {task.summary && (
+          <div class="summary-card">
+            <div class="summary-head">
+              <Icon name="check" size={14} stroke={2.6} /> Agent's summary
+            </div>
+            <p>{task.summary}</p>
+          </div>
+        )}
+
+        {task.plan && task.plan.total > 0 && (
+          <div class="field">
+            <span>
+              Agent's plan · {task.plan.done}/{task.plan.total}
+            </span>
+            <div class="panel plan-panel">
+              <ul class="todos">
+                {task.plan.items.map((it) => (
+                  <li class={it.status}>
+                    <span class="todo-box">{it.status === "completed" ? <Icon name="check" size={12} stroke={3} /> : it.status === "in_progress" ? <i /> : null}</span>
+                    {it.content}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        )}
+
         <div class="runbox">
           <div class="runbox-head">
             <Icon name="play" size={14} /> Hand it to an agent
@@ -373,11 +409,25 @@ function TaskSheet(p: { taskId: string; onClose: () => void }) {
             <p class="muted small">Pick a project first — the agent works inside it.</p>
           ) : (
             <>
+              <label class="switch-row">
+                <span>
+                  <b>Queue for an agent</b>
+                  <em>Starts on its own when this project is free{autopilot?.on ? " (autopilot is on here)" : ""}</em>
+                </span>
+                <input
+                  type="checkbox"
+                  class="switch"
+                  checked={!!task.queued}
+                  disabled={task.status !== "todo"}
+                  onChange={(e) => save({ queued: (e.target as HTMLInputElement).checked })}
+                />
+              </label>
+              <div class="or-sep">or start it now</div>
               <AgentPicker value={agent} onChange={setAgent} />
               <AccountPicker tool={agent} value={accountByTool[agent] ?? null} onChange={(v) => setAccountByTool({ ...accountByTool, [agent]: v })} />
               <YoloSwitch value={yolo} onChange={setYolo} />
               <button class="btn primary lg" disabled={busy} onClick={run}>
-                {busy ? "Starting…" : `Run with ${TOOL_LABEL[agent]}`}
+                {busy ? "Starting…" : `Run now with ${TOOL_LABEL[agent]}`}
               </button>
             </>
           )}
@@ -476,6 +526,44 @@ function DevicesPanel() {
   );
 }
 
+function BacklogSettings() {
+  const [st, setSt] = useState<Settings | null>(null);
+  useEffect(() => {
+    api.settings().then(setSt).catch(toastError);
+  }, []);
+  if (!st) return null;
+  const save = (patch: Partial<Settings>) => {
+    setSt({ ...st, ...patch });
+    api.updateSettings(patch).then(setSt).catch(toastError);
+  };
+  return (
+    <div class="panel">
+      <label class="switch-row">
+        <span>
+          <b>Record agent sessions</b>
+          <em>Sessions you start by hand show up as tasks</em>
+        </span>
+        <input type="checkbox" class="switch" checked={st.trackSessions} onChange={(e) => save({ trackSessions: (e.target as HTMLInputElement).checked })} />
+      </label>
+      <div class="switch-row">
+        <span>
+          <b>Autopilot agents at once</b>
+          <em>Across all projects · one per project</em>
+        </span>
+        <div class="stepper">
+          <button onClick={() => save({ autopilotMax: Math.max(1, st.autopilotMax - 1) })} aria-label="Fewer">
+            −
+          </button>
+          <b>{st.autopilotMax}</b>
+          <button onClick={() => save({ autopilotMax: Math.min(6, st.autopilotMax + 1) })} aria-label="More">
+            +
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function SettingsSheet(p: { onClose: () => void }) {
   const theme = useStore((s) => s.theme);
   const me = useStore((s) => s.me);
@@ -496,6 +584,10 @@ function SettingsSheet(p: { onClose: () => void }) {
               </button>
             ))}
           </div>
+        </section>
+        <section>
+          <h3 class="set-title">Backlog</h3>
+          <BacklogSettings />
         </section>
         <section>
           <h3 class="set-title">Notifications</h3>

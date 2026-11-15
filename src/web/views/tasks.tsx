@@ -5,7 +5,7 @@ import { Icon, Link, ToolBadge } from "../ui";
 
 const byPos = (a: Task, b: Task) => a.position - b.position;
 
-export function QuickAdd(p: { projectId: string | null; placeholder?: string; status?: TaskStatus }) {
+export function QuickAdd(p: { projectId: string | null; placeholder?: string; status?: TaskStatus; autopilot?: boolean }) {
   const [title, setTitle] = useState("");
   const [busy, setBusy] = useState(false);
   const add = async () => {
@@ -32,7 +32,7 @@ export function QuickAdd(p: { projectId: string | null; placeholder?: string; st
       <Icon name="plus" size={17} />
       <input
         value={title}
-        placeholder={p.placeholder ?? "Add a task…"}
+        placeholder={p.autopilot ? "Add a task — an agent picks it up" : (p.placeholder ?? "Add a task…")}
         enterkeyhint="done"
         onInput={(e) => setTitle((e.target as HTMLInputElement).value)}
       />
@@ -74,15 +74,37 @@ function Prio({ p }: { p: number }) {
 
 function TaskMeta({ task, showProject }: { task: Task; showProject?: boolean }) {
   const live = task.sessions.filter((s) => s.status === "running");
+  const asking = live.find((s) => s.agent_state === "needs-input");
+  const plan = task.plan && task.plan.total > 0 && task.status !== "done" ? task.plan : null;
   return (
     <div class="tmeta">
-      {showProject && <span class="tproj">{task.project_name ?? "Inbox"}</span>}
-      {live.map((s) => (
-        <Link href={`/s/${s.id}`} class="tsess" title="Open the agent session">
-          <ToolBadge tool={s.tool} size={16} /> running
+      {asking ? (
+        <Link href={`/s/${asking.id}`} class="tchip attn" title="The agent is waiting for you">
+          <Icon name="bell" size={11} stroke={2.6} /> Needs you
         </Link>
-      ))}
-      {task.body.trim() && <span class="tnote" title="Has details">≡</span>}
+      ) : task.queued && task.status === "todo" ? (
+        <span class="tchip queued" title="Starts when an agent is free in this project">
+          <Icon name="history" size={11} stroke={2.6} /> Queued
+        </span>
+      ) : null}
+      {plan && (
+        <span class="tplan" title={plan.current ?? "Agent's plan"}>
+          <span class="tplan-bar">
+            <i style={{ width: `${Math.round((plan.done / plan.total) * 100)}%` }} />
+          </span>
+          {plan.done}/{plan.total}
+        </span>
+      )}
+      {showProject && <span class="tproj">{task.project_name ?? "Inbox"}</span>}
+      {!asking &&
+        live.map((s) => (
+          <Link href={`/s/${s.id}`} class="tsess" title="Open the agent session">
+            <ToolBadge tool={s.tool} size={16} /> {s.agent_state === "working" ? "working" : "open"}
+          </Link>
+        ))}
+      {task.source === "agent" && <span class="tsrc">from an agent</span>}
+      {task.summary && task.status === "review" && <span class="tsrc">summary ready</span>}
+      {task.body.trim() && !task.summary && <span class="tnote" title="Has details">≡</span>}
     </div>
   );
 }
