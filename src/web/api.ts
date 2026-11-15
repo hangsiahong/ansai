@@ -95,7 +95,8 @@ export type Account = {
   usage: null | {
     limits: UsageLimit[];
     limits_at: number | null;
-    tokens: { five_hour: number; today: number; week: number; daily: number[] };
+    /** Fresh tokens (input + cache writes + output); cache reads counted separately. */
+    tokens: { five_hour: number; today: number; week: number; daily: number[]; cache_read_week: number; total_week: number };
     note?: string | null;
   };
 };

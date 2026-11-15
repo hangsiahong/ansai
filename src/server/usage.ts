@@ -18,7 +18,8 @@ const setProgress = db.query(
   "INSERT INTO usage_files (path, account_id, offset) VALUES (?, ?, ?) ON CONFLICT(path) DO UPDATE SET offset = excluded.offset, account_id = excluded.account_id",
 );
 const insertEvent = db.query(
-  "INSERT OR IGNORE INTO usage_events (account_id, key, ts, tokens, output, model) VALUES (?, ?, ?, ?, ?, ?)",
+  `INSERT OR IGNORE INTO usage_events (account_id, key, ts, tokens, output, model, input, cache_write, cache_read)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 );
 const upsertLimits = db.query(
   "INSERT INTO usage_limits (account_id, data, at) VALUES (?, ?, ?) ON CONFLICT(account_id) DO UPDATE SET data = excluded.data, at = excluded.at WHERE excluded.at >= usage_limits.at",
@@ -104,9 +105,11 @@ export async function scanClaude(accountId: string, configDir: string) {
     const ts = Date.parse(j.timestamp);
     if (!Number.isFinite(ts)) return;
     const out = u.output_tokens ?? 0;
-    const total = (u.input_tokens ?? 0) + out + (u.cache_creation_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0);
+    const input = u.input_tokens ?? 0;
+    const write = u.cache_creation_input_tokens ?? 0;
+    const read = u.cache_read_input_tokens ?? 0;
     // Streaming writes the same API message more than once; message id + request id is unique.
-    insertEvent.run(accountId, `${j.message?.id}:${j.requestId}`, ts, total, out, j.message?.model ?? null);
+    insertEvent.run(accountId, `${j.message?.id}:${j.requestId}`, ts, input + out + write + read, out, j.message?.model ?? null, input, write, read);
   });
 }
 
@@ -118,7 +121,14 @@ export async function scanCodex(accountId: string, codexHome: string) {
     const ts = Date.parse(j.timestamp);
     if (!Number.isFinite(ts)) return;
     const last = p.info?.last_token_usage;
-    if (last) insertEvent.run(accountId, key, ts, last.total_tokens ?? 0, (last.output_tokens ?? 0) + (last.reasoning_output_tokens ?? 0), null);
+    if (last) {
+      // OpenAI-style usage: input_tokens includes cached_input_tokens, and output_tokens already
+      // includes reasoning_output_tokens (adding them again double-counted).
+      const cached = last.cached_input_tokens ?? 0;
+      const input = Math.max(0, (last.input_tokens ?? 0) - cached);
+      const out = last.output_tokens ?? 0;
+      insertEvent.run(accountId, key, ts, last.total_tokens ?? input + cached + out, out, null, input, 0, cached);
+    }
     if (p.rate_limits) upsertLimits.run(accountId, JSON.stringify(p.rate_limits), ts);
   }, { includeNewest: true });
 }
@@ -127,7 +137,14 @@ export function prune() {
   db.query("DELETE FROM usage_events WHERE ts < ?").run(now() - KEEP_DAYS * 86400_000);
 }
 
-export type TokenSummary = { five_hour: number; today: number; week: number; daily: number[] };
+/**
+ * Headline numbers are fresh tokens: input + cache writes + output, the work that
+ * costs full price. Cache reads (re-reading context already cached, a small fraction
+ * of the price) are reported on their own, for the last 7 days.
+ */
+export type TokenSummary = { five_hour: number; today: number; week: number; daily: number[]; cache_read_week: number; total_week: number };
+
+const FRESH = "(input + cache_write + output)";
 
 export function tokenSummary(accountId: string): TokenSummary {
   const t = now();
@@ -137,15 +154,25 @@ export function tokenSummary(accountId: string): TokenSummary {
   const r = db
     .query(
       `SELECT
-         COALESCE(SUM(CASE WHEN ts > ? THEN tokens END), 0) AS five_hour,
-         COALESCE(SUM(CASE WHEN ts >= ? THEN tokens END), 0) AS today,
-         COALESCE(SUM(CASE WHEN ts > ? THEN tokens END), 0) AS week
+         COALESCE(SUM(CASE WHEN ts > ? THEN ${FRESH} END), 0) AS five_hour,
+         COALESCE(SUM(CASE WHEN ts >= ? THEN ${FRESH} END), 0) AS today,
+         COALESCE(SUM(CASE WHEN ts > ? THEN ${FRESH} END), 0) AS week,
+         COALESCE(SUM(CASE WHEN ts > ? THEN cache_read END), 0) AS cache_read_week,
+         COALESCE(SUM(CASE WHEN ts > ? THEN tokens END), 0) AS total_week
        FROM usage_events WHERE account_id = ? AND ts >= ?`,
     )
-    .get(t - 5 * 3600_000, midnight.getTime(), t - 7 * 86400_000, accountId, Math.min(day0, t - 7 * 86400_000)) as Omit<TokenSummary, "daily">;
+    .get(
+      t - 5 * 3600_000,
+      midnight.getTime(),
+      t - 7 * 86400_000,
+      t - 7 * 86400_000,
+      t - 7 * 86400_000,
+      accountId,
+      Math.min(day0, t - 7 * 86400_000),
+    ) as Omit<TokenSummary, "daily">;
   const rows = db
     .query(
-      `SELECT CAST((ts - ?) / 86400000 AS INTEGER) AS d, SUM(tokens) AS n FROM usage_events
+      `SELECT CAST((ts - ?) / 86400000 AS INTEGER) AS d, SUM(${FRESH}) AS n FROM usage_events
        WHERE account_id = ? AND ts >= ? GROUP BY d`,
     )
     .all(day0, accountId, day0) as { d: number; n: number }[];
