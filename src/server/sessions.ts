@@ -5,7 +5,7 @@ import { TOOLS, type ToolId } from "./tools";
 import { getProject, touchProject } from "./projects";
 import { emit } from "./events";
 import { accountEnv, getAccount, refreshAccountsSoon, resolveAccount, type AccountRow } from "./accounts";
-import { onExited, withHooks } from "./hooks";
+import { codexScreen, onExited, withHooks } from "./hooks";
 
 // ---------------------------------------------------------------- tmux plumbing
 
@@ -65,6 +65,7 @@ export type SessionRow = {
   agent_state: string | null;
   agent_state_at: number | null;
   agent_message: string | null;
+  transcript: string | null;
   created_at: number;
   ended_at: number | null;
 };
@@ -228,6 +229,42 @@ export async function sendText(id: string, text: string, enter = true) {
   }
 }
 
+const NAMED_KEYS = new Set(["Enter", "Escape", "Tab", "BTab", "Up", "Down", "Left", "Right", "C-c", "Space", "BSpace"]);
+
+/** Press keys in the agent's terminal without a terminal open (chat view answers prompts this way). */
+export async function sendKeys(id: string, keys: string[]) {
+  const s = getSession(id);
+  if (!s) throw new Error("no such session");
+  for (const k of keys.slice(0, 20)) {
+    if (NAMED_KEYS.has(k)) await tmux(["send-keys", "-t", s.tmux_name, k]);
+    else if (/^[ -~]{1,8}$/.test(k)) await tmux(["send-keys", "-t", s.tmux_name, "-l", k]);
+    else throw new Error(`unsupported key: ${k}`);
+  }
+}
+
+const CODEX_ASK = /Would you like to (run the following command|make the following edits|grant these permissions|send input to the existing terminal)/;
+
+/** Codex shows approvals only on screen; read the visible pane of running Codex sessions. */
+async function watchCodexScreens() {
+  const rows = db.query("SELECT id, tmux_name FROM sessions WHERE tool = 'codex' AND status = 'running'").all() as { id: string; tmux_name: string }[];
+  for (const r of rows) {
+    const cap = await tmux(["capture-pane", "-p", "-J", "-t", r.tmux_name]);
+    if (cap.code !== 0) continue;
+    const lines = cap.out.split("\n");
+    const i = lines.findIndex((l) => CODEX_ASK.test(l));
+    let prompt: string | null = null;
+    if (i >= 0) {
+      const ask = lines[i]!.trim().replace(/^[^A-Za-z]+/, "");
+      const detail = lines
+        .slice(i + 1, i + 6)
+        .map((l) => l.trim().replace(/^[│|>$]+\s*/, ""))
+        .find((l) => l && !/^(›|\d+\.|Yes|No)/.test(l));
+      prompt = detail ? `${ask} ${detail}`.slice(0, 200) : ask;
+    }
+    codexScreen(r.id, prompt);
+  }
+}
+
 // ---------------------------------------------------------------- reconcile
 
 let lastStatusSig = "";
@@ -280,6 +317,10 @@ export async function reconcile(): Promise<boolean> {
 }
 
 export function startReconcileLoop(ms = 2000) {
-  const tick = () => reconcile().catch((e) => console.error("reconcile:", e)).finally(() => setTimeout(tick, ms));
+  const tick = () =>
+    reconcile()
+      .then(watchCodexScreens)
+      .catch((e) => console.error("reconcile:", e))
+      .finally(() => setTimeout(tick, ms));
   tick();
 }

@@ -50,6 +50,7 @@ Install the Tailscale app on your phone with the same account, open that URL, th
 - **Sessions:** real terminals (xterm.js over WebSocket, tmux underneath) for every agent, with a phone-friendly key bar, compose box and swipe scrollback.
 - **Backlog:** tasks per project plus an Inbox, with a board (drag and drop) on desktop and a list on phones. **Run with Claude / Codex / agy** starts the agent in the task's project with the task as its first prompt. The task moves to *Review* when the agent finishes its turn and back to *Doing* when you reply.
 - **Accounts:** add as many accounts per tool as you like. Each is its own profile folder under `~/.ansai/profiles` (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, or a separate `HOME` for agy) that links your shared settings, skills and plugins. You can pick the account per session or task and mark one as preferred. The Accounts page shows plan, email, 5-hour and weekly limits with reset times (the values each CLI already caches), and tokens for the last 5 hours, today and 7 days.
+- **Chat view** (Claude Code and Codex): the agent's own conversation log, rendered as chat while it runs in tmux. You see messages, collapsible tool calls with output, edit diffs and the agent's plan. Live cards let you approve or deny actions, answer the agent's questions, or stop it. Chat and Terminal are two views of the same running agent; phones default to Chat.
 - **Status and notifications:** Claude Code gets status hooks via `--settings`, and your own settings file is never touched. Codex gets a `notify` override via `-c`. Sessions show *working*, *needs you* or *your turn*. Web Push reaches your phone or desktop for "needs you", "finished" and crashes, unless you're already looking at that session.
 
 Token counts include cache reads and come from local logs (Claude transcripts, Codex rollouts), which are read incrementally. Login tokens never leave the laptop and are never shown in the UI. agy accounts are experimental: agy keeps its login in the desktop keychain, so a profile signs in separately with a paste-code flow.
@@ -61,4 +62,4 @@ Token counts include cache reads and come from local logs (Claude transcripts, C
 3. ✅ Accounts: profiles per tool, switching, plan and limits, token usage
 4. ✅ Real status from hooks, push notifications
 5. Canvas view, a git worktree per task, a viewer for code changes
-6. A chat-style view instead of a terminal (stream-json / `codex app-server`)
+6. ✅ Chat view: the agent's conversation rendered natively (messages, tool calls, diffs, plan, approvals), next to the terminal

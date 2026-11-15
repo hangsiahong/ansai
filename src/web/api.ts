@@ -72,6 +72,13 @@ export type Account = {
 export type Device = { id: string; name: string; os: string; online: boolean; self: boolean; allowed: boolean; lastSeen: string | null };
 export type DeviceList = { configured: boolean; devices: Device[]; blocked: { id: string; name: string; at: number }[] };
 
+export type ChatItem =
+  | { id: string; k: "user"; text: string; ts: number }
+  | { id: string; k: "assistant"; text: string; ts: number }
+  | { id: string; k: "thinking"; text: string; ts: number }
+  | { id: string; k: "note"; text: string; ts: number }
+  | { id: string; k: "tool"; ts: number; name: string; title: string; input?: Record<string, unknown>; result?: string; error?: boolean; done: boolean };
+
 export type Tool = { id: ToolId; label: string; installed: boolean };
 export type Me = { user: string; device: string; tailscale: { dnsName: string | null; owner: string | null; url: string | null }; shell: string };
 
@@ -131,6 +138,7 @@ export const api = {
   closeSession: (id: string) => call<{ ok: true }>("DELETE", `/api/sessions/${id}`),
   history: (id: string) => call<string>("GET", `/api/sessions/${id}/history`),
   scroll: (id: string, dir: "up" | "down" | "exit") => call<{ ok: true }>("POST", `/api/sessions/${id}/scroll`, { dir }),
+  keys: (id: string, keys: string[]) => call<{ ok: true }>("POST", `/api/sessions/${id}/keys`, { keys }),
   send: (id: string, text: string, enter = true) => call<{ ok: true }>("POST", `/api/sessions/${id}/send`, { text, enter }),
 };
 

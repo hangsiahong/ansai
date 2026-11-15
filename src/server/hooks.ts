@@ -74,6 +74,11 @@ export function handleHook(tool: string, event: string, sessionId: string, paylo
   const s = db.query("SELECT id, title, tool, task_id, agent_state, status FROM sessions WHERE id = ?").get(sessionId) as Row | null;
   if (!s || s.status === "closed") return;
 
+  // Every Claude hook names the conversation log; /clear starts a new one.
+  if (tool === "claude" && typeof payload?.transcript_path === "string" && payload.transcript_path.endsWith(".jsonl")) {
+    db.query("UPDATE sessions SET transcript = ? WHERE id = ? AND COALESCE(transcript, '') != ?").run(payload.transcript_path, s.id, payload.transcript_path);
+  }
+
   if (tool === "claude") {
     switch (event) {
       case "SessionStart":
@@ -108,6 +113,18 @@ export function handleHook(tool: string, event: string, sessionId: string, paylo
     setState(s, "waiting", last || null);
     moveTask(s.task_id, "doing", "review");
     push(s, "done", last || "Finished — your turn.");
+  }
+}
+
+/** Codex has no approval hook: the reconciler reports what its screen shows. */
+export function codexScreen(id: string, prompt: string | null) {
+  const s = db.query("SELECT id, title, tool, task_id, agent_state, status FROM sessions WHERE id = ?").get(id) as Row | null;
+  if (!s || s.status !== "running") return;
+  if (prompt && s.agent_state !== "needs-input") {
+    setState(s, "needs-input", prompt);
+    push(s, "input", prompt);
+  } else if (!prompt && s.agent_state === "needs-input") {
+    setState(s, "working");
   }
 }
 

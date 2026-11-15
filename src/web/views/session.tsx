@@ -2,7 +2,18 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { api, type Session } from "../api";
 import { confirmDialog, openSheet, promptDialog, toast, toastError, useStore } from "../store";
 import { TerminalView, type TermHandle, type TermStatus } from "../Terminal";
-import { Icon, Link, StatusPill, TOOL_LABEL, ToolBadge, goBack, isTouch, nav, useTick } from "../ui";
+import { Icon, Link, StatusPill, TOOL_LABEL, ToolBadge, goBack, isTouch, nav, sessionState, useTick } from "../ui";
+import { ChatView } from "../chat";
+
+type View = "chat" | "terminal";
+const VIEW_KEY = "ansai.view";
+function savedView(): View {
+  try {
+    const v = localStorage.getItem(VIEW_KEY);
+    if (v === "chat" || v === "terminal") return v;
+  } catch {}
+  return isTouch() ? "chat" : "terminal"; // phones default to chat
+}
 
 type Key = { label: string; seq?: string; act?: "ctrl" | "kbd" | "up" | "down" | "more"; title?: string; wide?: boolean };
 
@@ -47,6 +58,13 @@ export function SessionPane({ id }: { id: string }) {
   const [menu, setMenu] = useState(false);
   const touch = isTouch();
   const ta = useRef<HTMLTextAreaElement>(null);
+  const [viewPref, setViewPref] = useState<View>(savedView);
+  const chooseView = (v: View) => {
+    setViewPref(v);
+    try {
+      localStorage.setItem(VIEW_KEY, v);
+    } catch {}
+  };
 
   useEffect(() => {
     setMissing(false);
@@ -70,6 +88,9 @@ export function SessionPane({ id }: { id: string }) {
   if (!s) return <div class="pane center muted">Loading…</div>;
 
   const closed = s.status === "closed";
+  const canChat = s.tool === "claude" || s.tool === "codex";
+  const view: View = canChat ? viewPref : "terminal";
+  const working = sessionState(s).cls === "working";
   const task = s.task_id ? tasks.find((t) => t.id === s.task_id) : null;
   const account = s.account_id ? accounts.find((a) => a.id === s.account_id) : null;
 
@@ -150,10 +171,20 @@ export function SessionPane({ id }: { id: string }) {
           <div class="sub">
             {s.project_id ? <Link href={`/p/${s.project_id}`}>{s.project_name}</Link> : "~"}
             {account && !account.is_default && <> · {account.name}</>}
-            {tstatus !== "live" && !closed && <span class="warn-text"> · {tstatus}</span>}
+            {view === "terminal" && tstatus !== "live" && !closed && <span class="warn-text"> · {tstatus}</span>}
           </div>
         </div>
         <StatusPill s={s} />
+        {canChat && (
+          <div class="viewtoggle" role="radiogroup" aria-label="View">
+            <button role="radio" aria-checked={view === "chat"} class={view === "chat" ? "on" : ""} onClick={() => chooseView("chat")} title="Chat">
+              <Icon name="chat" size={16} />
+            </button>
+            <button role="radio" aria-checked={view === "terminal"} class={view === "terminal" ? "on" : ""} onClick={() => chooseView("terminal")} title="Terminal">
+              <Icon name="terminal" size={16} />
+            </button>
+          </div>
+        )}
         {task && (
           <button class="icon-btn" onClick={() => openSheet({ kind: "task", taskId: task.id })} title={`Task: ${task.title}`} aria-label="Open task">
             <Icon name="list" />
@@ -162,7 +193,7 @@ export function SessionPane({ id }: { id: string }) {
         <button class="icon-btn" onClick={() => openSheet({ kind: "history", sessionId: id })} title="History as text" aria-label="History">
           <Icon name="history" />
         </button>
-        {!touch && (
+        {!touch && view === "terminal" && (
           <button class={`icon-btn ${showDock ? "on" : ""}`} onClick={() => setShowDock(!showDock)} title="Compose box and keys" aria-label="Compose box">
             <Icon name="keyboard" />
           </button>
@@ -196,17 +227,19 @@ export function SessionPane({ id }: { id: string }) {
         </div>
       </header>
 
-      {s.status === "running" && s.agent_state === "needs-input" && (
+      {view === "terminal" && s.status === "running" && s.agent_state === "needs-input" && (
         <div class="banner attn">
           <Icon name="bell" size={16} />
           <span class="banner-text">{s.agent_message || "The agent is waiting for an answer"}</span>
           <div class="banner-actions">
-            {[
-              ["1", "Yes"],
-              ["2", "Always"],
-              ["3", "No"],
-            ].map(([k, label]) => (
-              <button class="btn sm" onClick={() => handle.current?.send(k!)} title={`Press ${k}`}>
+            {(
+              [
+                [["Enter"], "Allow"],
+                [["Down", "Enter"], "Always"],
+                [["Escape"], "Deny"],
+              ] as [string[], string][]
+            ).map(([keys, label]) => (
+              <button class="btn sm" onClick={() => api.keys(id, keys).catch(toastError)}>
                 {label}
               </button>
             ))}
@@ -232,18 +265,41 @@ export function SessionPane({ id }: { id: string }) {
 
       {closed ? (
         <div class="pane center muted">Session closed.</div>
+      ) : view === "chat" ? (
+        <ChatView s={s} />
       ) : (
         <div class="term-wrap">
           <TerminalView sessionId={id} handle={handle} onStatus={setTstatus} onCtrlUsed={() => setCtrl(false)} />
         </div>
       )}
 
-      {showDock && !closed && (
+      {(showDock || view === "chat") && !closed && (
         <div class="dock">
-          <div class="keys" role="toolbar" aria-label="Terminal keys">
-            {MAIN.map(keyBtn)}
-          </div>
-          {more && (
+          {view === "chat" ? (
+            <div class="chips-row">
+              {working && (
+                <button class="chip-btn danger" onClick={() => api.keys(id, ["Escape"]).catch(toastError)}>
+                  <Icon name="stop" size={12} /> Stop
+                </button>
+              )}
+              {s.tool === "claude" && (
+                <button class="chip-btn" onClick={() => api.keys(id, ["BTab"]).catch(toastError)} title="Shift+Tab: cycle Claude's mode (normal → accept edits → plan)">
+                  Mode ⇧⇥
+                </button>
+              )}
+              <button class="chip-btn" onClick={() => api.keys(id, ["Escape"]).catch(toastError)}>
+                Esc
+              </button>
+              <button class="chip-btn" onClick={() => chooseView("terminal")}>
+                <Icon name="terminal" size={12} /> Terminal
+              </button>
+            </div>
+          ) : (
+            <div class="keys" role="toolbar" aria-label="Terminal keys">
+              {MAIN.map(keyBtn)}
+            </div>
+          )}
+          {view === "terminal" && more && (
             <div class="keys more" role="toolbar" aria-label="More keys">
               {MORE.map(keyBtn)}
             </div>

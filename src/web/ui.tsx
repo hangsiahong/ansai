@@ -2,6 +2,9 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import type { ComponentChildren } from "preact";
 import type { Session, ToolId } from "./api";
 import { useStore } from "./store";
+import claudeIcon from "./icons/claude.svg";
+import codexIcon from "./icons/codex.svg";
+import agyIcon from "./icons/agy.svg";
 
 // ------------------------------------------------------------------ routing
 
@@ -92,6 +95,15 @@ const PATHS: Record<string, string> = {
   terminal: "M4 17l6-6-6-6M12 19h8",
   keyboard: "M3 6h18v12H3zM7 10h.01M11 10h.01M15 10h.01M7 14h10",
   out: "M7 17L17 7M8 7h9v9",
+  file: "M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8zM14 3v5h5",
+  pencil: "M4 20h4L19 9l-4-4L4 16zM14 6l4 4",
+  globe: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM3 12h18M12 3c3 3.5 3 14.5 0 18M12 3c-3 3.5-3 14.5 0 18",
+  sparkle: "M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z",
+  plug: "M9 2v6M15 2v6M6 8h12v3a6 6 0 0 1-12 0zM12 17v5",
+  question: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.6v.3M12 17h.01",
+  bulb: "M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9c.5.4.5 1.1.5 1.6V16h6v-.5c0-.6 0-1.2.5-1.6A6 6 0 0 0 12 3z",
+  stop: "M7 7h10v10H7z",
+  chat: "M4 5h16v11H9l-5 4z",
   dot: "M12 12h.01",
 };
 
@@ -108,7 +120,8 @@ export function Icon({ name, size = 18, stroke = 1.9 }: { name: string; size?: n
 export const TOOL_LABEL: Record<ToolId, string> = { claude: "Claude Code", codex: "Codex", agy: "Antigravity", shell: "Shell" };
 export const TOOL_SHORT: Record<ToolId, string> = { claude: "Claude", codex: "Codex", agy: "agy", shell: "Shell" };
 export const AGENTS: ToolId[] = ["claude", "codex", "agy"];
-const TOOL_GLYPH: Record<ToolId, string> = { claude: "C", codex: "X", agy: "A", shell: "$" };
+// Real CLI logos (from @lobehub/icons, MIT); bundled as hashed assets.
+const TOOL_ICON: Partial<Record<ToolId, string>> = { claude: claudeIcon, codex: codexIcon, agy: agyIcon };
 
 export function ago(ts: number | null) {
   if (!ts) return "";
@@ -170,9 +183,15 @@ export function sessionOrder(a: Session, b: Session) {
 }
 
 export function ToolBadge({ tool, size = 24 }: { tool: ToolId; size?: number }) {
+  const src = TOOL_ICON[tool];
+  const px = `${size}px`;
   return (
-    <span class={`toolbadge t-${tool}`} style={{ width: `${size}px`, height: `${size}px`, fontSize: `${Math.round(size * 0.46)}px` }} title={TOOL_LABEL[tool]} aria-label={TOOL_LABEL[tool]}>
-      {TOOL_GLYPH[tool]}
+    <span class={`toolbadge t-${tool}`} style={{ width: px, height: px }} title={TOOL_LABEL[tool]} role="img" aria-label={TOOL_LABEL[tool]}>
+      {src ? (
+        <img src={src} alt="" draggable={false} style={{ width: `${Math.round(size * 0.72)}px`, height: `${Math.round(size * 0.72)}px` }} />
+      ) : (
+        <Icon name="terminal" size={Math.round(size * 0.62)} stroke={2.4} />
+      )}
     </span>
   );
 }

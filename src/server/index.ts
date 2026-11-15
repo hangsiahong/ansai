@@ -19,6 +19,7 @@ import {
   renameSession,
   restartSession,
   scroll,
+  sendKeys,
   sendText,
   sessionView,
   startReconcileLoop,
@@ -30,6 +31,7 @@ import { onChange, emit, type Topic } from "./events";
 import { handleHook, writeHookFiles } from "./hooks";
 import { getPrefs, publicKey, subscribe, testPush, unsubscribe } from "./push";
 import { setViewer } from "./viewers";
+import { subscribeChat, unsubscribeChat } from "./transcripts";
 import { createTask, deleteTask, listTasks, runTask, updateTask } from "./tasks";
 import {
   createAccount,
@@ -45,6 +47,7 @@ import {
 
 type WSData =
   | { kind: "events"; user: string }
+  | { kind: "chat"; user: string; sessionId: string }
   | { kind: "term"; user: string; sessionId: string; cols: number; rows: number; proc?: Subprocess };
 
 // ------------------------------------------------------------------ helpers
@@ -308,6 +311,14 @@ const server = Bun.serve<WSData>({
         return json({ ok: true });
       }),
     },
+    "/api/sessions/:id/keys": {
+      POST: guard(async (req) => {
+        const b = await body<{ keys?: unknown }>(req);
+        if (!Array.isArray(b.keys) || !b.keys.every((k) => typeof k === "string")) return fail(400, "keys must be a list of key names");
+        await sendKeys(req.params.id!, b.keys as string[]);
+        return json({ ok: true });
+      }),
+    },
     "/api/sessions/:id/send": {
       POST: guard(async (req) => {
         const b = await body<{ text?: string; enter?: boolean }>(req);
@@ -318,6 +329,12 @@ const server = Bun.serve<WSData>({
 
     "/ws/events": guard((req, server, user) => {
       if (server.upgrade(req, { data: { kind: "events", user } })) return undefined;
+      return fail(426, "websocket upgrade required");
+    }),
+    "/ws/chat/:id": guard((req, server, user) => {
+      const s = getSession(req.params.id!);
+      if (!s || s.status === "closed") return fail(404, "no such session");
+      if (server.upgrade(req, { data: { kind: "chat", user, sessionId: s.id } })) return undefined;
       return fail(426, "websocket upgrade required");
     }),
     "/ws/term/:id": guard((req, server, user) => {
@@ -349,6 +366,10 @@ const server = Bun.serve<WSData>({
 
     open(ws: ServerWebSocket<WSData>) {
       const d = ws.data;
+      if (d.kind === "chat") {
+        subscribeChat(d.sessionId, ws);
+        return;
+      }
       if (d.kind === "events") {
         ws.subscribe("events");
         for (const t of ["sessions", "tasks", "projects", "accounts"] as Topic[]) ws.send(snapshot(t));
@@ -376,6 +397,13 @@ const server = Bun.serve<WSData>({
 
     message(ws, raw) {
       const d = ws.data;
+      if (d.kind === "chat") {
+        try {
+          const m = JSON.parse(typeof raw === "string" ? raw : new TextDecoder().decode(raw));
+          if (typeof m.v === "boolean") setViewer(d.sessionId, ws, m.v);
+        } catch {}
+        return;
+      }
       if (d.kind !== "term" || !d.proc?.terminal) return;
       let m: { i?: string; r?: [number, number]; v?: boolean };
       try {
@@ -393,7 +421,8 @@ const server = Bun.serve<WSData>({
 
     close(ws) {
       const d = ws.data;
-      if (d.kind === "term") setViewer(d.sessionId, ws, false);
+      if (d.kind === "term" || d.kind === "chat") setViewer(d.sessionId, ws, false);
+      if (d.kind === "chat") unsubscribeChat(d.sessionId, ws);
       if (d.kind === "term" && d.proc) {
         try {
           d.proc.terminal?.close();

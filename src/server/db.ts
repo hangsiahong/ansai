@@ -117,6 +117,10 @@ const migrations: string[] = [
   `
   CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
   `,
+  // v6: where each agent writes its conversation log (for the chat view).
+  `
+  ALTER TABLE sessions ADD COLUMN transcript TEXT;
+  `,
 ];
 
 export function getSetting<T>(key: string, fallback: T): T {
