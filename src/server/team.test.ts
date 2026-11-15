@@ -10,7 +10,9 @@ const { getSession } = await import("./sessions");
 
 
 function project(id: string) {
-  db.query("INSERT INTO projects (id, name, path, created_at) VALUES (?, ?, ?, ?)").run(id, id, `/tmp/${id}`, now());
+  db.query(
+    "INSERT INTO projects (id, name, path, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET path = excluded.path",
+  ).run(id, id, `/tmp/${id}`, now());
 }
 // Agents default to "working": idle ("waiting") ones would get messages typed in via tmux.
 function agent(id: string, projectId: string | null, o: { tool?: string; state?: string | null; task?: string | null } = {}) {
