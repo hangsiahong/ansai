@@ -26,6 +26,8 @@ beforeAll(() => {
   project("p2");
 });
 beforeEach(() => {
+  // Claims live in memory, keyed by session: clear them with the sessions.
+  for (const { id } of db.query("SELECT id FROM sessions").all() as { id: string }[]) team.dropClaims(id);
   db.exec("DELETE FROM messages; DELETE FROM sessions; DELETE FROM tasks;");
 });
 
@@ -156,5 +158,40 @@ describe("MCP tools", () => {
     const r = await call("a", "send_message", { to: "ghost", message: "hi" });
     expect(r.isError).toBe(true);
     expect(r.content[0]!.text).toContain("list_agents");
+  });
+});
+
+describe("file claims", () => {
+  test("a claimed file can't be claimed by a teammate, and shows in list_agents", () => {
+    const a = agent("a", "p1");
+    const b = agent("b", "p1");
+    expect(team.claimFiles(a, ["src/x.ts", "/tmp/src/y.ts"], "refactoring the parser")).toContain("Claimed: src/x.ts, src/y.ts");
+    const r = team.claimFiles(b, ["src/x.ts", "src/z.ts"], "");
+    expect(r).toContain("Claimed: src/z.ts");
+    expect(r).toContain("src/x.ts (claimed by Claude “Agent a”");
+    expect(team.describeAgents(b)).toContain("claimed: src/x.ts (refactoring the parser), src/y.ts (refactoring the parser)");
+  });
+
+  test("editing a teammate's claimed file warns once, through the PostToolUse hook", () => {
+    const a = agent("a", "p1");
+    agent("b", "p1");
+    team.claimFiles(a, ["src/x.ts"], "parser rewrite");
+    const edit = { tool_name: "Edit", tool_input: { file_path: "/tmp/src/x.ts" } };
+    const out = handleHook("claude", "PostToolUse", "b", edit);
+    expect(out?.hookSpecificOutput?.additionalContext).toContain("src/x.ts is claimed by Claude “Agent a” (agent id a): parser rewrite");
+    expect(handleHook("claude", "PostToolUse", "b", edit)).toBeUndefined(); // said once
+    // Reading the file, or editing an unclaimed one, says nothing.
+    expect(handleHook("claude", "PostToolUse", "b", { tool_name: "Read", tool_input: { file_path: "/tmp/src/x.ts" } })).toBeUndefined();
+    expect(handleHook("claude", "PostToolUse", "b", { tool_name: "Edit", tool_input: { file_path: "/tmp/src/other.ts" } })).toBeUndefined();
+  });
+
+  test("claims go away on release and when the agent's session ends", () => {
+    const a = agent("a", "p1");
+    const b = agent("b", "p1");
+    team.claimFiles(a, ["one.ts", "two.ts"], "");
+    expect(team.releaseFiles(a, ["one.ts"])).toContain("Still claimed: two.ts");
+    expect(team.claimFiles(b, ["one.ts"], "")).toContain("Claimed: one.ts");
+    team.dropClaims("a");
+    expect(team.claimFiles(b, ["two.ts"], "")).toContain("Claimed: two.ts");
   });
 });

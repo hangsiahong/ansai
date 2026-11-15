@@ -5,9 +5,11 @@ import { db, now } from "./db";
 import { emit } from "./events";
 import { notify } from "./push";
 import { isWatched } from "./viewers";
-import { takePending } from "./team";
+import { dropClaims, editWarning, takePending } from "./team";
+import { getSession } from "./sessions";
 import { claudeStop, codexTurnEnded, shiftWorked } from "./shifts";
-import type { SessionRow } from "./sessions";
+
+const EDITS = new Set(["Edit", "MultiEdit", "Write", "NotebookEdit"]);
 import type { ToolId } from "./tools";
 
 /**
@@ -52,7 +54,7 @@ const AGENT_NOTE =
   "call add_task to record follow-up work you notice (bugs, refactors, missing tests) instead of doing it unasked; " +
   "if you were given a backlog task, call finish_task with a 2-3 sentence summary when it is done. " +
   "If a task is unclear or needs a decision, ask the user before changing anything. " +
-  "Other agents may be working at the same time: list_agents shows them and the files they are editing, " +
+  "Other agents may be working at the same time: list_agents shows them and the files they are editing or have claimed (claim_files before a bigger change to shared code), " +
   "and send_message reaches one of them (or everyone in the project) — use it to avoid clashing edits, hand over findings, or ask a teammate who owns that code. " +
   "Messages to you arrive by themselves, marked \"ansai: … from your team\".";
 
@@ -147,7 +149,11 @@ export function handleHook(tool: string, event: string, sessionId: string, paylo
       case "PostToolUse": {
         shiftWorked(s.id);
         const msgs = takePending(s.id);
-        return msgs ? context(event, msgs) : undefined;
+        const file = payload?.tool_input?.file_path ?? payload?.tool_input?.notebook_path;
+        const full = typeof file === "string" && EDITS.has(String(payload?.tool_name)) ? getSession(s.id) : null;
+        const warn = full ? editWarning(full, file) : null;
+        const text = [warn, msgs].filter(Boolean).join("\n\n");
+        return text ? context(event, text) : undefined;
       }
       case "Notification": {
         const msg = clip(payload?.message);
@@ -169,8 +175,7 @@ export function handleHook(tool: string, event: string, sessionId: string, paylo
           return context(event, msgs);
         }
         // On shift: Claude gets its next prompt and continues in the same turn.
-        const full = db.query("SELECT * FROM sessions WHERE id = ?").get(s.id) as SessionRow;
-        const keepGoing = claudeStop(full);
+        const keepGoing = claudeStop(getSession(s.id)!);
         if (keepGoing) {
           if (s.agent_state !== "working") setState(s, "working");
           return keepGoing;
@@ -189,7 +194,7 @@ export function handleHook(tool: string, event: string, sessionId: string, paylo
     const last = clip(payload["last-assistant-message"]);
     setState(s, "waiting", last || null);
     // On shift the next prompt gets typed in shortly (shifts.nudgeIdle), so the task stays in Doing and no push goes out.
-    if (codexTurnEnded(db.query("SELECT * FROM sessions WHERE id = ?").get(s.id) as SessionRow)) return;
+    if (codexTurnEnded(getSession(s.id)!)) return;
     moveTask(s.task_id, "doing", "review");
     push(s, "done", last || "Finished — your turn.");
   }
@@ -225,6 +230,7 @@ export function startupScreen(id: string, message: string | null) {
 export function onExited(id: string, code: number | null) {
   const s = db.query("SELECT id, title, tool, task_id, agent_state, status FROM sessions WHERE id = ?").get(id) as Row | null;
   if (!s) return;
+  dropClaims(id);
 
   // If the process disappeared before finish_task (or a turn-complete hook),
   // release the task from Doing so it cannot look active forever or block the

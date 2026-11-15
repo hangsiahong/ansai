@@ -3,7 +3,7 @@ import { HttpError } from "./errors";
 import { getSession } from "./sessions";
 import { JSON_LIMIT, readJson } from "./validate";
 import { createTask, finishTask, getTask } from "./tasks";
-import { describeAgents, describeHistory, postMessage, takePending } from "./team";
+import { claimFiles, describeAgents, describeHistory, postMessage, releaseFiles, takePending } from "./team";
 import { endShift, shiftView } from "./shifts";
 
 /**
@@ -51,6 +51,24 @@ const TOOLS = [
       },
       required: ["to", "message"],
     },
+  },
+  {
+    name: "claim_files",
+    description:
+      "Tell the other agents you're changing some files, so they leave them alone (advisory: nothing is locked). Claims show in list_agents, and an agent that edits a file you claimed is told right away. Claim before a larger change to shared code; release_files when done.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        paths: { type: "array", items: { type: "string" }, description: "Files (relative to your working folder, or absolute)" },
+        reason: { type: "string", description: "What you're doing to them, in a few words" },
+      },
+      required: ["paths"],
+    },
+  },
+  {
+    name: "release_files",
+    description: "Release files you claimed with claim_files (all of them when paths is left out).",
+    inputSchema: { type: "object", properties: { paths: { type: "array", items: { type: "string" } } } },
   },
   {
     name: "read_messages",
@@ -129,6 +147,14 @@ function runTool(sessionId: string, name: string, args: any) {
     const m = postMessage({ from: s, to, body: String(args?.message ?? "") });
     return text(m.to_session ? `Sent to ${m.to_label}.` : "Sent to everyone in this project.");
   }
+
+  if (name === "claim_files") {
+    const paths = Array.isArray(args?.paths) ? args.paths.map(String) : [];
+    if (!paths.length) return text("List the files to claim in paths.", true);
+    return text(claimFiles(s, paths, String(args?.reason ?? "")));
+  }
+
+  if (name === "release_files") return text(releaseFiles(s, Array.isArray(args?.paths) ? args.paths.map(String) : undefined));
 
   if (name === "read_messages") {
     const n = Math.max(1, Math.min(100, Number(args?.limit) || 20));
