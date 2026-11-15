@@ -27,6 +27,9 @@ import {
 } from "./sessions";
 import { isTool, toolList } from "./tools";
 import { onChange, emit, type Topic } from "./events";
+import { handleHook, writeHookFiles } from "./hooks";
+import { getPrefs, publicKey, subscribe, testPush, unsubscribe } from "./push";
+import { setViewer } from "./viewers";
 import { createTask, deleteTask, listTasks, runTask, updateTask } from "./tasks";
 import {
   createAccount,
@@ -92,6 +95,7 @@ function snapshot(t: Topic): string {
 // ------------------------------------------------------------------- server
 
 writeTmuxConf();
+writeHookFiles();
 ensureDefaultAccounts();
 setTimeout(() => {
   try {
@@ -167,6 +171,37 @@ const server = Bun.serve<WSData>({
         const b = await body<{ tool?: string; yolo?: boolean; accountId?: string | null }>(req);
         if (!isTool(b.tool)) return fail(400, "unknown tool");
         return json(await runTask(req.params.id!, { tool: b.tool, yolo: b.yolo === true, accountId: b.accountId ? String(b.accountId) : null }));
+      }),
+    },
+
+    "/api/hooks/:tool/:event": {
+      POST: guard(async (req) => {
+        const sid = new URL(req.url).searchParams.get("s");
+        if (sid) handleHook(req.params.tool!, req.params.event!, sid, await body(req));
+        return json({ ok: true });
+      }),
+    },
+    "/api/push/key": guard(() => json({ publicKey: publicKey() })),
+    "/api/push/subscribe": {
+      POST: guard(async (req, _s, user) => {
+        const b = await body<{ subscription?: { endpoint?: string; keys?: unknown }; prefs?: Record<string, boolean> }>(req);
+        subscribe(b.subscription ?? {}, user, b.prefs ?? {});
+        return json({ ok: true });
+      }),
+    },
+    "/api/push/unsubscribe": {
+      POST: guard(async (req) => {
+        unsubscribe(String((await body(req)).endpoint ?? ""));
+        return json({ ok: true });
+      }),
+    },
+    "/api/push/status": {
+      POST: guard(async (req) => json({ prefs: getPrefs(String((await body(req)).endpoint ?? "")) })),
+    },
+    "/api/push/test": {
+      POST: guard(async (req) => {
+        await testPush(String((await body(req)).endpoint ?? ""));
+        return json({ ok: true });
       }),
     },
 
@@ -322,13 +357,14 @@ const server = Bun.serve<WSData>({
     message(ws, raw) {
       const d = ws.data;
       if (d.kind !== "term" || !d.proc?.terminal) return;
-      let m: { i?: string; r?: [number, number] };
+      let m: { i?: string; r?: [number, number]; v?: boolean };
       try {
         m = JSON.parse(typeof raw === "string" ? raw : new TextDecoder().decode(raw));
       } catch {
         return;
       }
       if (typeof m.i === "string" && m.i) d.proc.terminal.write(m.i);
+      if (typeof m.v === "boolean") setViewer(d.sessionId, ws, m.v);
       if (Array.isArray(m.r)) {
         const [c, r] = m.r;
         if (c >= 2 && r >= 2 && c <= 500 && r <= 200) d.proc.terminal.resize(Math.floor(c), Math.floor(r));
@@ -337,6 +373,7 @@ const server = Bun.serve<WSData>({
 
     close(ws) {
       const d = ws.data;
+      if (d.kind === "term") setViewer(d.sessionId, ws, false);
       if (d.kind === "term" && d.proc) {
         try {
           d.proc.terminal?.close();

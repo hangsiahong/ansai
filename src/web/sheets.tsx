@@ -3,6 +3,7 @@ import { api, STATUS_LABEL, TASK_STATUSES, type ToolId } from "./api";
 import { getState, openSheet, patchTaskLocal, refreshProjects, toast, toastError, useStore } from "./store";
 import { AGENTS, Icon, Sheet, TOOL_LABEL, ToolDot, ago, nav, sessionState, shortPath } from "./ui";
 import { AccountPicker } from "./accounts";
+import { NotifySheet } from "./notify";
 
 export function Sheets() {
   const sheet = useStore((s) => s.sheet);
@@ -12,6 +13,7 @@ export function Sheets() {
   if (sheet.kind === "history") return <HistorySheet sessionId={sheet.sessionId} onClose={close} />;
   if (sheet.kind === "add-project") return <AddProjectSheet onClose={close} />;
   if (sheet.kind === "task") return <TaskSheet key={sheet.taskId} taskId={sheet.taskId} onClose={close} />;
+  if (sheet.kind === "notify") return <NotifySheet onClose={close} />;
   return null;
 }
 

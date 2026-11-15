@@ -1,7 +1,8 @@
 # ansai
 
 A private control room for coding agents running on your laptop. You can start and drive
-Claude Code, Codex, Antigravity (`agy`) or a shell in any project from your phone or desktop.
+Claude Code, Codex, Antigravity (`agy`) or a shell in any project from your phone or desktop,
+keep a backlog per project, switch between accounts, and get a push when an agent needs you.
 
 - **One Bun process** (about 60 MB of RAM), using Bun's built-in terminal support, `bun:sqlite` and WebSockets. No Docker, no database server.
 - **Agents live in tmux** (socket `ansai`). They keep running if the browser disconnects or ansai restarts. Attach from a laptop terminal with `tmux -L ansai attach -t ansai-<id>` and detach with Ctrl-Alt-d.
@@ -42,12 +43,22 @@ Install the Tailscale app on your phone with the same account, open that URL, th
 - **Swipe** on the terminal to scroll back. Press esc to return to live output.
 - **History** (the clock icon) shows the scrollback as plain text you can select and copy.
 - **⌨** turns on typing directly into the terminal.
+- **Notifications** (in the sidebar): turn them on once per device. On iPhone, add ansai to the Home Screen first.
+
+## Features
+
+- **Sessions:** real terminals (xterm.js over WebSocket, tmux underneath) for every agent, with a phone-friendly key bar, compose box and swipe scrollback.
+- **Backlog:** tasks per project plus an Inbox, with a board (drag and drop) on desktop and a list on phones. **Run with Claude / Codex / agy** starts the agent in the task's project with the task as its first prompt. The task moves to *Review* when the agent finishes its turn and back to *Doing* when you reply.
+- **Accounts:** add as many accounts per tool as you like. Each is its own profile folder under `~/.ansai/profiles` (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, or a separate `HOME` for agy) that links your shared settings, skills and plugins. You can pick the account per session or task and mark one as preferred. The Accounts page shows plan, email, 5-hour and weekly limits with reset times (the values each CLI already caches), and tokens for the last 5 hours, today and 7 days.
+- **Status and notifications:** Claude Code gets status hooks via `--settings`, and your own settings file is never touched. Codex gets a `notify` override via `-c`. Sessions show *working*, *needs you* or *your turn*. Web Push reaches your phone or desktop for "needs you", "finished" and crashes, unless you're already looking at that session.
+
+Token counts include cache reads and come from local logs (Claude transcripts, Codex rollouts), which are read incrementally. Login tokens never leave the laptop and are never shown in the UI. agy accounts are experimental: agy keeps its login in the desktop keychain, so a profile signs in separately with a paste-code flow.
 
 ## Roadmap
 
 1. ✅ Private access, sessions, terminal on web and phone, installable app
-2. Backlog per project: tasks you can start with an agent
-3. Accounts: separate profiles per tool (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, separate `HOME` for agy), switching, plan and usage limits, token counts
-4. Real agent status from hooks (Claude hooks, Codex `notify`), plus phone notifications
+2. ✅ Backlog per project with tasks you can hand to an agent
+3. ✅ Accounts: profiles per tool, switching, plan and limits, token usage
+4. ✅ Real status from hooks, push notifications
 5. Canvas view, a git worktree per task, a viewer for code changes
 6. A chat-style view instead of a terminal (stream-json / `codex app-server`)

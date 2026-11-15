@@ -2,7 +2,7 @@ import { render } from "preact";
 import { useEffect } from "preact/hooks";
 import "./styles.css";
 import { boot, useStore } from "./store";
-import { useRoute } from "./ui";
+import { nav, useRoute } from "./ui";
 import { Sheets } from "./sheets";
 import { Home } from "./views/home";
 import { Overview } from "./views/overview";
@@ -14,6 +14,19 @@ import { AccountsPane } from "./accounts";
 function App() {
   const route = useRoute();
   const toastS = useStore((s) => s.toast);
+  const waiting = useStore((s) => s.sessions.filter((x) => x.status === "running" && x.agent_state === "needs-input").length);
+
+  useEffect(() => {
+    document.title = waiting ? `(${waiting}) ansai` : "ansai";
+  }, [waiting]);
+
+  // A tapped notification asks an open window to navigate to its session.
+  useEffect(() => {
+    if (!("serviceWorker" in navigator)) return;
+    const f = (e: MessageEvent) => typeof e.data?.nav === "string" && e.data.nav.startsWith("/") && nav(e.data.nav);
+    navigator.serviceWorker.addEventListener("message", f);
+    return () => navigator.serviceWorker.removeEventListener("message", f);
+  }, []);
 
   // Keep layout above the on-screen keyboard (iOS doesn't resize the layout viewport).
   useEffect(() => {
@@ -64,6 +77,6 @@ for (const [rel, href, type] of [
 boot();
 render(<App />, document.getElementById("app")!);
 
-if ("serviceWorker" in navigator && location.protocol === "https:") {
+if ("serviceWorker" in navigator && window.isSecureContext) {
   navigator.serviceWorker.register("/sw.js").catch(() => {});
 }

@@ -162,6 +162,23 @@ export function SessionPane({ id }: { id: string }) {
         </div>
       </header>
 
+      {s.status === "running" && s.agent_state === "needs-input" && (
+        <div class="banner attn">
+          <span>
+            <b>Needs you:</b> {s.agent_message || "the agent is waiting for an answer"}
+          </span>
+          {[
+            ["1", "Yes"],
+            ["2", "Always"],
+            ["3", "No"],
+          ].map(([k, label]) => (
+            <button class="btn small" onClick={() => handle.current?.send(k!)} title={`Press ${k}`}>
+              {k} · {label}
+            </button>
+          ))}
+        </div>
+      )}
+
       {s.status === "exited" && (
         <div class="banner">
           <span>

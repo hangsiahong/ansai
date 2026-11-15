@@ -22,6 +22,8 @@ export type Session = {
   status: "running" | "exited" | "closed";
   exit_code: number | null;
   agent_state: string | null;
+  agent_state_at: number | null;
+  agent_message: string | null;
   created_at: number;
   ended_at: number | null;
   activity_at: number | null;
@@ -105,6 +107,13 @@ export const api = {
   deleteAccount: (id: string) => call<{ ok: true }>("DELETE", `/api/accounts/${id}`),
   loginAccount: (id: string) => call<Session>("POST", `/api/accounts/${id}/login`),
   refreshAccounts: () => call<Account[]>("POST", "/api/accounts/refresh"),
+
+  pushKey: () => call<{ publicKey: string }>("GET", "/api/push/key"),
+  pushSubscribe: (subscription: PushSubscriptionJSON, prefs: Record<string, boolean>) =>
+    call<{ ok: true }>("POST", "/api/push/subscribe", { subscription, prefs }),
+  pushUnsubscribe: (endpoint: string) => call<{ ok: true }>("POST", "/api/push/unsubscribe", { endpoint }),
+  pushStatus: (endpoint: string) => call<{ prefs: Record<string, boolean> | null }>("POST", "/api/push/status", { endpoint }),
+  pushTest: (endpoint: string) => call<{ ok: true }>("POST", "/api/push/test", { endpoint }),
 
   sessions: () => call<Session[]>("GET", "/api/sessions"),
   session: (id: string) => call<Session>("GET", `/api/sessions/${id}`),

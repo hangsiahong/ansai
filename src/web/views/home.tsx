@@ -1,12 +1,12 @@
 import { useMemo, useState } from "preact/hooks";
 import { api, type Session } from "../api";
 import { openSheet, refreshProjects, toast, toastError, useStore } from "../store";
-import { Icon, Link, ToolDot, ago, sessionState, useTick } from "../ui";
+import { Icon, Link, ToolDot, ago, sessionOrder, sessionState, useTick } from "../ui";
 
 export function SessionRow({ s, active }: { s: Session; active?: boolean }) {
   const st = sessionState(s);
   return (
-    <Link href={`/s/${s.id}`} class={`srow ${active ? "active" : ""}`}>
+    <Link href={`/s/${s.id}`} class={`srow ${active ? "active" : ""} ${st.cls === "attn" ? "attn" : ""}`}>
       <ToolDot tool={s.tool} />
       <div class="srow-main">
         <div class="srow-title">{s.title}</div>
@@ -21,7 +21,7 @@ export function SessionRow({ s, active }: { s: Session; active?: boolean }) {
 
 export function Home({ route }: { route: string }) {
   useTick();
-  const sessions = useStore((s) => s.sessions);
+  const sessions = useStore((s) => [...s.sessions].sort(sessionOrder));
   const projects = useStore((s) => s.projects);
   const tasks = useStore((s) => s.tasks);
   const connected = useStore((s) => s.connected);
@@ -87,6 +87,10 @@ export function Home({ route }: { route: string }) {
           <span>Accounts &amp; usage</span>
           {accountsAttn > 0 && <span class="count warn-count">{accountsAttn}</span>}
         </Link>
+        <button class="nrow" onClick={() => openSheet({ kind: "notify" })}>
+          <Icon name="bell" size={16} />
+          <span>Notifications</span>
+        </button>
       </nav>
 
       <section class="block">

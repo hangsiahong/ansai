@@ -114,6 +114,7 @@ export function TerminalView(props: {
         term.reset();
         status("live");
         sendRaw({ r: [term.cols, term.rows] });
+        sendRaw({ v: document.visibilityState === "visible" }); // no push while you're watching
       };
       sock.onmessage = (ev) => {
         if (typeof ev.data === "string") {
@@ -187,6 +188,7 @@ export function TerminalView(props: {
     el.addEventListener("touchend", onTouchEnd);
 
     const onVisible = () => {
+      sendRaw({ v: document.visibilityState === "visible" });
       if (document.visibilityState === "visible" && ws && ws.readyState !== WebSocket.OPEN && !detached) {
         retry = 400;
         connect();

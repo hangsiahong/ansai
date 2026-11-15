@@ -115,12 +115,25 @@ export function useTick(ms = 5000) {
 
 export function sessionState(s: Session): { label: string; cls: string } {
   if (s.status === "exited") return { label: s.exit_code ? `exited ${s.exit_code}` : "exited", cls: "exited" };
+  const recent = !!s.activity_at && Date.now() - s.activity_at < 4000;
+  const since = s.agent_state_at ?? 0;
   if (s.agent_state === "needs-input") return { label: "needs you", cls: "attn" };
-  if (s.agent_state === "working") return { label: "working", cls: "active" };
-  if (s.agent_state === "waiting") return { label: "waiting", cls: "idle" };
-  // Fallback for tools without hooks: output in the last few seconds.
-  if (s.activity_at && Date.now() - s.activity_at < 4000) return { label: "active", cls: "active" };
+  // Claude's spinner keeps the screen moving while it works; silence means it was interrupted.
+  if (s.agent_state === "working") return s.activity_at && Date.now() - s.activity_at > 20000 ? { label: "your turn", cls: "turn" } : { label: "working", cls: "active" };
+  if (s.agent_state === "waiting") {
+    // Codex/agy have no "started working" hook: fresh output after the last status means busy again.
+    if (recent && s.activity_at! > since + 3000) return { label: "active", cls: "active" };
+    return { label: "your turn", cls: "turn" };
+  }
+  // Tools without hooks: output in the last few seconds.
+  if (recent) return { label: "active", cls: "active" };
   return { label: "idle", cls: "idle" };
+}
+
+/** Sessions that want you first, then most recent. */
+export function sessionOrder(a: Session, b: Session) {
+  const rank = (s: Session) => (s.agent_state === "needs-input" && s.status === "running" ? 0 : s.status === "exited" ? 2 : 1);
+  return rank(a) - rank(b) || b.created_at - a.created_at;
 }
 
 export function ToolDot({ tool }: { tool: ToolId }) {

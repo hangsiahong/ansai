@@ -5,11 +5,7 @@ import { TOOLS, type ToolId } from "./tools";
 import { getProject, touchProject } from "./projects";
 import { emit } from "./events";
 import { accountEnv, getAccount, refreshAccountsSoon, resolveAccount, type AccountRow } from "./accounts";
-
-/** Phase 4 adds status hooks here; identity for now. */
-function withHooks(_tool: ToolId, argv: string[]): string[] {
-  return argv;
-}
+import { onExited, withHooks } from "./hooks";
 
 // ---------------------------------------------------------------- tmux plumbing
 
@@ -67,6 +63,8 @@ export type SessionRow = {
   status: "running" | "exited" | "closed";
   exit_code: number | null;
   agent_state: string | null;
+  agent_state_at: number | null;
+  agent_message: string | null;
   created_at: number;
   ended_at: number | null;
 };
@@ -136,7 +134,7 @@ export async function createSession(o: CreateOpts) {
   const account = o.tool === "shell" ? null : resolveAccount(o.tool, o.accountId);
   const id = newId("s");
   const tmuxName = `ansai-${id}`;
-  const argv = withHooks(o.tool, o.argv ?? tool.argv({ prompt: o.prompt?.trim() || undefined, yolo: o.yolo }));
+  const argv = o.argv ?? withHooks(o.tool, tool.argv({ prompt: o.prompt?.trim() || undefined, yolo: o.yolo }));
   const title =
     o.title?.trim() ||
     (o.prompt?.trim() ? o.prompt.trim().split("\n")[0]!.slice(0, 60) : `${tool.label}${project ? " · " + project.name : ""}`);
@@ -263,7 +261,10 @@ export async function reconcile(): Promise<boolean> {
       // tmux session vanished (killed outside ansai, or reboot)
       upd.run("exited", null, now(), s.id);
       live.delete(s.tmux_name);
-    } else if (t.dead && s.status === "running") upd.run("exited", t.code, now(), s.id);
+    } else if (t.dead && s.status === "running") {
+      upd.run("exited", t.code, now(), s.id);
+      onExited(s.id, t.code);
+    }
     else if (!t.dead && s.status === "exited")
       db.query("UPDATE sessions SET status = 'running', exit_code = NULL, ended_at = NULL WHERE id = ?").run(s.id);
   }

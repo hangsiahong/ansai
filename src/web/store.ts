@@ -6,7 +6,8 @@ export type SheetState =
   | { kind: "new"; projectId?: string; tool?: ToolId; accountId?: string }
   | { kind: "history"; sessionId: string }
   | { kind: "add-project" }
-  | { kind: "task"; taskId: string };
+  | { kind: "task"; taskId: string }
+  | { kind: "notify" };
 
 type State = {
   sessions: Session[];

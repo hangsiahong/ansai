@@ -100,6 +100,19 @@ const migrations: string[] = [
     at INTEGER NOT NULL
   );
   `,
+  // v4: agent status from hooks; web push subscriptions.
+  `
+  ALTER TABLE sessions ADD COLUMN agent_state_at INTEGER;
+  ALTER TABLE sessions ADD COLUMN agent_message TEXT;
+  CREATE TABLE push_subs (
+    endpoint TEXT PRIMARY KEY,
+    keys TEXT NOT NULL,
+    user TEXT,
+    prefs TEXT NOT NULL DEFAULT '{}',
+    created_at INTEGER NOT NULL,
+    last_ok_at INTEGER
+  );
+  `,
 ];
 
 {

@@ -479,3 +479,18 @@ p.small { margin: 0; }
 .acct-opt-name { font-weight: 600; }
 .acct-opt-name em { font-style: normal; color: var(--warn); font-weight: 500; }
 .acct-opt-sub { font-size: 12px; color: var(--muted); }
+
+/* ============================================================ phase 4: status + notifications */
+.badge.turn { color: #cfe9ff; background: rgba(122, 167, 255, 0.16); }
+.st.turn { color: var(--t-codex); }
+.srow.attn { background: rgba(242, 198, 109, 0.07); box-shadow: inset 2px 0 0 var(--warn); }
+.badge.attn { animation: pulse 1.6s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: 0.55; } }
+.banner.attn { background: rgba(242, 198, 109, 0.12); }
+.banner.attn b { color: var(--warn); }
+.banner.attn span { color: var(--text); }
+button.nrow { width: 100%; background: none; border: 0; cursor: pointer; text-align: left; }
+.notify-state { display: flex; gap: 12px; align-items: flex-start; }
+.notify-state .dot { width: 10px; height: 10px; border-radius: 50%; margin-top: 6px; background: var(--faint); flex: none; }
+.notify-state .dot.on { background: var(--accent); box-shadow: 0 0 0 4px rgba(126, 224, 176, 0.15); }
+.kinds { display: flex; flex-direction: column; gap: 12px; padding: 4px 0; }
