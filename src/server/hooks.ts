@@ -6,6 +6,8 @@ import { emit } from "./events";
 import { notify } from "./push";
 import { isWatched } from "./viewers";
 import { takePending } from "./team";
+import { claudeStop, codexTurnEnded, shiftWorked } from "./shifts";
+import type { SessionRow } from "./sessions";
 import type { ToolId } from "./tools";
 
 /**
@@ -110,8 +112,8 @@ function push(s: Row, kind: "input" | "done", body: string) {
   notify(kind, { title, body, url: `/s/${s.id}`, tag: `s-${s.id}` }).catch(() => {});
 }
 
-/** What Claude reads back from a hook: extra context for the model (team messages). */
-export type HookReply = { hookSpecificOutput: { hookEventName: string; additionalContext: string } };
+/** What Claude reads back from a hook: extra context for the model (team messages), or "keep going" (shifts). */
+export type HookReply = { hookSpecificOutput?: { hookEventName: string; additionalContext: string }; decision?: "block"; reason?: string };
 const context = (event: string, text: string): HookReply => ({ hookSpecificOutput: { hookEventName: event, additionalContext: text } });
 
 export function handleHook(tool: string, event: string, sessionId: string, payload: any): HookReply | undefined {
@@ -143,6 +145,7 @@ export function handleHook(tool: string, event: string, sessionId: string, paylo
         if (s.agent_state !== "working") setState(s, "working");
         return;
       case "PostToolUse": {
+        shiftWorked(s.id);
         const msgs = takePending(s.id);
         return msgs ? context(event, msgs) : undefined;
       }
@@ -165,6 +168,13 @@ export function handleHook(tool: string, event: string, sessionId: string, paylo
           if (s.agent_state !== "working") setState(s, "working");
           return context(event, msgs);
         }
+        // On shift: Claude gets its next prompt and continues in the same turn.
+        const full = db.query("SELECT * FROM sessions WHERE id = ?").get(s.id) as SessionRow;
+        const keepGoing = claudeStop(full);
+        if (keepGoing) {
+          if (s.agent_state !== "working") setState(s, "working");
+          return keepGoing;
+        }
         const was = s.agent_state;
         setState(s, "waiting");
         moveTask(s.task_id, "doing", "review");
@@ -178,6 +188,8 @@ export function handleHook(tool: string, event: string, sessionId: string, paylo
   if (tool === "codex" && event === "turn" && payload?.type === "agent-turn-complete") {
     const last = clip(payload["last-assistant-message"]);
     setState(s, "waiting", last || null);
+    // On shift the next prompt gets typed in shortly (shifts.nudgeIdle), so the task stays in Doing and no push goes out.
+    if (codexTurnEnded(db.query("SELECT * FROM sessions WHERE id = ?").get(s.id) as SessionRow)) return;
     moveTask(s.task_id, "doing", "review");
     push(s, "done", last || "Finished — your turn.");
   }

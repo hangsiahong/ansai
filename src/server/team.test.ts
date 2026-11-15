@@ -112,8 +112,8 @@ describe("hooks", () => {
     expect(handleHook("claude", "PostToolUse", "b", {})).toBeUndefined();
     team.postMessage({ from: a, to: "b", body: "watch out for src/x.ts" });
     const out = handleHook("claude", "PostToolUse", "b", {});
-    expect(out?.hookSpecificOutput.hookEventName).toBe("PostToolUse");
-    expect(out?.hookSpecificOutput.additionalContext).toContain("watch out for src/x.ts");
+    expect(out?.hookSpecificOutput?.hookEventName).toBe("PostToolUse");
+    expect(out?.hookSpecificOutput?.additionalContext).toContain("watch out for src/x.ts");
     expect(handleHook("claude", "PostToolUse", "b", {})).toBeUndefined();
   });
 
@@ -123,7 +123,7 @@ describe("hooks", () => {
     agent("b", "p1", { state: "working", task: "t1" });
     team.postMessage({ from: a, to: "b", body: "one more thing" });
     const out = handleHook("claude", "Stop", "b", {});
-    expect(out?.hookSpecificOutput.additionalContext).toContain("one more thing");
+    expect(out?.hookSpecificOutput?.additionalContext).toContain("one more thing");
     expect(getSession("b")!.agent_state).toBe("working");
     expect((db.query("SELECT status FROM tasks WHERE id = 't1'").get() as { status: string }).status).toBe("doing");
     // Next Stop has nothing pending: the turn really ends.

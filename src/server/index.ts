@@ -38,6 +38,7 @@ import { setViewer } from "./viewers";
 import { startBackgroundTails, subscribeChat, unsubscribeChat } from "./transcripts";
 import { mcpHttp } from "./mcp";
 import { deliverIdle, listMessages, postMessage } from "./team";
+import { endProjectShift, endShift, nudgeIdle, shiftView, startProjectShift, startShift } from "./shifts";
 import { getSettings, setProjectAutopilot, startAutopilot, updateSettings } from "./autopilot";
 import { STATUSES, createTask, deleteTask, getTask, listTasks, runTask, updateTask } from "./tasks";
 import { changesIn, taskDir } from "./changes";
@@ -313,6 +314,14 @@ const server = Bun.serve<WSData>({
         return json(updateSettings(b));
       }),
     },
+    "/api/projects/:id/shift": {
+      PUT: guard(async (req) => {
+        if (!getProject(req.params.id!)) throw notFound("no such project");
+        const b = await parseBody(req, v.object({ until: v.number({ int: true }), focus: v.optional(v.nullable(v.string({ max: 2000 }))) }));
+        return json(startProjectShift(req.params.id!, b));
+      }),
+      DELETE: guard((req) => json(endProjectShift(req.params.id!))),
+    },
     "/api/projects/:id/autopilot": {
       PUT: guard(async (req) => {
         const b = await parseBody(req, v.object({ on: optBool, tool: v.optional(v.oneOf(AGENT_TOOLS)), accountId: optRef, yolo: optBool }));
@@ -463,6 +472,17 @@ const server = Bun.serve<WSData>({
       }),
     },
     "/api/sessions/:id/restart": { POST: guard(async (req) => json(await restartSession(req.params.id!))) },
+    "/api/sessions/:id/shift": {
+      PUT: guard(async (req) => {
+        const b = await parseBody(req, v.object({ until: v.number({ int: true }), focus: v.optional(v.nullable(v.string({ max: 2000 }))) }));
+        return json(startShift(req.params.id!, b));
+      }),
+      DELETE: guard((req) => {
+        if (!getSession(req.params.id!)) throw notFound("no such session");
+        endShift(req.params.id!, "you");
+        return json(shiftView(req.params.id!));
+      }),
+    },
     "/api/sessions/:id/history": {
       GET: guard(async (req) => {
         const lines = clampDim(new URL(req.url).searchParams.get("lines"), 3000, 50000);
@@ -636,6 +656,8 @@ startBackgroundTails();
 startAutopilot();
 // Idle agents get their direct messages typed in (busy Claude sessions get them through hooks).
 setInterval(() => deliverIdle().catch((e) => console.error("[ansai] team delivery:", e)), 2000);
+// Agents on shift get their next prompt instead of waiting for you (Claude mostly through its Stop hook).
+setInterval(() => nudgeIdle().catch((e) => console.error("[ansai] shifts:", e)), 3000);
 
 console.log(`[ansai] listening on http://${server.hostname}:${server.port}`);
 tailscaleStatus().then((t) => {

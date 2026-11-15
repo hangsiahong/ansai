@@ -158,6 +158,23 @@ const migrations: string[] = [
   CREATE INDEX messages_to ON messages(to_session, id);
   ALTER TABLE sessions ADD COLUMN msg_cursor INTEGER NOT NULL DEFAULT 0;
   `,
+  // v11: shifts keep an agent working until a set time (src/server/shifts.ts). One row per session; the last shift's report stays.
+  `
+  CREATE TABLE shifts (
+    session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+    until INTEGER NOT NULL,
+    focus TEXT,
+    started_at INTEGER NOT NULL,
+    nudges INTEGER NOT NULL DEFAULT 0,
+    idle INTEGER NOT NULL DEFAULT 0,
+    worked INTEGER NOT NULL DEFAULT 0,
+    last_nudge_at INTEGER,
+    ended_at INTEGER,
+    end_reason TEXT,
+    summary TEXT,
+    report TEXT
+  );
+  `,
 ];
 
 export function getSetting<T>(key: string, fallback: T): T {

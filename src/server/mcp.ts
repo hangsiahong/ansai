@@ -4,6 +4,7 @@ import { getSession } from "./sessions";
 import { JSON_LIMIT, readJson } from "./validate";
 import { createTask, finishTask, getTask } from "./tasks";
 import { describeAgents, describeHistory, postMessage, takePending } from "./team";
+import { endShift, shiftView } from "./shifts";
 
 /**
  * A tiny MCP server (streamable HTTP, JSON responses, no SSE) that every agent
@@ -56,6 +57,16 @@ const TOOLS = [
     description:
       "Read the team conversation: messages between agents and from the user in this project. New messages already reach you automatically; use this to look back at what was said.",
     inputSchema: { type: "object", properties: { limit: { type: "integer", minimum: 1, maximum: 100, description: "How many recent messages (default 20)" } } },
+  },
+  {
+    name: "end_shift",
+    description:
+      "Only if you are on an ansai shift (you'll have been told so): end it because nothing useful is left to do. Give a short summary of what you did during the shift; the user reads it when they're back.",
+    inputSchema: {
+      type: "object",
+      properties: { summary: { type: "string", description: "What you did this shift, and anything the user should look at first" } },
+      required: ["summary"],
+    },
   },
   {
     name: "finish_task",
@@ -123,6 +134,14 @@ function runTool(sessionId: string, name: string, args: any) {
     const n = Math.max(1, Math.min(100, Number(args?.limit) || 20));
     const fresh = takePending(s.id);
     return text([fresh, "Recent team messages:\n\n" + describeHistory(s, n)].filter(Boolean).join("\n\n---\n\n"));
+  }
+
+  if (name === "end_shift") {
+    if (!shiftView(s.id)?.active) return text("You're not on a shift, so there's nothing to end. If you're done, just say so.");
+    const summary = String(args?.summary ?? "").trim();
+    if (!summary) return text("A summary is required.", true);
+    endShift(s.id, "agent", summary);
+    return text("Shift ended. Your summary is saved for the user. You can stop now.");
   }
 
   if (name === "finish_task") {

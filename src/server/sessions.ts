@@ -5,6 +5,7 @@ import { badRequest, conflict, notFound } from "./errors";
 import { TOOLS, type ToolId } from "./tools";
 import { getProject, touchProject } from "./projects";
 import { emit } from "./events";
+import { shiftView } from "./shifts";
 import { accountEnv, getAccount, refreshAccountsSoon, resolveAccount, type AccountRow } from "./accounts";
 import { codexScreen, onExited, startupScreen, withHooks } from "./hooks";
 
@@ -162,6 +163,7 @@ export function sessionView(s: SessionRow) {
     current_command: l?.command ?? null,
     clients: l?.attached ?? 0,
     startup: startup.get(s.id) ?? null,
+    shift: shiftView(s.id),
   };
 }
 export type SessionView = ReturnType<typeof sessionView>;
