@@ -67,6 +67,100 @@ export function useSessionMessages(s: Session): Message[] {
   );
 }
 
+type Board = {
+  agents: { id: string; tool: Session["tool"]; title: string; state: string | null; task: string | null; branch: string | null; files: string[]; claims: string[] }[];
+  overlaps: { path: string; agents: string[] }[];
+};
+
+/** Who's on what: each running agent here, the files it edited or claimed, and files two of them touch. Polled while open. */
+function WhoBoard({ projectId }: { projectId: string }) {
+  const sessions = useStore((s) => s.sessions);
+  const [b, setB] = useState<Board | null>(null);
+  const [showAll, setShowAll] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    let alive = true;
+    const load = () =>
+      fetch(`/api/projects/${projectId}/team`)
+        .then((r) => (r.ok ? r.json() : null))
+        .then((x) => alive && x && setB(x))
+        .catch(() => {});
+    load();
+    const t = setInterval(() => document.visibilityState === "visible" && load(), 5000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, [projectId]);
+  if (!b?.agents.length) return null;
+  const hot = new Set(b.overlaps.map((o) => o.path));
+  const name = (id: string) => {
+    const s = sessions.find((x) => x.id === id);
+    return s ? `${TOOL_SHORT[s.tool]} · ${s.title.slice(0, 28)}` : id;
+  };
+  return (
+    <div class="who">
+      {b.overlaps.length > 0 && (
+        <div class="who-warn">
+          <Icon name="bell" size={14} />
+          <span>
+            {b.overlaps.slice(0, 3).map((o) => (
+              <span class="who-clash">
+                <code>{o.path}</code> — {o.agents.map(name).join(" & ")}
+              </span>
+            ))}
+            {b.overlaps.length > 3 && <span class="muted"> and {b.overlaps.length - 3} more files</span>}
+          </span>
+        </div>
+      )}
+      {b.agents.map((a) => {
+        const s = sessions.find((x) => x.id === a.id);
+        const files = [...new Set([...a.claims, ...a.files])];
+        const all = showAll.has(a.id);
+        return (
+          <div class="who-row">
+            <ToolBadge tool={a.tool} size={26} />
+            <div class="who-main">
+              <div class="who-head">
+                <Link href={`/s/${a.id}`} class="who-title">
+                  {a.title}
+                </Link>
+                {s && <span class={`who-state ${sessionState(s).cls}`}>{sessionState(s).label}</span>}
+              </div>
+              {(a.task || a.branch) && (
+                <div class="who-sub">
+                  {a.task && <span>{a.task}</span>}
+                  {a.branch && (
+                    <span class="mono">
+                      <Icon name="branch" size={11} /> {a.branch}
+                    </span>
+                  )}
+                </div>
+              )}
+              {files.length > 0 ? (
+                <div class="who-files">
+                  {(all ? files : files.slice(0, 6)).map((f) => (
+                    <code class={`${hot.has(f) ? "hot" : ""} ${a.claims.includes(f) ? "claimed" : ""}`} title={a.claims.includes(f) ? "Claimed" : "Edited"}>
+                      {a.claims.includes(f) && <Icon name="lock" size={10} />}
+                      {f.split("/").pop()}
+                    </code>
+                  ))}
+                  {files.length > 6 && !all && (
+                    <button class="who-more" onClick={() => setShowAll(new Set([...showAll, a.id]))}>
+                      +{files.length - 6}
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <div class="who-sub muted">No files edited yet</div>
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 /** The project's team room: every agent-to-agent message, and a box to talk to them. */
 export function TeamPanel({ projectId }: { projectId: string }) {
   const all = useStore((s) => s.messages);
@@ -111,6 +205,7 @@ export function TeamPanel({ projectId }: { projectId: string }) {
         )}
       </div>
       <div class="panel team-panel">
+        <WhoBoard projectId={projectId} />
         {msgs.length ? (
           <div class="team-feed" ref={feed}>
             {msgs.map((m) => (

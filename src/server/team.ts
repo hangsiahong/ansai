@@ -346,3 +346,41 @@ export function editWarning(me: SessionRow, file: string): string | null {
 export function dropClaims(sessionId: string) {
   claims.delete(sessionId);
 }
+
+// --------------------------------------------------------------------- board
+
+export type BoardAgent = {
+  id: string;
+  tool: string;
+  title: string;
+  state: string | null;
+  task: string | null;
+  branch: string | null;
+  files: string[];
+  claims: string[];
+};
+export type Board = { agents: BoardAgent[]; overlaps: { path: string; agents: string[] }[] };
+
+/** Who's on what in a project: each running agent's files and claims, and files two of them touch. */
+export function teamBoard(projectId: string): Board {
+  const rows = db
+    .query(
+      `SELECT s.*, t.title AS task_title, t.worktree_branch AS branch FROM sessions s LEFT JOIN tasks t ON t.id = s.task_id
+        WHERE s.status = 'running' AND s.tool IN ('claude', 'codex') AND s.project_id = ? ORDER BY s.created_at`,
+    )
+    .all(projectId) as (SessionRow & { task_title: string | null; branch: string | null })[];
+  const agents = rows.map((r) => ({
+    id: r.id,
+    tool: r.tool,
+    title: r.title,
+    state: r.agent_state,
+    task: r.task_title && r.task_title !== r.title ? r.task_title : null,
+    branch: r.branch,
+    files: touchedFiles(r, 30),
+    claims: [...liveClaims(r).keys()],
+  }));
+  const by = new Map<string, Set<string>>();
+  for (const a of agents) for (const f of new Set([...a.files, ...a.claims])) by.set(f, (by.get(f) ?? new Set()).add(a.id));
+  const overlaps = [...by.entries()].filter(([, ids]) => ids.size > 1).map(([path, ids]) => ({ path, agents: [...ids] }));
+  return { agents, overlaps };
+}

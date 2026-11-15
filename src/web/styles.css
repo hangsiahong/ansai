@@ -1304,3 +1304,28 @@ i.del { color: var(--danger); }
 .msg-copy:hover { color: var(--text-2); background: var(--fill-2); }
 .msg-copy.done { color: var(--green); }
 @media (pointer: coarse) { .msg-copy { opacity: 0.75; } }
+
+/* ================================================================== who's on what
+   The Team panel's live board: each agent, its files and claims, clashes. */
+.who { display: flex; flex-direction: column; border-bottom: 0.5px solid var(--line); }
+.who-warn { display: flex; gap: 8px; align-items: flex-start; padding: 10px 14px; font-size: 12.5px; line-height: 1.45; color: var(--warn); background: var(--warn-soft); }
+.who-warn > svg { flex: none; margin-top: 2px; }
+.who-clash { display: block; color: var(--text-2); }
+.who-clash code { color: var(--warn); font-weight: 600; }
+.who-row { display: flex; gap: 10px; padding: 10px 14px; }
+.who-row + .who-row { border-top: 0.5px solid var(--line); }
+.who-row > .toolbadge { flex: none; margin-top: 1px; }
+.who-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.who-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.who-title { flex: 1; min-width: 0; font-size: 14px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.who-state { flex: none; font-size: 12px; color: var(--muted); }
+.who-state.working { color: var(--green); }
+.who-state.attn { color: var(--warn); font-weight: 600; }
+.who-state.turn { color: var(--info); }
+.who-sub { display: flex; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--muted); min-width: 0; }
+.who-sub > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.who-files { display: flex; flex-wrap: wrap; gap: 4px; }
+.who-files code { display: inline-flex; align-items: center; gap: 3px; padding: 1px 6px; border-radius: 6px; background: var(--fill-2); color: var(--text-2); font-size: 11.5px; }
+.who-files code.claimed { background: var(--accent-soft); color: var(--accent-text); }
+.who-files code.hot { background: var(--warn-soft); color: var(--warn); font-weight: 600; }
+.who-more { border: 0; background: none; color: var(--muted); font-size: 11.5px; padding: 1px 4px; }

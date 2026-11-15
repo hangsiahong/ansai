@@ -38,7 +38,7 @@ import { getPrefs, publicKey, subscribe, testPush, unsubscribe } from "./push";
 import { setViewer } from "./viewers";
 import { startBackgroundTails, subscribeChat, unsubscribeChat } from "./transcripts";
 import { mcpHttp } from "./mcp";
-import { deliverIdle, listMessages, postMessage } from "./team";
+import { deliverIdle, listMessages, postMessage, teamBoard } from "./team";
 import { getSettings, setProjectAutopilot, startAutopilot, updateSettings } from "./autopilot";
 import { STATUSES, createTask, deleteTask, getTask, listTasks, runTask, updateTask } from "./tasks";
 import { changesIn, taskDir } from "./changes";
@@ -347,6 +347,12 @@ const server = Bun.serve<WSData>({
         const sid = new URL(req.url).searchParams.get("s");
         const out = sid ? handleHook(req.params.tool!, req.params.event!, sid, await parseBody(req, v.anyObject(), HOOK_LIMIT)) : undefined;
         return out ? json(out) : new Response(null, { status: 204 });
+      }),
+    },
+    "/api/projects/:id/team": {
+      GET: guard((req) => {
+        if (!getProject(req.params.id!)) throw notFound("no such project");
+        return json(teamBoard(req.params.id!));
       }),
     },
     "/api/messages": {
