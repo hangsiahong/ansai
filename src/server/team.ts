@@ -1,3 +1,4 @@
+import { isAbsolute, normalize, relative } from "node:path";
 import { db, now } from "./db";
 import { badRequest, conflict, notFound } from "./errors";
 import { emit } from "./events";
@@ -218,6 +219,7 @@ export function describeAgents(me: SessionRow): string {
         `  project: ${r.project_name ?? "none"}${r.project_id === me.project_id && me.project_id ? " (same as yours)" : ""}${r.branch ? ` · branch ${r.branch}` : ""}`,
         r.task_title && r.task_title !== r.title ? `  task: ${r.task_title}` : "",
         files.length ? `  edited: ${files.join(", ")}` : "",
+        claimsOf(r).length ? `  claimed: ${claimsOf(r).join(", ")}` : "",
         overlap.length ? `  ⚠ you both edited: ${overlap.join(", ")} — coordinate before changing these further` : "",
       ]
         .filter(Boolean)
@@ -238,4 +240,109 @@ export function describeHistory(me: SessionRow, limit = 20): string {
       return `[${ago(m.created_at)}] ${from} → ${to}: ${m.body}`;
     })
     .join("\n\n");
+}
+
+// -------------------------------------------------------------------- claims
+
+/**
+ * Advisory file claims: "I'm changing these, please don't." Agents still see
+ * every file; claims show up in list_agents, and an agent that edits a file
+ * someone else claimed (or recently edited) is told right after the edit.
+ * Kept in memory: they belong to running sessions and lapse when those end.
+ */
+type Claim = { reason: string; at: number };
+const claims = new Map<string, Map<string, Claim>>(); // session id → path (relative to its cwd) → claim
+const MAX_CLAIMS = 50;
+
+/** A path as the agent's project sees it: relative to its working folder when inside it. */
+export function relPath(s: Pick<SessionRow, "cwd">, p: string): string {
+  const abs = isAbsolute(p) ? normalize(p) : normalize(`${s.cwd}/${p}`);
+  const rel = relative(s.cwd, abs);
+  return rel.startsWith("..") ? abs : rel;
+}
+
+/** Other running agents that share this agent's project (or repo checkout). */
+function teammates(me: SessionRow): SessionRow[] {
+  return db
+    .query(`SELECT * FROM sessions WHERE status = 'running' AND tool IN ('claude', 'codex') AND id != ? AND (project_id = ? OR cwd = ?)`)
+    .all(me.id, me.project_id ?? "", me.cwd) as SessionRow[];
+}
+
+function liveClaims(s: SessionRow): Map<string, Claim> {
+  return claims.get(s.id) ?? new Map();
+}
+
+export function claimFiles(me: SessionRow, paths: string[], reason: string): string {
+  const mine = claims.get(me.id) ?? new Map<string, Claim>();
+  const taken: string[] = [];
+  const got: string[] = [];
+  const others = teammates(me);
+  for (const raw of paths.slice(0, MAX_CLAIMS)) {
+    const p = relPath(me, String(raw).trim());
+    if (!p) continue;
+    const holder = others.find((o) => liveClaims(o).has(p));
+    if (holder) {
+      taken.push(`${p} (claimed by ${agentLabel(holder)}, id ${holder.id}: ${liveClaims(holder).get(p)!.reason || "no reason given"})`);
+      continue;
+    }
+    mine.set(p, { reason: reason.slice(0, 200), at: now() });
+    got.push(p);
+  }
+  while (mine.size > MAX_CLAIMS) mine.delete(mine.keys().next().value!);
+  claims.set(me.id, mine);
+  const out = [];
+  if (got.length) out.push(`Claimed: ${got.join(", ")}. Other agents see this in list_agents; release_files when you're done.`);
+  if (taken.length) out.push(`Already claimed, so not yours: ${taken.join("; ")}. Ask that agent with send_message before changing these.`);
+  return out.join("\n") || "Nothing to claim.";
+}
+
+export function releaseFiles(me: SessionRow, paths?: string[]): string {
+  const mine = claims.get(me.id);
+  if (!mine?.size) return "You have no claims.";
+  if (!paths?.length) {
+    claims.delete(me.id);
+    return "Released all your claims.";
+  }
+  for (const p of paths) mine.delete(relPath(me, p));
+  return mine.size ? `Still claimed: ${[...mine.keys()].join(", ")}.` : "Released all your claims.";
+}
+
+export function claimsOf(s: SessionRow): string[] {
+  return [...liveClaims(s).entries()].map(([p, c]) => (c.reason ? `${p} (${c.reason})` : p));
+}
+
+const warned = new Set<string>(); // "me|other|path": say it once per pair and file
+
+/**
+ * Called after an agent edits a file: if another running agent claimed it, or
+ * edited it too, say so (once), so the two can sort it out before it turns into
+ * a merge conflict or a silent overwrite.
+ */
+export function editWarning(me: SessionRow, file: string): string | null {
+  const p = relPath(me, file);
+  const hits: string[] = [];
+  for (const o of teammates(me)) {
+    const key = `${me.id}|${o.id}|${p}`;
+    if (warned.has(key)) continue;
+    const claim = liveClaims(o).get(p);
+    const touched = !claim && touchedFiles(o, 200).includes(p);
+    if (!claim && !touched) continue;
+    warned.add(key);
+    hits.push(
+      claim
+        ? `${p} is claimed by ${agentLabel(o)} (agent id ${o.id})${claim.reason ? `: ${claim.reason}` : ""}.`
+        : `${agentLabel(o)} (agent id ${o.id}) has also edited ${p}${o.cwd === me.cwd ? " in this same folder" : ""}.`,
+    );
+  }
+  if (!hits.length) return null;
+  return [
+    "ansai: heads-up about the file you just changed.",
+    ...hits,
+    "Check with them using send_message before changing it further, so you don't overwrite each other or end up with a merge conflict.",
+  ].join("\n");
+}
+
+/** Forget a finished session's claims (called when it exits or closes). */
+export function dropClaims(sessionId: string) {
+  claims.delete(sessionId);
 }
