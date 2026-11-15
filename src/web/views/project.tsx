@@ -19,6 +19,16 @@ const RUN_LIMITS: [number | null, string][] = [
   [240, "4 hours"],
 ];
 
+const SCHEDULE_DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+/** "Mon".."Sun" for a time in the schedule's own timezone (a weekly schedule runs on the day of its next run). */
+function scheduleDay(at: number, timeZone: string) {
+  try {
+    return new Intl.DateTimeFormat("en-US", { timeZone, weekday: "short" }).format(at);
+  } catch {
+    return new Intl.DateTimeFormat("en-US", { weekday: "short" }).format(at);
+  }
+}
+
 function Schedules({ projectId }: { projectId: string }) {
   const [rows, setRows] = useState<Schedule[]>([]);
   const [editing, setEditing] = useState<Schedule | null>(null);
@@ -28,6 +38,7 @@ function Schedules({ projectId }: { projectId: string }) {
   const [accountId, setAccountId] = useState<string | null>(null);
   const [pick, setPick] = useState({ model: null as string | null, effort: null as string | null });
   const [cadence, setCadence] = useState<Schedule["cadence"]>("weekdays");
+  const [weekday, setWeekday] = useState<string>(() => scheduleDay(Date.now(), Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"));
   const [localTime, setLocalTime] = useState("09:00");
   const [timezone, setTimezone] = useState(Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
   const [busy, setBusy] = useState(false);
@@ -35,10 +46,10 @@ function Schedules({ projectId }: { projectId: string }) {
   const reload = () => api.schedules(projectId).then(setRows).catch(toastError);
   useEffect(() => { reload(); }, [projectId]);
   const clear = () => { setEditing(null); setTitle(""); setPrompt(""); setTool("claude"); setAccountId(null); setPick({ model: null, effort: null }); setCadence("weekdays"); setLocalTime("09:00"); setShowForm(false); };
-  const edit = (s: Schedule) => { setEditing(s); setTitle(s.title); setPrompt(s.prompt); setTool(s.tool); setAccountId(s.account_id); setPick({ model: s.model, effort: s.effort }); setCadence(s.cadence); setLocalTime(s.local_time); setTimezone(s.timezone); setShowForm(true); };
+  const edit = (s: Schedule) => { setEditing(s); setTitle(s.title); setPrompt(s.prompt); setTool(s.tool); setAccountId(s.account_id); setPick({ model: s.model, effort: s.effort }); setCadence(s.cadence); setWeekday(scheduleDay(s.next_at, s.timezone)); setLocalTime(s.local_time); setTimezone(s.timezone); setShowForm(true); };
   const save = async (e: Event) => {
     e.preventDefault(); setBusy(true);
-    try { await api.saveSchedule(projectId, { ...(editing ? { id: editing.id } : {}), title, prompt, tool, account_id: accountId, ...pick, cadence, local_time: localTime, timezone }); clear(); await reload(); }
+    try { await api.saveSchedule(projectId, { ...(editing ? { id: editing.id } : {}), title, prompt, tool, account_id: accountId, ...pick, cadence, local_time: localTime, timezone, ...(cadence === "weekly" ? { weekday } : {}) }); clear(); await reload(); }
     catch (e) { toastError(e); } finally { setBusy(false); }
   };
   const act = async (f: () => Promise<unknown>, message: string) => { try { await f(); toast(message); await reload(); } catch (e) { toastError(e); } };
@@ -49,9 +60,9 @@ function Schedules({ projectId }: { projectId: string }) {
     <div class="sec-head"><h2 class="sec-title">Scheduled tasks</h2><button class="sec-link" onClick={() => { clear(); setShowForm(true); }}>＋ Add schedule</button></div>
     {rows.map((s) => <article class="panel schedule-card" key={s.id}>
       <div class="schedule-title"><b>{s.title}</b><span class="muted small">{s.enabled ? `Next · ${new Date(s.next_at).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit", timeZone: s.timezone })} (${s.timezone})` : "Paused"}</span></div>
-      <div class="muted small">{s.cadence} · {s.local_time} · {s.tool}{s.model ? ` · ${s.model}` : ""}</div>
-      {s.occurrences.slice(0, 3).map((o) => <div class="schedule-run" key={o.id}><span>{new Date(o.scheduled_for).toLocaleDateString()}</span><a href={`/p/${projectId}`} onClick={(e) => { e.preventDefault(); openSheet({ kind: "task", taskId: o.task_id }); }}>{o.status === "needs_attention" ? "Needs attention" : o.task_status === "review" ? "Review" : o.status}</a>{o.session_id && <a href={`/s/${o.session_id}`} onClick={(e) => { e.preventDefault(); nav(`/s/${o.session_id}`); }}>Session</a>}{o.outcome && <span class="muted small">{o.outcome}</span>}</div>)}
-      <div class="schedule-actions"><button class="btn sm" onClick={async () => { try { const r = await api.runScheduleNow(projectId, s.id); toast(r.queued ? "Run queued — it will start when the project and run limit allow" : "Task created — turn on autopilot or start it from the backlog"); await reload(); } catch (e) { toastError(e); } }}>Run now</button><button class="btn sm" onClick={() => act(() => api.toggleSchedule(projectId, s.id, !s.enabled), s.enabled ? "Schedule paused" : "Schedule enabled")}>{s.enabled ? "Pause" : "Enable"}</button><button class="btn sm" onClick={() => edit(s)}>Edit</button><button class="btn sm" onClick={() => act(() => api.deleteSchedule(projectId, s.id), "Schedule deleted")}>Delete</button></div>
+      <div class="muted small">{s.cadence === "weekly" ? `weekly · ${scheduleDay(s.next_at, s.timezone)}` : s.cadence} · {s.local_time} · {s.tool}{s.model ? ` · ${s.model}` : ""}</div>
+      {s.occurrences.slice(0, 3).map((o) => <div class="schedule-run" key={o.id}><span>{new Date(o.scheduled_for).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</span><a href={`/p/${projectId}`} onClick={(e) => { e.preventDefault(); openSheet({ kind: "task", taskId: o.task_id }); }}>{o.status === "needs_attention" ? "Needs attention" : o.task_status === "review" ? "Review" : o.status}</a>{o.session_id && <a href={`/s/${o.session_id}`} onClick={(e) => { e.preventDefault(); nav(`/s/${o.session_id}`); }}>Session</a>}{o.outcome && <span class="muted small">{o.outcome}</span>}</div>)}
+      <div class="schedule-actions"><button class="btn sm" onClick={async () => { try { const r = await api.runScheduleNow(projectId, s.id); toast(r.queued ? "Run queued — it will start when the project and run limit allow" : "Task created — turn on autopilot or start it from the backlog"); await reload(); } catch (e) { toastError(e); } }}>Run now</button><button class="btn sm" onClick={() => act(() => api.toggleSchedule(projectId, s.id, !s.enabled), s.enabled ? "Schedule paused" : "Schedule enabled")}>{s.enabled ? "Pause" : "Enable"}</button><button class="btn sm" onClick={() => edit(s)}>Edit</button><button class="btn sm danger-text" onClick={async () => { if (await confirmDialog({ title: `Delete "${s.title}"?`, body: "Its past runs and their tasks stay in the backlog.", confirm: "Delete schedule", danger: true })) act(() => api.deleteSchedule(projectId, s.id), "Schedule deleted"); }}>Delete</button></div>
     </article>)}
     {!rows.length && <p class="muted small">Save a prompt to create a reviewable task on a schedule.</p>}
     {showForm && <form class="panel form schedule-form" onSubmit={save}>
@@ -61,7 +72,7 @@ function Schedules({ projectId }: { projectId: string }) {
       <label class="field"><span>Agent</span><select class="select" value={tool} onChange={(e) => { setTool((e.target as HTMLSelectElement).value as typeof tool); setAccountId(null); setPick({ model: null, effort: null }); }}>{AGENTS.map((a: ToolId) => <option value={a}>{TOOL_LABEL[a]}</option>)}</select></label>
       <AccountPicker tool={tool} value={accountId} onChange={setAccountId} />
       <ModelPicker tool={tool} accountId={accountId} value={pick} onChange={setPick} />
-      <div class="schedule-grid"><label class="field"><span>Cadence</span><select class="select" value={cadence} onChange={(e) => setCadence((e.target as HTMLSelectElement).value as Schedule["cadence"])}><option value="daily">Daily</option><option value="weekdays">Weekdays</option><option value="weekly">Weekly</option></select></label><label class="field"><span>Local time</span><input type="time" required value={localTime} onInput={(e) => setLocalTime((e.target as HTMLInputElement).value)} /></label></div>
+      <div class="schedule-grid"><label class="field"><span>Cadence</span><select class="select" value={cadence} onChange={(e) => setCadence((e.target as HTMLSelectElement).value as Schedule["cadence"])}><option value="daily">Daily</option><option value="weekdays">Weekdays</option><option value="weekly">Weekly</option></select></label>{cadence === "weekly" && <label class="field"><span>Day</span><select class="select" value={weekday} onChange={(e) => setWeekday((e.target as HTMLSelectElement).value)}>{SCHEDULE_DAYS.map((d) => <option value={d}>{d}</option>)}</select></label>}<label class="field"><span>Local time</span><input type="time" required value={localTime} onInput={(e) => setLocalTime((e.target as HTMLInputElement).value)} /></label></div>
       <label class="field"><span>Timezone</span><input required value={timezone} onInput={(e) => setTimezone((e.target as HTMLInputElement).value)} placeholder="America/New_York" /></label>
       <div class="schedule-actions"><button class="btn primary" disabled={busy}>{busy ? "Saving…" : "Save schedule"}</button><button type="button" class="btn" onClick={clear}>Cancel</button></div>
     </form>}

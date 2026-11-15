@@ -71,3 +71,29 @@ describe("recurring schedules", () => {
     expect(started).toMatchObject({ tool: "codex", model: "gpt-test", effort: "high" });
   });
 });
+
+const { runScheduleNow } = await import("./schedules");
+
+describe("weekly days and manual runs", () => {
+  const dayOf = (ts: number) => new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", weekday: "short" }).format(ts);
+  const weekly = { ...base, cadence: "weekly" as const };
+
+  test("a weekly schedule runs on the day you pick, and keeps it when edited", () => {
+    const s = saveSchedule("p1", null, { ...weekly, weekday: "Thu" }) as { id: string; next_at: number };
+    expect(dayOf(s.next_at)).toBe("Thu");
+    const edited = saveSchedule("p1", s.id, { ...weekly, title: "Renamed" }) as { next_at: number };
+    expect(dayOf(edited.next_at)).toBe("Thu"); // used to move to the day of the edit
+    const moved = saveSchedule("p1", s.id, { ...weekly, weekday: "Sat" }) as { next_at: number };
+    expect(dayOf(moved.next_at)).toBe("Sat");
+    expect(() => saveSchedule("p1", s.id, { ...weekly, weekday: "Funday" })).toThrow(/weekday/);
+  });
+
+  test("Run now is filed under when it ran, not under the next slot", () => {
+    const s = saveSchedule("p1", null, base) as { id: string; next_at: number };
+    const before = now();
+    runScheduleNow("p1", s.id);
+    const o = db.query("SELECT scheduled_for FROM schedule_occurrences WHERE schedule_id = ?").get(s.id) as { scheduled_for: number };
+    expect(o.scheduled_for).toBeGreaterThanOrEqual(before);
+    expect(o.scheduled_for).toBeLessThan(s.next_at);
+  });
+});

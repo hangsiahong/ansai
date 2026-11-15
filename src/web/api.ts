@@ -237,7 +237,7 @@ export const api = {
 
   setAutopilot: (projectId: string, patch: Partial<Autopilot>) => call<Autopilot>("PUT", `/api/projects/${projectId}/autopilot`, patch),
   schedules: (projectId: string) => call<Schedule[]>("GET", `/api/projects/${projectId}/schedules`),
-  saveSchedule: (projectId: string, schedule: Partial<Schedule> & { title: string; prompt: string; tool: Exclude<ToolId, "shell">; cadence: Schedule["cadence"]; local_time: string; timezone: string }) => call<Schedule>("POST", `/api/projects/${projectId}/schedules`, {
+  saveSchedule: (projectId: string, schedule: Partial<Schedule> & { title: string; prompt: string; tool: Exclude<ToolId, "shell">; cadence: Schedule["cadence"]; local_time: string; timezone: string; weekday?: string }) => call<Schedule>("POST", `/api/projects/${projectId}/schedules`, {
       // The server takes camelCase; the row it returns is snake_case.
       id: schedule.id,
       title: schedule.title,
@@ -249,6 +249,7 @@ export const api = {
       cadence: schedule.cadence,
       localTime: schedule.local_time,
       timezone: schedule.timezone,
+      weekday: schedule.weekday,
     }),
   toggleSchedule: (projectId: string, id: string, enabled: boolean) => call<{ ok: true }>("PATCH", `/api/projects/${projectId}/schedules/${id}`, { enabled }),
   deleteSchedule: (projectId: string, id: string) => call<{ ok: true }>("DELETE", `/api/projects/${projectId}/schedules/${id}`),

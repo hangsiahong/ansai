@@ -47,7 +47,7 @@ import { STATUSES, createTask, deleteTask, getTask, listTasks, runTask, updateTa
 import { changesIn, taskDir } from "./changes";
 import { discardTaskWorktree, mergeTaskWorktree } from "./worktrees";
 import { db } from "./db";
-import { deleteSchedule, listSchedules, runScheduleNow, saveSchedule, setScheduleEnabled } from "./schedules";
+import { WEEKDAYS, deleteSchedule, listSchedules, runScheduleNow, saveSchedule, setScheduleEnabled } from "./schedules";
 import {
   AGENT_TOOLS,
   createAccount,
@@ -375,13 +375,13 @@ const server = Bun.serve<WSData>({
     "/api/projects/:id/schedules": {
       GET: guard((req) => json(listSchedules(req.params.id!))),
       POST: guard(async (req) => {
-        const b = await parseBody(req, v.object({ id: v.optional(v.string({ max: 40 })), title: v.string({ min: 1, max: 300, trim: true }), prompt: v.string({ min: 1, max: PROMPT_MAX }), tool: v.oneOf(AGENT_TOOLS), accountId: optRef, model: optModel, effort: optEffort, cadence: v.oneOf(["daily", "weekdays", "weekly"] as const), localTime: v.string({ min: 5, max: 5 }), timezone: v.string({ min: 1, max: 100 }) }));
+        const b = await parseBody(req, v.object({ id: v.optional(v.string({ max: 40 })), title: v.string({ min: 1, max: 300, trim: true }), prompt: v.string({ min: 1, max: PROMPT_MAX }), tool: v.oneOf(AGENT_TOOLS), accountId: optRef, model: optModel, effort: optEffort, cadence: v.oneOf(["daily", "weekdays", "weekly"] as const), localTime: v.string({ min: 5, max: 5 }), timezone: v.string({ min: 1, max: 100 }), weekday: v.optional(v.oneOf(WEEKDAYS)) }));
         return json(saveSchedule(req.params.id!, b.id ?? null, b));
       }),
     },
     "/api/projects/:id/schedules/:scheduleId": {
       PATCH: guard(async (req) => {
-        const b = await parseBody(req, v.object({ enabled: v.optional(v.boolean()) }));
+        const b = await parseBody(req, v.object({ enabled: v.boolean() })); // required: a body without it used to pause the schedule
         return json(setScheduleEnabled(req.params.id!, req.params.scheduleId!, b.enabled === true));
       }),
       DELETE: guard((req) => { deleteSchedule(req.params.id!, req.params.scheduleId!); return json({ ok: true }); }),

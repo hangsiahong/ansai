@@ -9,7 +9,10 @@ export type Cadence = "daily" | "weekdays" | "weekly";
 export type ScheduleInput = {
   title: string; prompt: string; tool: ToolId; accountId?: string | null;
   model?: string | null; effort?: string | null; cadence: Cadence; localTime: string; timezone: string;
+  /** Weekly only: "Mon".."Sun". Unset keeps the day a schedule already runs on (or today, for a new one). */
+  weekday?: string;
 };
+export const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
 type ScheduleRow = {
   id: string; project_id: string; prompt: string; title: string; tool: ToolId; account_id: string | null;
   model: string | null; effort: string | null; cadence: Cadence; local_time: string; timezone: string;
@@ -67,11 +70,14 @@ export function saveSchedule(projectId: string, id: string | null, o: ScheduleIn
   validate(o);
   if (!getProject(projectId)) throw notFound("no such project");
   if (o.accountId && !db.query("SELECT 1 FROM accounts WHERE id=?").get(o.accountId)) throw badRequest("no such account");
+  if (o.weekday && !(WEEKDAYS as readonly string[]).includes(o.weekday)) throw badRequest("weekday must be Mon to Sun");
   const t = now();
-  const next = nextAt(t, o.localTime, o.timezone, o.cadence);
+  const old = id ? (db.query("SELECT id, next_at, timezone FROM schedules WHERE id=? AND project_id=?").get(id, projectId) as { id: string; next_at: number; timezone: string } | null) : null;
+  if (id && !old) throw notFound("no such schedule");
+  // A weekly schedule keeps its day when edited (the day isn't stored; it's the day of the next run).
+  const day = o.weekday ?? (old ? localParts(old.next_at, old.timezone).weekday : undefined);
+  const next = nextAt(t, o.localTime, o.timezone, o.cadence, day);
   if (id) {
-    const old = db.query("SELECT id FROM schedules WHERE id=? AND project_id=?").get(id, projectId);
-    if (!old) throw notFound("no such schedule");
     db.query(`UPDATE schedules SET title=?,prompt=?,tool=?,account_id=?,model=?,effort=?,cadence=?,local_time=?,timezone=?,next_at=?,updated_at=? WHERE id=?`)
       .run(o.title.trim(), o.prompt, o.tool, o.accountId ?? null, o.model ?? null, o.effort ?? null, o.cadence, o.localTime, o.timezone, next, t, id);
   } else {
@@ -129,7 +135,8 @@ export function runScheduleNow(projectId: string, id: string) {
   if (!s) throw notFound("no such schedule");
   const task = db.transaction(() => {
     const last = Number((db.query("SELECT MAX(scheduled_for) AS n FROM schedule_occurrences WHERE schedule_id=?").get(id) as { n: number | null }).n ?? 0);
-    return occurrence(s, Math.max(now(), last + 1, s.next_at + 1));
+    // Filed under when it actually ran (not the next slot), so a manual run and the 09:00 run don't look alike.
+    return occurrence(s, Math.max(now(), last + 1));
   })();
   return task;
 }
