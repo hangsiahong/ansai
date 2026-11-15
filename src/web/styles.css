@@ -362,6 +362,7 @@ textarea.input { resize: vertical; line-height: 1.45; }
 .title-input {
   width: 100%; border: 0; outline: 0; background: none; resize: none; padding: 0; overflow: hidden;
   font: 700 22px/1.25 var(--ui); letter-spacing: -0.02em; color: var(--text);
+  field-sizing: content; min-height: 2.5em; max-height: 5em; overflow-y: auto;
 }
 .notes { min-height: 96px; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
