@@ -239,7 +239,9 @@ export async function createSession(o: CreateOpts) {
   const id = newId("s");
   const tmuxName = `ansai-${id}`;
   const launch = { yolo: o.yolo, model: o.model || undefined, effort: o.effort || undefined };
-  const argv = o.argv ?? withHooks(o.tool, tool.argv({ ...launch, prompt: o.prompt?.trim() || undefined }), id);
+  const playbook = o.tool !== "shell" ? effectivePlaybook(project?.playbook ?? "") : "";
+  const prompt = [playbook, o.prompt?.trim()].filter(Boolean).join("\n\n");
+  const argv = o.argv ?? withHooks(o.tool, tool.argv({ ...launch, prompt: prompt || undefined }), id);
   const title =
     o.title?.trim() ||
     (o.prompt?.trim() ? o.prompt.trim().split("\n")[0]!.slice(0, 60) : `${tool.label}${project ? " · " + project.name : ""}`);
@@ -288,7 +290,8 @@ export async function restartSession(id: string) {
   const keep = { yolo: argv.some((a) => a.startsWith("--dangerously")), ...relaunchChoice(argv, s) };
   // Pick the conversation back up while its cache is warm (claude --resume <id>, codex resume <id>).
   const conv = resumableConversation(s);
-  const fresh = tool.argv(keep);
+  const playbook = s.tool !== "shell" ? effectivePlaybook(s.project_id ? getProject(s.project_id)?.playbook ?? "" : "") : "";
+  const fresh = tool.argv({ ...keep, prompt: playbook || undefined });
   const launch = !conv ? fresh : s.tool === "claude" ? [...fresh, "--resume", conv] : [fresh[0]!, "resume", conv, ...fresh.slice(1)];
   const base = s.tool === "shell" ? argv : withHooks(s.tool, launch, s.id);
   const account = s.account_id ? getAccount(s.account_id) : null;
@@ -306,6 +309,12 @@ export async function restartSession(id: string) {
   db.query("UPDATE sessions SET status = 'running', exit_code = NULL, ended_at = NULL WHERE id = ?").run(id);
   await reconcile();
   return sessionView(getSession(id)!);
+}
+
+/** Render the stored project guidance in the agent's prompt with an explicit conflict rule. */
+export function effectivePlaybook(text: string): string {
+  const content = text.trim();
+  return content ? `Project playbook (managed by ansai; source: this project's Playbook setting):\n${content}\n\nPrecedence: follow system and developer instructions first. Repository instruction files govern repository-specific requirements and take precedence over this playbook where they conflict. Follow this playbook for project guidance not covered by higher-priority instructions.` : "";
 }
 
 export async function closeSession(id: string) {

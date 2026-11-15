@@ -67,6 +67,8 @@ export function ProjectPane({ id }: { id: string }) {
   const sessions = useStore((s) => s.sessions);
   const allTasks = useStore((s) => s.tasks);
   const [fetched, setFetched] = useState<Project | null>(null);
+  const [playbook, setPlaybook] = useState<string | null>(null);
+  const [savingPlaybook, setSavingPlaybook] = useState(false);
   const project = projects.find((p) => p.id === id) ?? fetched;
   useEffect(() => {
     if (!projects.find((p) => p.id === id)) api.project(id).then(setFetched).catch(toastError);
@@ -74,6 +76,7 @@ export function ProjectPane({ id }: { id: string }) {
   if (!project) return <div class="pane center muted">Loading…</div>;
   const mine = sessions.filter((s) => s.project_id === id);
   const tasks = allTasks.filter((t) => t.project_id === id);
+  const savedPlaybook = playbook ?? project.playbook ?? "";
 
   const update = async (patch: { pinned?: boolean; hidden?: boolean }) => {
     if (patch.hidden && !(await confirmDialog({ title: `Hide ${project.name}?`, body: "It disappears from lists and search. You can show it again from Projects.", confirm: "Hide" })))
@@ -87,6 +90,21 @@ export function ProjectPane({ id }: { id: string }) {
       }
     } catch (e) {
       toastError(e);
+    }
+  };
+
+  const savePlaybook = async () => {
+    setSavingPlaybook(true);
+    try {
+      const updated = await api.updateProject(id, { playbook: savedPlaybook });
+      setFetched(updated);
+      setPlaybook(null);
+      await refreshProjects();
+      toast("Playbook saved");
+    } catch (e) {
+      toastError(e);
+    } finally {
+      setSavingPlaybook(false);
     }
   };
 
@@ -112,6 +130,18 @@ export function ProjectPane({ id }: { id: string }) {
         <section class="sec">
           <h2 class="sec-title">Start an agent here</h2>
           <Launchers projectId={id} />
+        </section>
+
+        <section class="sec">
+          <h2 class="sec-title">Agent playbook</h2>
+          <div class="panel" style={{ padding: "16px" }}>
+            <label class="field">
+              <span>Project instructions · stored by ansai</span>
+              <textarea class="input" rows={6} maxLength={20000} value={savedPlaybook} onInput={(e) => setPlaybook((e.target as HTMLTextAreaElement).value)} placeholder="Add guidance for agents working in this project…" />
+            </label>
+            <p class="muted" style={{ margin: "10px 0", fontSize: "13px" }}>Sent to every agent session and task run. System and developer instructions take priority; repository instruction files take priority for conflicting repository requirements. This does not edit repository files.</p>
+            <button class="btn sm" disabled={savingPlaybook || savedPlaybook === (project.playbook ?? "")} onClick={savePlaybook}>{savingPlaybook ? "Saving…" : "Save playbook"}</button>
+          </div>
         </section>
 
         <div class="split">

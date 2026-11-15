@@ -10,6 +10,7 @@ export type Project = {
   hidden: number;
   last_used_at: number | null;
   autopilot: Autopilot | null;
+  playbook: string;
 };
 export type Plan = { done: number; total: number; current: string | null; items: { content: string; status: string }[] };
 export type Settings = { autopilotMax: number; trackSessions: boolean };
@@ -188,7 +189,7 @@ export const api = {
   project: (id: string) => call<Project & { sessions: Session[] }>("GET", `/api/projects/${id}`),
   addProject: (path: string) => call<Project>("POST", "/api/projects", { path }),
   scanProjects: () => call<{ added: number; projects: Project[] }>("POST", "/api/projects/scan"),
-  updateProject: (id: string, patch: { pinned?: boolean; hidden?: boolean }) => call<Project>("PATCH", `/api/projects/${id}`, patch),
+  updateProject: (id: string, patch: { pinned?: boolean; hidden?: boolean; playbook?: string }) => call<Project>("PATCH", `/api/projects/${id}`, patch),
 
   tasks: () => call<Task[]>("GET", "/api/tasks"),
   createTask: (o: { title: string; body?: string; projectId?: string | null; status?: TaskStatus; priority?: number }) =>

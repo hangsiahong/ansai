@@ -190,6 +190,10 @@ const migrations: string[] = [
   ALTER TABLE tasks ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0;
   ALTER TABLE tasks ADD COLUMN last_failure TEXT;
   `,
+  // v14: per-project agent instructions, stored by ansai rather than in the repository.
+  `
+  ALTER TABLE projects ADD COLUMN playbook TEXT NOT NULL DEFAULT '';
+  `,
 ];
 
 export function getSetting<T>(key: string, fallback: T): T {

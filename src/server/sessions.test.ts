@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const { resumableConversation } = await import("./sessions");
+const { resumableConversation, effectivePlaybook } = await import("./sessions");
 
 const dir = mkdtempSync(join(tmpdir(), "ansai-resume-"));
 const claudeLog = join(dir, "4f1c2d3e-aaaa-4bbb-8ccc-0123456789ab.jsonl");
@@ -26,5 +26,18 @@ describe("resumableConversation", () => {
     expect(resumableConversation({ tool: "claude", transcript: null }, now)).toBeNull();
     expect(resumableConversation({ tool: "claude", transcript: join(dir, "gone-0000.jsonl") }, now)).toBeNull();
     expect(resumableConversation({ tool: "agy", transcript: claudeLog }, now)).toBeNull();
+  });
+});
+
+describe("effectivePlaybook", () => {
+  test("empty guidance leaves launch behavior unchanged", () => {
+    expect(effectivePlaybook("")).toBe("");
+    expect(effectivePlaybook("  \n ")).toBe("");
+  });
+  test("identifies the ansai source and states precedence for agents", () => {
+    const prompt = effectivePlaybook("Use the shared formatter.");
+    expect(prompt).toContain("managed by ansai");
+    expect(prompt).toContain("Use the shared formatter.");
+    expect(prompt).toContain("Repository instruction files");
   });
 });
