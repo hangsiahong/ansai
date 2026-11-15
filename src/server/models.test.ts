@@ -39,19 +39,19 @@ describe("claudeDefaultEffort", () => {
 describe("answeredOnScreen", () => {
   const typed = ["❯ /model sonnet", "  ⎿  Set model to Sonnet 5.5", "❯ /effort medium"].join("\n");
 
-  test("the latest copy of the command has an answer under it", () => {
-    expect(answeredOnScreen(typed, "/model sonnet")).toBe(true);
+  test("the latest echo of the command has an answer under it", () => {
+    expect(answeredOnScreen(typed, "/model")).toBe(true);
   });
 
   test("a command still sitting there unanswered isn't confirmed", () => {
-    expect(answeredOnScreen(typed, "/effort medium")).toBe(false);
+    expect(answeredOnScreen(typed, "/effort")).toBe(false);
   });
 
   test("an older answer to the same command doesn't count for a new one", () => {
-    expect(answeredOnScreen(typed + "\n  ⎿  Set effort level to medium\n> /model sonnet", "/model sonnet")).toBe(false);
+    expect(answeredOnScreen(typed + "\n  ⎿  Set effort level to medium\n> /model sonnet", "/model")).toBe(false);
   });
 
-  test("agy's answers count too", () => {
-    expect(answeredOnScreen("> /effort low\n  ⎿  Effort set to low", "/effort low")).toBe(true);
+  test("agy echoes the command without its argument; its answer counts too", () => {
+    expect(answeredOnScreen("> /effort\n  ⎿  Effort set to low", "/effort")).toBe(true);
   });
 });

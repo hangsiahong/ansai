@@ -1509,3 +1509,10 @@ i.del { color: var(--danger); }
 
 .team-dlv { font-size: 11px; font-weight: 600; color: var(--faint); display: inline-flex; align-items: center; gap: 2px; }
 .team-dlv.ok { color: var(--green); }
+
+/* A project's shared instructions read like a small, comfortable editor. */
+.playbook-body { padding: 12px 14px 14px; }
+.playbook-input { min-height: 148px; max-height: 38svh; resize: vertical; background: var(--fill-2); border: 1px solid var(--line); font: 13px/1.6 var(--mono); }
+.playbook-input::placeholder { color: var(--muted); opacity: 1; }
+.playbook-body > .btn { min-height: 44px; }
+@media (max-width: 820px) { .playbook-input { min-height: 156px; font-size: 12.5px; } }

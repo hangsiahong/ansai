@@ -49,9 +49,9 @@ export function PlaybookCard({ projectId }: { projectId: string }) {
           </span>
         </button>
         {open && (
-          <div class="ap-body">
+          <div class="ap-body playbook-body">
             <textarea
-              class="input"
+              class="input playbook-input"
               rows={6}
               placeholder={"- Run `bun run test` and `bun run typecheck` before finishing\n- Commit with clear messages on your branch"}
               value={text}

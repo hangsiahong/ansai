@@ -241,9 +241,11 @@ function parseClaude(line: string, st: ParseState, out: ChatItem[]) {
     blocks.forEach((b: any, i: number) => {
       if (b.type === "text") {
         const raw = String(b.text ?? "");
-        // /model and /effort answer in the log right away; the next reply then names the exact model id.
+        // /model and /effort answer in the log (the next reply then names the exact model id).
+        // A session's first /model can land seconds late, after a following /effort, so it
+        // leaves the effort alone.
         const setModel = raw.match(/^<local-command-stdout>Set model to `?([^`\n<]+?)`?(?: and saved| \(|<|$)/);
-        if (setModel) (st.model = setModel[1]!.trim()), (st.effort = null);
+        if (setModel) st.model = setModel[1]!.trim();
         const setEffort = raw.match(/^<local-command-stdout>Set effort level to ([a-z]+)\b/);
         if (setEffort) st.effort = setEffort[1]!;
         const u = cleanClaudeUser(raw);
