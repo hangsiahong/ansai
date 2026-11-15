@@ -39,6 +39,7 @@ import { setViewer } from "./viewers";
 import { startBackgroundTails, subscribeChat, unsubscribeChat } from "./transcripts";
 import { mcpHttp } from "./mcp";
 import { deliverIdle, listMessages, postMessage, teamBoard } from "./team";
+import { digest, markSeen } from "./digest";
 import { endProjectShift, endShift, nudgeIdle, shiftView, startProjectShift, startShift } from "./shifts";
 import { getSettings, setProjectAutopilot, startAutopilot, updateSettings } from "./autopilot";
 import { STATUSES, createTask, deleteTask, getTask, listTasks, runTask, updateTask } from "./tasks";
@@ -211,6 +212,16 @@ const server = Bun.serve<WSData>({
       }),
     },
     "/api/tools": guard(() => json(toolList())),
+    "/api/digest": guard(async (req) => {
+      const q = Number(new URL(req.url).searchParams.get("since"));
+      return json(await digest(Number.isFinite(q) && q > 0 ? q : undefined));
+    }),
+    "/api/digest/seen": {
+      POST: guard(() => {
+        markSeen();
+        return json({ ok: true });
+      }),
+    },
     "/api/models": {
       GET: guard(async (req) => {
         const q = new URL(req.url).searchParams;

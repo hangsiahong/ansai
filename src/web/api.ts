@@ -43,6 +43,15 @@ export type Session = {
   shift: Shift | null;
 };
 
+export type Digest = {
+  since: number;
+  finished: string[];
+  filed: string[];
+  shifts: (Shift & { title: string })[];
+  messages: number;
+  projects: { projectId: string; name: string; branch: string | null; count: number; commits: { sha: string; subject: string; at: number }[]; unmerged: number }[];
+};
+
 export type Shift = {
   session_id: string;
   active: boolean;
@@ -217,6 +226,8 @@ export const api = {
   setDevices: (allowed: string[]) => call<DeviceList>("PUT", "/api/devices", { allowed }),
 
   setAutopilot: (projectId: string, patch: Partial<Autopilot>) => call<Autopilot>("PUT", `/api/projects/${projectId}/autopilot`, patch),
+  digest: () => call<Digest>("GET", "/api/digest"),
+  digestSeen: () => call<{ ok: true }>("POST", "/api/digest/seen"),
   startShift: (sessionId: string, o: { until: number; focus?: string | null }) => call<Shift>("PUT", `/api/sessions/${sessionId}/shift`, o),
   endShift: (sessionId: string) => call<Shift>("DELETE", `/api/sessions/${sessionId}/shift`),
   startProjectShift: (projectId: string, o: { until: number; focus?: string | null }) =>

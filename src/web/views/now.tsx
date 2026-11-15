@@ -4,6 +4,7 @@ import { openPalette, openSheet, useStore } from "../store";
 import { AGENTS, Empty, FolderIcon, Icon, Link, TOOL_SHORT, ToolBadge, ago, modelLabel, sessionOrder, sessionState, useTick } from "../ui";
 import { TaskRow } from "./tasks";
 import { ShiftTag } from "../shift";
+import { AwayDigest } from "../digest";
 
 function greeting() {
   const h = new Date().getHours();
@@ -144,6 +145,8 @@ export function NowPane() {
               </div>
             </section>
           )}
+
+          <AwayDigest />
 
           {others.length > 0 && (
             <section class="sec">
