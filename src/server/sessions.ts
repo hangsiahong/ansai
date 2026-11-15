@@ -3,7 +3,7 @@ import { basename } from "node:path";
 import { config, cleanEnv } from "./config";
 import { db, newId, now } from "./db";
 import { badRequest, conflict, notFound } from "./errors";
-import { TOOLS, launchChoice, type ToolId } from "./tools";
+import { TOOLS, relaunchChoice, type ToolId } from "./tools";
 import { getProject, touchProject } from "./projects";
 import { emit } from "./events";
 import { shiftView } from "./shifts";
@@ -116,10 +116,12 @@ const startup = new Map<string, StartupPrompt>(); // keyed by session id
 
 type Dialog = { kind: string; match: RegExp; message: string; accept: string | null; acceptKeys: string[]; decline?: string; declineKeys?: string[] };
 // Claude Code 2.1's startup screens. Both yes/no menus open on "No, exit", so accepting is Down + Enter.
+// Every pattern has an escape or a [x] class, so this file's own text on an agent's screen
+// (say, a diff of it in an approval prompt) can never match it.
 const CLAUDE_DIALOGS: Dialog[] = [
   {
     kind: "trust",
-    match: /Is this a project you created or one you trust|Do you trust the files in this folder/i,
+    match: /(Is this a project you created or one you trust|Do you trust the files in this folder)\?/i,
     message: "Claude asks whether you trust this folder before it starts.",
     accept: "Trust folder",
     acceptKeys: ["Down", "Enter"],
@@ -128,18 +130,18 @@ const CLAUDE_DIALOGS: Dialog[] = [
   },
   {
     kind: "bypass",
-    match: /running in Bypass Permissions mode/i,
+    match: /running in Bypass Permissions mod[e]/i,
     message: "Claude wants you to confirm auto-approve (bypass permissions) mode.",
     accept: "Accept",
     acceptKeys: ["Down", "Enter"],
     decline: "Exit",
     declineKeys: ["Enter"],
   },
-  { kind: "theme", match: /Choose the text style that looks best/i, message: "First run: Claude asks for a text style.", accept: "Use default", acceptKeys: ["Enter"] },
-  { kind: "login", match: /Select login method/i, message: "This account isn't signed in. Open the terminal to sign in.", accept: null, acceptKeys: [] },
+  { kind: "theme", match: /Choose the text style that looks bes[t]/i, message: "First run: Claude asks for a text style.", accept: "Use default", acceptKeys: ["Enter"] },
+  { kind: "login", match: /Select login metho[d]/i, message: "This account isn't signed in. Open the terminal to sign in.", accept: null, acceptKeys: [] },
   { kind: "apikey", match: /Do you want to use this API key\?/i, message: "Claude asks whether to use an API key from your environment.", accept: null, acceptKeys: [] },
 ];
-// Codex 0.169: "Trust this folder?" opens on "1. Trust and continue"; Esc goes back.
+// Codex 0.169 asks to trust the folder, with option 1 (trust and continue) preselected; Esc goes back.
 // Patterns need the menu too, so an agent merely showing this text (say, this file) doesn't trip them.
 const CODEX_DIALOGS: Dialog[] = [
   {
@@ -152,7 +154,7 @@ const CODEX_DIALOGS: Dialog[] = [
     declineKeys: ["Escape"],
   },
 ];
-// Antigravity CLI: "Do you trust the contents of this project?" opens on "Yes, I trust this folder".
+// Antigravity CLI asks to trust the project, with its yes option preselected; Down + Enter exits.
 const AGY_DIALOGS: Dialog[] = [
   {
     kind: "trust",
@@ -283,7 +285,7 @@ export async function restartSession(id: string) {
   const argv = JSON.parse(s.argv) as string[];
   // A restarted agent shouldn't replay the original prompt (or a login flow), but keeps its model and effort.
   const tool = TOOLS[s.tool];
-  const keep = { yolo: argv.some((a) => a.startsWith("--dangerously")), ...launchChoice(argv) };
+  const keep = { yolo: argv.some((a) => a.startsWith("--dangerously")), ...relaunchChoice(argv, s) };
   // Pick the conversation back up while its cache is warm (claude --resume <id>, codex resume <id>).
   const conv = resumableConversation(s);
   const fresh = tool.argv(keep);
@@ -413,11 +415,21 @@ async function watchStartupScreens() {
     .query(`SELECT id, tool, tmux_name, cwd, agent_state FROM sessions WHERE tool IN ('claude', 'codex', 'agy') AND status = 'running' AND (agent_state IS NULL OR agent_state = 'needs-input')`)
     .all() as Pick<SessionRow, "id" | "tool" | "tmux_name" | "cwd" | "agent_state">[];
   for (const r of rows) {
-    if (r.agent_state === "needs-input" && !startup.has(r.id)) continue; // a real approval, from hooks
     const cap = await tmux(["capture-pane", "-p", "-J", "-t", r.tmux_name]);
     if (cap.code !== 0) continue;
     const d = (DIALOGS[r.tool] ?? []).find((x) => x.match.test(cap.out));
     const prev = startup.get(r.id);
+    if (r.agent_state === "needs-input" && !prev) {
+      // Either a real approval (from hooks; leave it alone), or a startup screen this ansai
+      // hasn't seen yet because it restarted while the agent sat on it: without the entry the
+      // UI would offer generic Allow (Enter), which on these menus picks "No, exit".
+      if (!d) continue;
+      if (!(d.kind === "trust" && r.cwd.startsWith(config.dataDir + "/worktrees/"))) {
+        startup.set(r.id, { kind: d.kind, message: d.message, accept: d.accept, acceptKeys: d.acceptKeys, decline: d.decline ?? null, declineKeys: d.declineKeys ?? [] });
+        emit("sessions"); // already marked Needs you (and pushed) before the restart
+        continue;
+      }
+    }
     if (d?.kind === "trust" && r.cwd.startsWith(config.dataDir + "/worktrees/")) {
       if (prev?.kind !== "trust-auto") {
         startup.set(r.id, { kind: "trust-auto", message: "", accept: null, acceptKeys: [], decline: null, declineKeys: [] });
