@@ -104,8 +104,9 @@ export function startShift(sessionId: string, o: { until: number; focus?: string
   const t = now();
   if (!Number.isFinite(o.until) || o.until <= t + 60_000) throw badRequest("pick a time at least a minute from now");
   if (o.until > t + MAX_SHIFT) throw badRequest("a shift can last 24 hours at most");
-  const focus = o.focus?.trim() || null;
   const cur = active(sessionId);
+  // Extending without a focus (the project sheet does that for every agent) keeps each one's own focus.
+  const focus = o.focus === undefined && cur ? cur.focus : o.focus?.trim() || null;
   if (cur) {
     // Extending or refocusing keeps the counters (and the report's start).
     db.query("UPDATE shifts SET until = ?, focus = ? WHERE session_id = ?").run(o.until, focus, sessionId);
@@ -263,16 +264,21 @@ export async function nudgeIdle() {
     .all() as { session_id: string }[];
   for (const g of gone) endShift(g.session_id, "exited");
 
+  // A Codex that hasn't finished a turn yet has no state (it has no start hook), so an
+  // idle one is recognized by its screen being still and free of startup questions.
   const rows = db
     .query(
       `SELECT s.* FROM sessions s JOIN shifts sh ON sh.session_id = s.id
-       WHERE sh.ended_at IS NULL AND s.status = 'running' AND s.agent_state = 'waiting' AND s.tool IN ('claude', 'codex')`,
+       WHERE sh.ended_at IS NULL AND s.status = 'running' AND s.tool IN ('claude', 'codex')
+         AND (s.agent_state = 'waiting' OR (s.tool = 'codex' AND s.agent_state IS NULL))`,
     )
     .all() as SessionRow[];
   for (const s of rows) {
     if (nudging.has(s.id) || wakes(s)) continue; // a waiting team message goes first; it starts a turn of its own
-    const quietFor = t - (sessionView(s).activity_at ?? 0);
+    const view = sessionView(s);
+    const quietFor = t - (view.activity_at ?? 0);
     if (quietFor < 4000) continue; // let the screen settle after the turn
+    if (s.agent_state === null && (view.startup || quietFor < 10_000)) continue; // a fresh Codex: only once it's clearly sitting at its prompt
     const sh = active(s.id);
     if (!sh) continue;
     if (sh.last_nudge_at && t - sh.last_nudge_at < 15_000) continue; // already typed one; wait for it to land

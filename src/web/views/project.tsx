@@ -7,6 +7,7 @@ import { ModelPicker } from "../models";
 import { Launchers, SessionCell } from "./now";
 import { QuickAdd, TaskList } from "./tasks";
 import { TeamPanel } from "../team";
+import { PlaybookCard } from "../playbook";
 import { canShift } from "../shift";
 
 function AutopilotCard({ project, openTodo }: { project: Project; openTodo: string[] }) {
@@ -147,6 +148,7 @@ export function ProjectPane({ id }: { id: string }) {
         <div class="split">
           <section class="sec">
             <AutopilotCard project={project} openTodo={tasks.filter((t) => t.status === "todo" && !t.queued).map((t) => t.id)} />
+            <PlaybookCard projectId={id} />
             <div class="sec-head">
               <h2 class="sec-title">Backlog</h2>
               {tasks.filter((t) => t.status !== "done").length > 0 && <span class="sec-count">{tasks.filter((t) => t.status !== "done").length} open</span>}

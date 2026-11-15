@@ -1423,6 +1423,46 @@ i.del { color: var(--danger); }
 .rv-bar { display: flex; align-items: center; gap: 8px; }
 .rv-bar > span { flex: 1; font-size: 13.5px; font-weight: 600; }
 
+
+
+
+/* Route changes use View Transitions when the browser supports them. */
+.route-main { view-transition-name: ansai-route; }
+::view-transition-old(ansai-route) { animation: route-fade-out 140ms ease both; }
+::view-transition-new(ansai-route) { animation: route-fade-in 190ms ease-out both; }
+@keyframes route-fade-out { to { opacity: 0; } }
+@keyframes route-fade-in { from { opacity: 0; } }
+@media (max-width: 820px) {
+  ::view-transition-old(ansai-route) { animation: route-phone-out 170ms ease both; }
+  ::view-transition-new(ansai-route) { animation: route-phone-in 220ms cubic-bezier(.2,.75,.25,1) both; }
+}
+@keyframes route-phone-out { to { opacity: 0; transform: translateX(-8px); } }
+@keyframes route-phone-in { from { opacity: 0; transform: translateX(14px); } }
+
+/* Soft spring on sheet entry, drag rebound, and an animated dismissal. */
+.sheet { transition: transform 320ms cubic-bezier(.2,1.25,.35,1); }
+.sheet { animation: sheet-desktop-open 280ms cubic-bezier(.2,1.15,.35,1) both; }
+.scrim.closing { animation: fade-away 210ms ease-in both; pointer-events: none; }
+.sheet.closing { animation: sheet-close 210ms cubic-bezier(.4,0,.8,.3) both !important; }
+@keyframes fade-away { to { opacity: 0; } }
+@keyframes sheet-close { to { opacity: 0; transform: scale(.97); } }
+@keyframes sheet-desktop-open { from { opacity: 0; transform: translateY(6px) scale(.97); } to { opacity: 1; transform: translateY(0) scale(1); } }
+@media (max-width: 820px) {
+  .sheet, .sheet.sm, .sheet.lg, .sheet.full { animation: sheet-phone-open 320ms cubic-bezier(.2,1.15,.35,1) both; }
+  .sheet.closing { animation: sheet-phone-close 210ms cubic-bezier(.4,0,.8,.3) both !important; }
+}
+@keyframes sheet-phone-open { from { opacity: .75; transform: translateY(24px) scale(.99); } to { opacity: 1; transform: translateY(0) scale(1); } }
+@keyframes sheet-phone-close { to { opacity: 0; transform: translateY(40px) scale(.99); } }
+
+/* These enter effects change only paint/transform, so list measurements remain stable. */
+.panel > .cell, .panel > .trow { animation: row-arrive 220ms cubic-bezier(.2,.75,.25,1) both; }
+@keyframes row-arrive { from { opacity: 0; transform: translateY(5px); } }
+.pill { transition: color 200ms ease, background-color 200ms ease, border-color 200ms ease; }
+.pill i { transition: background-color 200ms ease, opacity 200ms ease; }
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-old(ansai-route), ::view-transition-new(ansai-route) { animation: none !important; }
+}
+
 /* ------------------------------------------------------- while you were away */
 .digest .sec-head .sec-link { margin-left: auto; }
 .digest-stats { display: grid; grid-template-columns: repeat(var(--n, 4), minmax(0, 1fr)); gap: 8px; margin-bottom: 12px; }
@@ -1456,3 +1496,6 @@ i.del { color: var(--danger); }
 .digest-commits { padding: 0 0 8px 28px; }
 .digest-link { display: inline-block; margin: 4px 14px 0; font-size: 14px; color: var(--accent-text); }
 .digest-more { width: 100%; padding: 11px 14px; border: 0; border-top: 0.5px solid var(--line); background: none; color: var(--accent-text); font-size: 14.5px; text-align: left; cursor: pointer; }
+
+.team-dlv { font-size: 11px; font-weight: 600; color: var(--faint); display: inline-flex; align-items: center; gap: 2px; }
+.team-dlv.ok { color: var(--green); }

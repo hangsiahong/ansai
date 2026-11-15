@@ -3,6 +3,20 @@ import { api, type Message, type Session } from "./api";
 import { toastError, useStore } from "./store";
 import { Empty, Icon, Link, TOOL_SHORT, ToolBadge, ago, sessionState } from "./ui";
 
+/** Direct messages: has the agent been given it yet (between steps, typed in, or on its next turn)? */
+function Delivery({ m }: { m: Message }) {
+  if (!m.to_session) return null;
+  return m.delivered_at ? (
+    <span class="team-dlv ok" title={`Delivered ${ago(m.delivered_at)} ago`}>
+      <Icon name="check" size={11} stroke={2.8} /> Delivered
+    </span>
+  ) : (
+    <span class="team-dlv" title="The agent gets it between steps, or when it's next idle">
+      Waiting
+    </span>
+  );
+}
+
 /** Who sent it, as a short name: the agent's tool + session title, or "You". */
 function Sender({ m, sessions }: { m: Message; sessions: Session[] }) {
   const s = m.from_session ? sessions.find((x) => x.id === m.from_session) : null;
@@ -53,6 +67,7 @@ export function TeamBubble({ m, me }: { m: Message; me: string }) {
             </>
           )}
         </span>
+        <Delivery m={m} />
         <time>{ago(m.created_at)}</time>
       </div>
       <div class="team-body">{m.body}</div>
@@ -243,6 +258,7 @@ export function TeamPanel({ projectId }: { projectId: string }) {
                     <Sender m={m} sessions={sessions} />
                     <span class="muted">→</span>
                     <Recipient m={m} sessions={sessions} />
+                    <Delivery m={m} />
                     <time>{ago(m.created_at)}</time>
                   </div>
                   <div class="team-body">{m.body}</div>

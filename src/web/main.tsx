@@ -87,7 +87,7 @@ function App() {
   return (
     <div class={`app ${inSession ? "in-session" : ""}`}>
       {!phone && <Sidebar route={route} />}
-      <main class="main" key={route}>
+      <main class="main route-main" key={route}>
         {main}
       </main>
       {phone && !inSession && <TabBar route={route} />}

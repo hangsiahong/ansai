@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { api, wsUrl, type ChatItem, type Message, type Session } from "./api";
 import { toastError } from "./store";
-import { Icon, TOOL_LABEL, TOOL_SHORT, ToolBadge, compact, sessionState } from "./ui";
+import { haptic, Icon, TOOL_LABEL, TOOL_SHORT, ToolBadge, compact, sessionState } from "./ui";
 import { Markdown } from "./md";
 import { TeamBubble, useSessionMessages } from "./team";
 
@@ -222,13 +222,13 @@ function ApprovalCard({ s }: { s: Session }) {
       </div>
       <div class="lc-body">{s.agent_message || `${TOOL_LABEL[s.tool]} is waiting for an answer.`}</div>
       <div class="lc-actions">
-        <button class="btn primary" onClick={() => press(s.id, ["Enter"])}>
+        <button class="btn primary" onClick={() => (haptic(), press(s.id, ["Enter"]))}>
           Allow
         </button>
-        <button class="btn" onClick={() => press(s.id, ["Down", "Enter"])}>
+        <button class="btn" onClick={() => (haptic(), press(s.id, ["Down", "Enter"]))}>
           Always allow
         </button>
-        <button class="btn ghost" onClick={() => press(s.id, ["Escape"])}>
+        <button class="btn ghost" onClick={() => (haptic(), press(s.id, ["Escape"]))}>
           Deny
         </button>
       </div>
@@ -249,11 +249,11 @@ function StartupCard({ s }: { s: Session }) {
       <div class="lc-hint mono-path">{s.cwd}</div>
       {p.accept ? (
         <div class="lc-actions two">
-          <button class="btn primary" onClick={() => press(s.id, p.acceptKeys)}>
+          <button class="btn primary" onClick={() => (haptic(), press(s.id, p.acceptKeys))}>
             {p.accept}
           </button>
           {p.decline && (
-            <button class="btn ghost" onClick={() => press(s.id, p.declineKeys)}>
+            <button class="btn ghost" onClick={() => (haptic(), press(s.id, p.declineKeys))}>
               {p.decline}
             </button>
           )}

@@ -114,6 +114,21 @@ const live = new Map<string, Live>(); // keyed by tmux_name
 export type StartupPrompt = { kind: string; message: string; accept: string | null; acceptKeys: string[]; decline: string | null; declineKeys: string[] };
 const startup = new Map<string, StartupPrompt>(); // keyed by session id
 
+/** Startup buttons only while the agent is still on that screen; a later real approval gets its own. */
+function visibleStartup(s: Pick<SessionRow, "id" | "agent_state" | "agent_message">): StartupPrompt | null {
+  const p = startup.get(s.id);
+  return p && p.message && s.agent_state === "needs-input" && s.agent_message === p.message ? p : null;
+}
+/** The agent is past its startup screens (a hook fired): forget the dialog. */
+export function clearStartup(id: string): boolean {
+  return startup.delete(id);
+}
+export const hasStartup = (id: string) => startup.has(id);
+/** Record a detected startup dialog (the watcher; tests). */
+export function rememberStartup(id: string, p: StartupPrompt) {
+  startup.set(id, p);
+}
+
 type Dialog = { kind: string; match: RegExp; message: string; accept: string | null; acceptKeys: string[]; decline?: string; declineKeys?: string[] };
 // Claude Code 2.1's startup screens. Both yes/no menus open on "No, exit", so accepting is Down + Enter.
 // Every pattern has an escape or a [x] class, so this file's own text on an agent's screen
@@ -178,7 +193,7 @@ export function sessionView(s: SessionRow) {
     activity_at: l?.activity ?? null,
     current_command: l?.command ?? null,
     clients: l?.attached ?? 0,
-    startup: startup.get(s.id) ?? null,
+    startup: visibleStartup(s),
     shift: shiftView(s.id),
   };
 }
@@ -423,8 +438,12 @@ async function watchCodexScreens() {
  */
 async function watchStartupScreens() {
   const rows = db
-    .query(`SELECT id, tool, tmux_name, cwd, agent_state FROM sessions WHERE tool IN ('claude', 'codex', 'agy') AND status = 'running' AND (agent_state IS NULL OR agent_state = 'needs-input')`)
-    .all() as Pick<SessionRow, "id" | "tool" | "tmux_name" | "cwd" | "agent_state">[];
+    .query(
+      // Sessions with an entry are checked whatever their state, so a dialog that went away is forgotten promptly.
+      `SELECT id, tool, tmux_name, cwd, agent_state FROM sessions WHERE tool IN ('claude', 'codex', 'agy') AND status = 'running'
+         AND (agent_state IS NULL OR agent_state = 'needs-input' OR id IN (SELECT value FROM json_each(?)))`,
+    )
+    .all(JSON.stringify([...startup.keys()])) as Pick<SessionRow, "id" | "tool" | "tmux_name" | "cwd" | "agent_state">[];
   for (const r of rows) {
     const cap = await tmux(["capture-pane", "-p", "-J", "-t", r.tmux_name]);
     if (cap.code !== 0) continue;
@@ -453,7 +472,7 @@ async function watchStartupScreens() {
       startupScreen(r.id, d.message);
     } else if (!d && prev) {
       startup.delete(r.id);
-      if (prev.kind !== "trust-auto") startupScreen(r.id, null);
+      if (prev.kind !== "trust-auto") startupScreen(r.id, null, prev.message);
     }
   }
 }

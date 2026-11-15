@@ -35,6 +35,13 @@ function labelFor(c: ModelChoices | null, id: string) {
 }
 
 /** Levels the chosen model takes: its own list (Codex), else the agent's general one. */
+/** What "Default" effort means for the chosen model (each can have its own), or for the agent's default model. */
+function defaultEffortFor(c: ModelChoices | null, model: string | null): string | null {
+  if (!c) return null;
+  const own = c.models.find((m) => m.id === (model ?? c.default.model))?.defaultEffort;
+  return own !== undefined ? own : model ? null : c.default.effort;
+}
+
 function effortsFor(c: ModelChoices | null, model: string | null) {
   const id = model ?? c?.default.model ?? null;
   return (id && c?.models.find((m) => m.id === id)?.efforts) || c?.efforts || [];
@@ -60,7 +67,8 @@ export function ModelPicker(p: {
   const extra = p.value.model && !models.some((m) => m.id === p.value.model) ? [{ id: p.value.model, label: labelFor(c, p.value.model) }] : [];
 
   const defModel = p.keepLabel?.model ?? (c?.default.model ? `Default · ${labelFor(c, c.default.model)}` : "Default");
-  const defEffort = p.keepLabel?.effort ?? (c?.default.effort ? `Default · ${effortName(c.default.effort)}` : "Default");
+  const shownDefault = defaultEffortFor(c, p.value.model);
+  const defEffort = p.keepLabel?.effort ?? (shownDefault ? `Default · ${effortName(shownDefault)}` : "Default");
 
   const setModel = (model: string | null) => {
     // A level the new model doesn't take would make the agent refuse to start.
@@ -110,13 +118,14 @@ export function ModelSheet(p: { sessionId: string; showTerminal?: () => void; on
   const apply = async () => {
     setBusy(true);
     try {
-      await api.switchModel(s.id, codex ? {} : { model: pick.model ?? undefined, effort: pick.effort ?? undefined });
+      const r = await api.switchModel(s.id, codex ? {} : { model: pick.model ?? undefined, effort: pick.effort ?? undefined });
       if (codex) {
         p.showTerminal?.();
         toast("Pick a model in Codex's menu");
+      } else if (r.missed?.length) {
+        toast(`${TOOL_LABEL[s.tool]} didn't confirm the ${r.missed.join(" and ")} change. Check the terminal and try again.`, "error");
       } else {
-        const what = [pick.model && labelFor(null, pick.model), pick.effort && effortName(pick.effort)].filter(Boolean).join(" · ");
-        toast(s.agent_state === "working" ? `Switching to ${what} once this turn ends` : `Switched to ${what}`);
+        toast(`Switched to ${[pick.model && labelFor(null, pick.model), pick.effort && effortName(pick.effort)].filter(Boolean).join(" · ")}`);
       }
       p.onClose();
     } catch (e) {

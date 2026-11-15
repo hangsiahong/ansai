@@ -38,7 +38,7 @@ import { getPrefs, publicKey, subscribe, testPush, unsubscribe } from "./push";
 import { setViewer } from "./viewers";
 import { startBackgroundTails, subscribeChat, unsubscribeChat } from "./transcripts";
 import { mcpHttp } from "./mcp";
-import { deliverIdle, listMessages, postMessage, teamBoard } from "./team";
+import { deliverIdle, getPlaybook, listMessages, postMessage, setPlaybook, teamBoard } from "./team";
 import { digest, markSeen } from "./digest";
 import { endProjectShift, endShift, nudgeIdle, shiftView, startProjectShift, startShift } from "./shifts";
 import { getSettings, setProjectAutopilot, startAutopilot, updateSettings } from "./autopilot";
@@ -368,6 +368,17 @@ const server = Bun.serve<WSData>({
         const sid = new URL(req.url).searchParams.get("s");
         const out = sid ? handleHook(req.params.tool!, req.params.event!, sid, await parseBody(req, v.anyObject(), HOOK_LIMIT)) : undefined;
         return out ? json(out) : new Response(null, { status: 204 });
+      }),
+    },
+    "/api/projects/:id/playbook": {
+      GET: guard((req) => {
+        if (!getProject(req.params.id!)) throw notFound("no such project");
+        return json({ text: getPlaybook(req.params.id!) });
+      }),
+      PUT: guard(async (req) => {
+        if (!getProject(req.params.id!)) throw notFound("no such project");
+        const b = await parseBody(req, v.object({ text: v.string({ max: 8000 }) }));
+        return json({ text: setPlaybook(req.params.id!, b.text) });
       }),
     },
     "/api/projects/:id/team": {

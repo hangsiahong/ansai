@@ -159,7 +159,7 @@ export type Changes = {
 
 export type Tool = { id: ToolId; label: string; installed: boolean };
 
-export type ModelOption = { id: string; label: string; efforts?: string[] };
+export type ModelOption = { id: string; label: string; efforts?: string[]; defaultEffort?: string | null };
 export type ModelChoices = {
   models: ModelOption[];
   efforts: string[];
@@ -248,7 +248,9 @@ export const api = {
   keys: (id: string, keys: string[]) => call<{ ok: true }>("POST", `/api/sessions/${id}/keys`, { keys }),
   models: (tool: ToolId, accountId?: string | null) =>
     call<ModelChoices>("GET", `/api/models?${new URLSearchParams({ tool, ...(accountId ? { account: accountId } : {}) })}`),
-  switchModel: (id: string, o: { model?: string; effort?: string }) => call<{ menu: boolean }>("POST", `/api/sessions/${id}/model`, o),
+  /** `missed`: commands the agent didn't confirm in time (the switch may not have applied). */
+  switchModel: (id: string, o: { model?: string; effort?: string }) =>
+    call<{ menu: boolean; missed?: ("model" | "effort")[] }>("POST", `/api/sessions/${id}/model`, o),
   send: (id: string, text: string, enter = true) => call<{ ok: true }>("POST", `/api/sessions/${id}/send`, { text, enter }),
   uploadAttachments: async (id: string, files: File[]) => {
     const form = new FormData();

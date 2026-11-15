@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { api, type Session } from "../api";
 import { confirmDialog, openSheet, promptDialog, toast, toastError, useStore } from "../store";
 import { TerminalView, type TermHandle, type TermStatus } from "../Terminal";
-import { Icon, Link, StatusPill, TOOL_LABEL, ToolBadge, goBack, isTouch, modelLabel, nav, sessionState, useTick } from "../ui";
+import { haptic, Icon, Link, StatusPill, TOOL_LABEL, ToolBadge, goBack, isTouch, modelLabel, nav, sessionState, useTick } from "../ui";
 import { ChatView } from "../chat";
 import { ShiftBar, canShift } from "../shift";
 
@@ -133,6 +133,7 @@ export function SessionPane({ id }: { id: string }) {
         message = [text.trim(), `Attached files (read these files):\n${refs}`].filter(Boolean).join("\n\n");
       }
       await api.send(id, message, true);
+      haptic();
       if (files.length) setAttachments([]);
     } catch (e) {
       setCompose(text);

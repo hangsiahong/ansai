@@ -140,7 +140,7 @@ export function NowPane() {
               <h2 class="sec-title attn">Needs you</h2>
               <div class="panel attn-panel" style={{ "--sep": "66px" }}>
                 {attn.map((s) => (
-                  <SessionCell s={s} />
+                  <SessionCell key={s.id} s={s} />
                 ))}
               </div>
             </section>
@@ -153,7 +153,7 @@ export function NowPane() {
               <h2 class="sec-title">Sessions</h2>
               <div class="panel" style={{ "--sep": "66px" }}>
                 {others.map((s) => (
-                  <SessionCell s={s} />
+                  <SessionCell key={s.id} s={s} />
                 ))}
               </div>
             </section>

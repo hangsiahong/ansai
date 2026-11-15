@@ -1,9 +1,10 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { config, cleanEnv } from "./config";
 import { accountEnv, getAccount, resolveAccount, type AccountRow, type AgentTool } from "./accounts";
 import { badRequest, conflict, notFound } from "./errors";
-import { getSession, sendText } from "./sessions";
+import { db } from "./db";
+import { captureHistory, getSession, sendText, sessionView, type SessionRow } from "./sessions";
 
 /**
  * What each agent can be started with: its models and reasoning levels, plus
@@ -12,7 +13,13 @@ import { getSession, sendText } from "./sessions";
  * models in a cache file; agy prints them with `agy models`.
  */
 
-export type ModelOption = { id: string; label: string; efforts?: string[] };
+export type ModelOption = {
+  id: string;
+  label: string;
+  efforts?: string[];
+  /** The effort this model starts at when none is picked (its own setting can differ from the global one). */
+  defaultEffort?: string | null;
+};
 export type ModelChoices = {
   models: ModelOption[];
   /** Reasoning levels for models that don't list their own. */
@@ -40,12 +47,37 @@ function readJson(path: string): any {
   }
 }
 
+/** "claude-opus-5-5" → 505; "claude-sonnet-4-20250514" → 400 (a date isn't a minor version). */
+const claudeVersion = (id: string) => {
+  const m = id.match(/^claude-[a-z]+-(\d+)(?:-(\d{1,2})(?!\d))?/);
+  return m ? Number(m[1]) * 100 + Number(m[2] ?? 0) : -1;
+};
+
+/**
+ * The effort Claude starts a model at: its own entry in modelSettings, else the
+ * global effortLevel. An alias ("opus") means the newest model of that family:
+ * the newest id this machine's sessions ran on, else the newest one in modelSettings.
+ */
+export function claudeDefaultEffort(settings: any, model: string, seen: string[] = []): string | null {
+  const per: Record<string, any> = settings?.modelSettings && typeof settings.modelSettings === "object" ? settings.modelSettings : {};
+  const top = typeof settings?.effortLevel === "string" ? settings.effortLevel : null;
+  const own = (id: string) => (typeof per[id]?.effortLevel === "string" ? (per[id].effortLevel as string) : null);
+  if (model.startsWith("claude-")) return own(model.replace(/\[.*\]$/, "")) ?? top;
+  const family = `claude-${model.toLowerCase()}-`;
+  const newest = (ids: string[]) => ids.filter((x) => x.startsWith(family)).sort((x, y) => claudeVersion(y) - claudeVersion(x))[0];
+  const id = newest(seen) ?? newest(Object.keys(per).filter((k) => own(k)));
+  return (id && own(id)) ?? top;
+}
+
 function claudeChoices(a: AccountRow | null): ModelChoices {
   const s = readJson(join(a?.dir ?? join(config.home, ".claude"), "settings.json")) ?? {};
+  const seen = (db.query("SELECT DISTINCT model FROM sessions WHERE tool = 'claude' AND model LIKE 'claude-%'").all() as { model: string }[]).map((r) => r.model);
+  const model = typeof s.model === "string" ? s.model : null;
   return {
-    models: CLAUDE_MODELS,
+    models: CLAUDE_MODELS.map((m) => ({ ...m, defaultEffort: claudeDefaultEffort(s, m.id, seen) })),
     efforts: CLAUDE_EFFORTS,
-    default: { model: typeof s.model === "string" ? s.model : null, effort: typeof s.effortLevel === "string" ? s.effortLevel : null },
+    // With no default model set, Claude picks one by plan; only a global level is certain then.
+    default: { model, effort: model ? claudeDefaultEffort(s, model, seen) : s.modelSettings ? null : (s.effortLevel ?? null) },
     liveSwitch: true,
   };
 }
@@ -63,6 +95,7 @@ function codexChoices(a: AccountRow | null): ModelChoices {
       efforts: Array.isArray(m.supported_reasoning_levels)
         ? m.supported_reasoning_levels.map((l: any) => l?.effort).filter((e: unknown): e is string => typeof e === "string")
         : undefined,
+      defaultEffort: typeof m.default_reasoning_level === "string" ? m.default_reasoning_level : null,
     }));
   let toml = "";
   try {
@@ -70,10 +103,13 @@ function codexChoices(a: AccountRow | null): ModelChoices {
   } catch {}
   const top = toml.split(/^\s*\[/m)[0] ?? ""; // only top-level keys, not [profiles.x] ones
   const key = (k: string) => top.match(new RegExp(`^\\s*${k}\\s*=\\s*"([^"]+)"`, "m"))?.[1] ?? null;
+  // A configured reasoning effort applies to every model; without one, each starts at its own default.
+  const effort = key("model_reasoning_effort");
+  if (effort) for (const m of models) m.defaultEffort = effort;
   return {
     models,
     efforts: ["low", "medium", "high", "xhigh", "max"],
-    default: { model: key("model"), effort: key("model_reasoning_effort") },
+    default: { model: key("model"), effort: effort ?? models.find((m) => m.id === key("model"))?.defaultEffort ?? null },
     liveSwitch: false, // Codex's /model opens its own menu; it takes no argument
   };
 }
@@ -135,40 +171,76 @@ function readDefaults(path: string, keys: string[]): Record<string, unknown> | n
 /**
  * A switch from ansai is meant for this session only, so once the agent has
  * written its defaults file, put those keys back as they were (the running
- * session keeps its switch; tested with Claude Code 2.1 and agy).
+ * session keeps its switch; tested with Claude Code 2.1 and agy). The commands
+ * were answered before this runs, so their writes have landed; keep watching a
+ * little for a late one (longer when a command went unconfirmed).
  */
-async function keepDefaults(path: string, keys: string[], before: Record<string, unknown>) {
+async function keepDefaults(path: string, keys: string[], before: Record<string, unknown>, watchMs: number) {
   const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
-  let stable = 0;
-  let changed = false;
-  for (let i = 0; i < 20 && stable < 3; i++) {
+  for (let waited = 0; waited < watchMs; waited += 250) {
     await Bun.sleep(250);
     const now = readDefaults(path, keys);
-    const differs = !!now && keys.some((k) => !same(now[k], before[k]));
-    if (differs) changed = true;
-    stable = changed ? stable + 1 : 0; // wait for both commands' writes to land
+    if (!now || keys.every((k) => same(now[k], before[k]))) continue;
+    let text: string;
+    try {
+      text = readFileSync(path, "utf8");
+    } catch {
+      continue;
+    }
+    const j = JSON.parse(text);
+    for (const k of keys) {
+      if (before[k] === undefined) delete j[k];
+      else j[k] = before[k];
+    }
+    writeFileSync(path, JSON.stringify(j, null, 2) + (text.endsWith("\n") ? "\n" : ""));
   }
-  if (!changed) return;
-  let text: string;
+}
+
+const fileSize = (path: string) => {
   try {
-    text = readFileSync(path, "utf8");
+    return statSync(path).size;
   } catch {
-    return;
+    return 0;
   }
-  const j = JSON.parse(text);
-  for (const k of keys) {
-    if (before[k] === undefined) delete j[k];
-    else j[k] = before[k];
+};
+
+/** On screen, the agent's answer to a slash command sits under it, marked ⎿ (Claude and agy alike). */
+export function answeredOnScreen(screen: string, command: string): boolean {
+  const lines = screen.split("\n");
+  let i = -1;
+  lines.forEach((l, n) => l.includes(command) && (i = n));
+  return i >= 0 && lines.slice(i + 1).some((l) => l.trimStart().startsWith("⎿"));
+}
+
+/**
+ * Type a slash command and wait (up to ~5 s) until the agent has answered it, so
+ * the next command isn't typed while it's still busy and lost. Claude logs every
+ * command's answer as <local-command-stdout>; agy only shows it on screen.
+ */
+async function runCommand(s: SessionRow, command: string): Promise<boolean> {
+  const log = s.tool === "claude" ? s.transcript : null;
+  const from = log ? fileSize(log) : 0;
+  const before = log ? "" : await captureHistory(s.id, 60).catch(() => "");
+  await sendText(s.id, command);
+  for (let i = 0; i < 25; i++) {
+    await Bun.sleep(200);
+    if (log) {
+      if (fileSize(log) > from && (await Bun.file(log).slice(from).text()).includes("<local-command-stdout>")) return true;
+    } else {
+      const screen = await captureHistory(s.id, 60).catch(() => "");
+      if (screen !== before && answeredOnScreen(screen, command)) return true;
+    }
   }
-  writeFileSync(path, JSON.stringify(j, null, 2) + (text.endsWith("\n") ? "\n" : ""));
+  return false;
 }
 
 /**
  * Change a running agent's model or effort. Claude and agy take `/model <id>` and
- * `/effort <level>` as typed commands. Codex's /model takes no argument, so it only
- * opens Codex's own menu.
+ * `/effort <level>` as typed commands, one after the other once each is answered.
+ * Codex's /model takes no argument, so it only opens Codex's own menu.
+ * `missed` lists the commands the agent didn't confirm in time.
  */
-export async function switchModel(id: string, o: { model?: string; effort?: string }): Promise<{ menu: boolean }> {
+export async function switchModel(id: string, o: { model?: string; effort?: string }): Promise<{ menu: boolean; missed?: ("model" | "effort")[] }> {
   const s = getSession(id);
   if (!s) throw notFound("no such session");
   if (s.status !== "running") throw conflict("this session isn't running; restart it first");
@@ -179,16 +251,19 @@ export async function switchModel(id: string, o: { model?: string; effort?: stri
     return { menu: true };
   }
   if (!o.model && !o.effort) throw badRequest("pick a model or an effort");
+  // Typed into a startup or sign-in menu, a command's letters and digits could pick an option.
+  if (sessionView(s).startup) throw conflict("the agent is on a startup screen; answer it first");
+  if (s.tool === "claude" && !s.agent_state) throw conflict("Claude hasn't started yet; try again in a moment");
+  if (s.tool === "agy" && /not signed in|Select login method/i.test(await captureHistory(id, 0).catch(() => "")))
+    throw conflict("agy isn't signed in; sign in from its terminal first");
   // Mid-reply, a typed /model waits for the turn to end (/effort applies at once),
   // and by then ansai could no longer tell its write to your defaults apart from yours.
   if (o.model && s.agent_state === "working") throw conflict("the agent is mid-reply; switch the model once it's done");
   const saved = savedDefaults(s.tool, s.account_id);
   const before = saved ? readDefaults(saved.path, saved.keys) : null;
-  if (o.model) await sendText(id, `/model ${o.model}`);
-  if (o.effort) {
-    if (o.model) await Bun.sleep(400); // let the first command finish before typing the next
-    await sendText(id, `/effort ${o.effort}`);
-  }
-  if (saved && before) await keepDefaults(saved.path, saved.keys, before);
-  return { menu: false };
+  const missed: ("model" | "effort")[] = [];
+  if (o.model && !(await runCommand(s, `/model ${o.model}`))) missed.push("model");
+  if (o.effort && !(await runCommand(getSession(id) ?? s, `/effort ${o.effort}`))) missed.push("effort");
+  if (saved && before) await keepDefaults(saved.path, saved.keys, before, missed.length ? 5000 : 1000);
+  return missed.length ? { menu: false, missed } : { menu: false };
 }

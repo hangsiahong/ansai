@@ -10,16 +10,44 @@ import agyIcon from "./icons/agy.svg";
 
 export function nav(to: string, replace = false) {
   if (to === location.pathname) return;
-  history[replace ? "replaceState" : "pushState"](null, "", to);
-  dispatchEvent(new PopStateEvent("popstate"));
+  const update = () => {
+    history[replace ? "replaceState" : "pushState"](null, "", to);
+    dispatchEvent(new Event("ansai:navigate"));
+  };
+  runViewTransition(update);
+}
+
+function runViewTransition(update: () => void) {
+  const doc = document as Document & { startViewTransition?: (callback: () => void) => unknown };
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches || !doc.startViewTransition) {
+    update();
+    return;
+  }
+  try {
+    doc.startViewTransition(update);
+  } catch {
+    update();
+  }
+}
+
+/** Short Android haptic when supported; browsers may expose a throwing stub. */
+export function haptic() {
+  try {
+    if (typeof navigator !== "undefined" && typeof navigator.vibrate === "function") navigator.vibrate(10);
+  } catch {}
 }
 
 export function useRoute() {
   const [path, setPath] = useState(location.pathname);
   useEffect(() => {
-    const f = () => setPath(location.pathname);
-    addEventListener("popstate", f);
-    return () => removeEventListener("popstate", f);
+    const update = () => setPath(location.pathname);
+    const transition = () => runViewTransition(update);
+    addEventListener("popstate", transition);
+    addEventListener("ansai:navigate", update);
+    return () => {
+      removeEventListener("popstate", transition);
+      removeEventListener("ansai:navigate", update);
+    };
   }, []);
   return path;
 }
@@ -271,10 +299,20 @@ export function Sheet(p: {
 }) {
   const panel = useRef<HTMLDivElement>(null);
   const drag = useRef<{ y: number; dy: number } | null>(null);
+  const closeTimer = useRef<number | undefined>(undefined);
+  const [closing, setClosing] = useState(false);
+  const close = () => {
+    if (closing) return;
+    setClosing(true);
+    closeTimer.current = window.setTimeout(p.onClose, 220);
+  };
   useEffect(() => {
-    const k = (e: KeyboardEvent) => e.key === "Escape" && p.onClose();
+    const k = (e: KeyboardEvent) => e.key === "Escape" && close();
     addEventListener("keydown", k);
-    return () => removeEventListener("keydown", k);
+    return () => {
+      removeEventListener("keydown", k);
+      if (closeTimer.current) clearTimeout(closeTimer.current);
+    };
   }, []);
 
   const onTouchStart = (e: TouchEvent) => {
@@ -290,22 +328,22 @@ export function Sheet(p: {
   const onTouchEnd = () => {
     const el = panel.current;
     if (!drag.current || !el) return;
-    const close = drag.current.dy > 90;
+    const shouldClose = drag.current.dy > 90;
     drag.current = null;
     el.style.transition = "";
-    el.style.transform = close ? "translateY(100%)" : "";
-    if (close) setTimeout(p.onClose, 160);
+    el.style.transform = "";
+    if (shouldClose) close();
   };
 
   return (
-    <div class="scrim" onClick={(e) => e.target === e.currentTarget && p.onClose()}>
-      <div ref={panel} class={`sheet ${p.full ? "full" : ""} ${p.size ?? "md"}`} role="dialog" aria-modal="true" aria-label={p.title}>
+    <div class={`scrim ${closing ? "closing" : ""}`} onClick={(e) => e.target === e.currentTarget && close()}>
+      <div ref={panel} class={`sheet ${p.full ? "full" : ""} ${p.size ?? "md"} ${closing ? "closing" : ""}`} role="dialog" aria-modal="true" aria-label={p.title}>
         <header class="sheet-head" onTouchStart={onTouchStart} onTouchMove={onTouchMove} onTouchEnd={onTouchEnd}>
           <span class="grabber" aria-hidden="true" />
           <h2>{p.title}</h2>
           <div class="row tight">
             {p.actions}
-            <button class="icon-btn glass sm" onClick={p.onClose} aria-label="Close">
+            <button class="icon-btn glass sm" onClick={close} aria-label="Close">
               <Icon name="x" size={16} stroke={2.6} />
             </button>
           </div>

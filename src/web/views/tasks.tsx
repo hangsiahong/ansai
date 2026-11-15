@@ -158,7 +158,7 @@ export function TaskList(p: { tasks: Task[]; showProject?: boolean; emptyText?: 
               </div>
               <div class="panel" style={{ "--sep": "48px" }}>
                 {groups[st].map((t) => (
-                  <TaskRow task={t} showProject={p.showProject} />
+                  <TaskRow key={t.id} task={t} showProject={p.showProject} />
                 ))}
               </div>
             </div>
@@ -172,7 +172,7 @@ export function TaskList(p: { tasks: Task[]; showProject?: boolean; emptyText?: 
           {showDone && (
             <div class="panel" style={{ "--sep": "48px" }}>
               {groups.done.map((t) => (
-                <TaskRow task={t} showProject={p.showProject} />
+                <TaskRow key={t.id} task={t} showProject={p.showProject} />
               ))}
             </div>
           )}
