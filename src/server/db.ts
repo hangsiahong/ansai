@@ -190,6 +190,16 @@ const migrations: string[] = [
   ALTER TABLE tasks ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0;
   ALTER TABLE tasks ADD COLUMN last_failure TEXT;
   `,
+  // v14: explicit task ordering dependencies.
+  `
+  CREATE TABLE task_dependencies (
+    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    depends_on_task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    PRIMARY KEY (task_id, depends_on_task_id),
+    CHECK (task_id != depends_on_task_id)
+  );
+  CREATE INDEX task_dependencies_prerequisite ON task_dependencies(depends_on_task_id);
+  `,
 ];
 
 export function getSetting<T>(key: string, fallback: T): T {

@@ -289,6 +289,7 @@ const server = Bun.serve<WSData>({
             priority: v.optional(priority),
             position: v.optional(v.number()),
             queued: optBool,
+            dependencies: v.optional(v.array(v.string({ min: 1, max: 100 }), { max: 100 })),
           }),
         );
         return json(updateTask(req.params.id!, b));

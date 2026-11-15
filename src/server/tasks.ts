@@ -11,6 +11,7 @@ export const STATUSES = ["todo", "doing", "review", "done"] as const;
 export type TaskStatus = (typeof STATUSES)[number];
 export type TaskSource = "you" | "agent" | "session";
 export type Plan = { done: number; total: number; current: string | null; items: { content: string; status: string }[] };
+export type TaskDependency = { id: string; title: string; status: TaskStatus };
 
 export type Task = {
   id: string;
@@ -32,6 +33,8 @@ export type Task = {
   /** Autopilot retries used, and why the last run stopped early (null if it didn't). */
   attempts: number;
   last_failure: string | null;
+  dependencies?: TaskDependency[];
+  blocked_by?: TaskDependency[];
 };
 
 export type Autopilot = {
@@ -81,7 +84,19 @@ export function listTasks() {
     .all() as { id: string; task_id: string; tool: ToolId; status: string; agent_state: string | null; auto: number }[];
   const byTask = new Map<string, typeof links>();
   for (const l of links) byTask.set(l.task_id, [...(byTask.get(l.task_id) ?? []), l]);
-  return rows.map((t) => ({ ...t, plan: t.plan ? (JSON.parse(t.plan) as Plan) : null, sessions: byTask.get(t.id) ?? [] }));
+  const dependencies = db.query(
+    `SELECT d.task_id, p.id, p.title, p.status FROM task_dependencies d JOIN tasks p ON p.id = d.depends_on_task_id ORDER BY p.position, p.title`,
+  ).all() as ({ task_id: string } & TaskDependency)[];
+  const byDependency = new Map<string, TaskDependency[]>();
+  for (const d of dependencies) byDependency.set(d.task_id, [...(byDependency.get(d.task_id) ?? []), { id: d.id, title: d.title, status: d.status }]);
+  return rows.map((t) => {
+    const deps = byDependency.get(t.id) ?? [];
+    return { ...t, plan: t.plan ? (JSON.parse(t.plan) as Plan) : null, sessions: byTask.get(t.id) ?? [], dependencies: deps, blocked_by: deps.filter((d) => d.status !== "done") };
+  });
+}
+
+function dependencyList(id: string): TaskDependency[] {
+  return db.query(`SELECT p.id, p.title, p.status FROM task_dependencies d JOIN tasks p ON p.id = d.depends_on_task_id WHERE d.task_id = ? ORDER BY p.position, p.title`).all(id) as TaskDependency[];
 }
 
 export function getTask(id: string): Task | null {
@@ -122,7 +137,7 @@ export function createTask(o: {
 
 export function updateTask(
   id: string,
-  patch: { title?: unknown; body?: unknown; status?: unknown; projectId?: unknown; priority?: unknown; position?: unknown; queued?: unknown },
+  patch: { title?: unknown; body?: unknown; status?: unknown; projectId?: unknown; priority?: unknown; position?: unknown; queued?: unknown; dependencies?: unknown },
 ) {
   const cur = getTask(id);
   if (!cur) throw notFound("no such task");
@@ -139,6 +154,8 @@ export function updateTask(
     if (pid && !getProject(pid)) throw badRequest("no such project");
     if (cur.worktree_path && pid !== cur.project_id) throw conflict("this task already has a worktree; keep it in its current project");
     next.project_id = pid;
+    const hasDependencies = db.query("SELECT 1 FROM task_dependencies WHERE task_id = ? OR depends_on_task_id = ? LIMIT 1").get(id, id);
+    if (hasDependencies && pid !== cur.project_id) throw conflict("tasks with dependencies must stay in their current project");
   }
   if (patch.status !== undefined) {
     if (!isStatus(patch.status)) throw badRequest("bad status");
@@ -154,12 +171,33 @@ export function updateTask(
     if (next.queued && !next.project_id) throw conflict("pick a project first — the agent works inside it");
   }
   if (patch.position !== undefined && Number.isFinite(Number(patch.position))) next.position = Number(patch.position);
+  if (patch.dependencies !== undefined) {
+    if (!Array.isArray(patch.dependencies) || patch.dependencies.some((x) => typeof x !== "string")) throw badRequest("dependencies must be a list of task ids");
+    const deps = [...new Set(patch.dependencies as string[])];
+    for (const depId of deps) {
+      const dep = getTask(depId);
+      if (!dep) throw badRequest("a dependency task does not exist");
+      if (dep.id === id) throw badRequest("a task cannot depend on itself");
+      if (dep.project_id !== next.project_id) throw conflict("dependencies must be in the same project");
+      // Adding id -> depId is invalid if depId already depends (transitively) on id.
+      const cycle = db.query(`WITH RECURSIVE downstream(id) AS (
+        SELECT depends_on_task_id FROM task_dependencies WHERE task_id = ?
+        UNION SELECT d.depends_on_task_id FROM task_dependencies d JOIN downstream x ON d.task_id = x.id
+      ) SELECT 1 FROM downstream WHERE id = ? LIMIT 1`).get(depId, id);
+      if (cycle) throw badRequest("that dependency would create a cycle");
+    }
+    db.transaction(() => {
+      db.query("DELETE FROM task_dependencies WHERE task_id = ?").run(id);
+      for (const depId of deps) db.query("INSERT INTO task_dependencies (task_id, depends_on_task_id) VALUES (?, ?)").run(id, depId);
+    })();
+  }
   next.updated_at = now();
   db.query(
     `UPDATE tasks SET project_id = ?, title = ?, body = ?, status = ?, priority = ?, position = ?, updated_at = ?, done_at = ?, queued = ? WHERE id = ?`,
   ).run(next.project_id, next.title, next.body, next.status, next.priority, next.position, next.updated_at, next.done_at, next.queued, id);
   emit("tasks");
-  return next;
+  const deps = dependencyList(id);
+  return { ...next, dependencies: deps, blocked_by: deps.filter((d) => d.status !== "done") };
 }
 
 export function deleteTask(id: string) {

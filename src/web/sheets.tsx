@@ -268,14 +268,16 @@ function TaskSheet(p: { taskId: string; onClose: () => void }) {
   const [pickByTool, setPickByTool] = useState<Partial<Record<ToolId, ModelPick>>>({});
   const [agent, setAgent] = useState<ToolId>(() => getState().projects.find((x) => x.id === task?.project_id)?.autopilot?.tool ?? "claude");
   const [busy, setBusy] = useState(false);
+  const [dependencyPick, setDependencyPick] = useState("");
   const dirty = useRef(false);
 
   const save = async (patch: Parameters<typeof api.updateTask>[1]) => {
     const local: Record<string, unknown> = { ...patch };
     if (patch.projectId !== undefined) local.project_id = patch.projectId;
-    patchTaskLocal(p.taskId, local);
+    if (patch.dependencies === undefined) patchTaskLocal(p.taskId, local);
     try {
-      await api.updateTask(p.taskId, patch);
+      const updated = await api.updateTask(p.taskId, patch);
+      if (patch.dependencies !== undefined) patchTaskLocal(p.taskId, { dependencies: updated.dependencies, blocked_by: updated.blocked_by });
     } catch (e) {
       toastError(e);
     }
@@ -406,6 +408,35 @@ function TaskSheet(p: { taskId: string; onClose: () => void }) {
               ))}
             </select>
           </label>
+        </div>
+
+        <div class="field">
+          <span>Blocked by</span>
+          {(task.dependencies ?? []).map((dep) => (
+            <div class="dependency-row">
+              <span class={`dep-status s-${dep.status}`}>{dep.status === "done" ? "Done" : STATUS_LABEL[dep.status]}</span>
+              <button class="text-btn" onClick={() => save({ dependencies: (task.dependencies ?? []).filter((d) => d.id !== dep.id).map((d) => d.id) })}>
+                {dep.title} <Icon name="x" size={14} />
+              </button>
+            </div>
+          ))}
+          {(() => {
+            const choices = getState().tasks.filter((other) => other.id !== task.id && other.project_id === task.project_id && !(task.dependencies ?? []).some((d) => d.id === other.id));
+            return task.project_id && choices.length > 0 ? (
+              <div class="dependency-add">
+                <select class="select" value={dependencyPick} onChange={(e) => setDependencyPick((e.target as HTMLSelectElement).value)}>
+                  <option value="">Choose a prerequisite…</option>
+                  {choices.map((other) => <option value={other.id}>{other.title}</option>)}
+                </select>
+                <button class="btn sm" disabled={!dependencyPick} onClick={() => {
+                  const dependencies = [...(task.dependencies ?? []).map((d) => d.id), dependencyPick];
+                  setDependencyPick("");
+                  save({ dependencies });
+                }}>Add</button>
+              </div>
+            ) : null;
+          })()}
+          {!task.project_id && <span class="muted">Choose a project before adding task dependencies.</span>}
         </div>
 
         {task.summary && (

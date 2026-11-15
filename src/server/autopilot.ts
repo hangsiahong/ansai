@@ -73,7 +73,10 @@ export async function autopilotTick() {
     if (running >= autopilotMax) return;
 
     const queued = db
-      .query(`SELECT * FROM tasks WHERE queued = 1 AND status = 'todo' AND project_id IS NOT NULL ORDER BY priority DESC, created_at ASC`)
+      .query(`SELECT t.* FROM tasks t WHERE t.queued = 1 AND t.status = 'todo' AND t.project_id IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM task_dependencies d JOIN tasks prerequisite ON prerequisite.id = d.depends_on_task_id
+          WHERE d.task_id = t.id AND prerequisite.status != 'done')
+        ORDER BY t.priority DESC, t.created_at ASC`)
       .all() as Task[];
     for (const t of queued) {
       if (running >= autopilotMax) break;
