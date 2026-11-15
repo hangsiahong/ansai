@@ -87,10 +87,19 @@ async function projectCommits(path: string, since: number) {
 }
 
 export async function digest(since = seenAt()): Promise<Digest> {
+  // A task has no "reached Review at" time, and updated_at moves on any edit (a reorder, a
+  // priority change), so a Review task counts only when its agent was active since then too.
   const finished = (
     db
-      .query(`SELECT id FROM tasks WHERE status IN ('review', 'done') AND COALESCE(done_at, updated_at) >= ? ORDER BY COALESCE(done_at, updated_at) DESC LIMIT 50`)
-      .all(since) as { id: string }[]
+      .query(
+        `SELECT t.id FROM tasks t
+          WHERE (t.status = 'done' AND COALESCE(t.done_at, t.updated_at) >= ?)
+             OR (t.status = 'review' AND t.updated_at >= ? AND EXISTS (
+                   SELECT 1 FROM sessions s WHERE s.task_id = t.id
+                      AND MAX(s.created_at, COALESCE(s.agent_state_at, 0), COALESCE(s.ended_at, 0)) >= ?))
+          ORDER BY COALESCE(t.done_at, t.updated_at) DESC LIMIT 50`,
+      )
+      .all(since, since, since) as { id: string }[]
   ).map((r) => r.id);
   const filed = (
     db.query(`SELECT id FROM tasks WHERE source = 'agent' AND created_at >= ? ORDER BY created_at DESC LIMIT 50`).all(since) as { id: string }[]
