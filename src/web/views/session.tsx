@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { api, type Session } from "../api";
 import { confirmDialog, openSheet, promptDialog, toast, toastError, useStore } from "../store";
 import { TerminalView, type TermHandle, type TermStatus } from "../Terminal";
-import { Icon, Link, StatusPill, TOOL_LABEL, ToolBadge, goBack, isTouch, nav, sessionState, useTick } from "../ui";
+import { Icon, Link, StatusPill, TOOL_LABEL, ToolBadge, goBack, isTouch, modelLabel, nav, sessionState, useTick } from "../ui";
 import { ChatView } from "../chat";
 
 type View = "chat" | "terminal";
@@ -54,10 +54,13 @@ export function SessionPane({ id }: { id: string }) {
   const [kbd, setKbd] = useState(false);
   const [more, setMore] = useState(false);
   const [compose, setCompose] = useState("");
+  const [attachments, setAttachments] = useState<File[]>([]);
+  const [uploading, setUploading] = useState(false);
   const [showDock, setShowDock] = useState(isTouch());
   const [menu, setMenu] = useState(false);
   const touch = isTouch();
   const ta = useRef<HTMLTextAreaElement>(null);
+  const fileInput = useRef<HTMLInputElement>(null);
   const [viewPref, setViewPref] = useState<View>(savedView);
   const chooseView = (v: View) => {
     setViewPref(v);
@@ -114,14 +117,27 @@ export function SessionPane({ id }: { id: string }) {
   };
 
   const sendCompose = async () => {
+    if (uploading) return; // Enter while files upload would send them twice
     const text = compose;
+    const files = attachments;
     setCompose("");
     if (ta.current) ta.current.style.height = "";
     try {
-      await api.send(id, text, true);
+      // With nothing typed this still presses Enter in the terminal (the "Press Enter" button).
+      let message = text;
+      if (files.length) {
+        setUploading(true);
+        const uploaded = await api.uploadAttachments(id, files);
+        const refs = uploaded.files.map((f) => `- ${f.name}: ${f.path}`).join("\n");
+        message = [text.trim(), `Attached files (read these files):\n${refs}`].filter(Boolean).join("\n\n");
+      }
+      await api.send(id, message, true);
+      if (files.length) setAttachments([]);
     } catch (e) {
       setCompose(text);
       toastError(e);
+    } finally {
+      setUploading(false);
     }
   };
 
@@ -171,6 +187,12 @@ export function SessionPane({ id }: { id: string }) {
           <div class="sub">
             {s.project_id ? <Link href={`/p/${s.project_id}`}>{s.project_name}</Link> : "~"}
             {account && !account.is_default && <> · {account.name}</>}
+            {s.model && (
+              <span class="model" title={`Model ${s.model}${s.effort ? ` · effort ${s.effort}` : " · effort shows after the first reply"}`}>
+                {" · "}
+                {modelLabel(s)}
+              </span>
+            )}
             {view === "terminal" && tstatus !== "live" && !closed && <span class="warn-text"> · {tstatus}</span>}
           </div>
         </div>
@@ -306,6 +328,22 @@ export function SessionPane({ id }: { id: string }) {
             </div>
           )}
           <div class="compose">
+            <input
+              ref={fileInput}
+              type="file"
+              multiple
+              hidden
+              onChange={(e) => {
+                const picked = Array.from((e.target as HTMLInputElement).files ?? []);
+                setAttachments((old) => [...old, ...picked].slice(0, 5));
+                (e.target as HTMLInputElement).value = "";
+              }}
+            />
+            {canChat && (
+              <button class="attach-btn" onClick={() => fileInput.current?.click()} aria-label="Attach files or photos" title="Attach files or photos" disabled={uploading}>
+                <Icon name="plus" size={19} />
+              </button>
+            )}
             <textarea
               ref={ta}
               rows={1}
@@ -325,10 +363,20 @@ export function SessionPane({ id }: { id: string }) {
                 }
               }}
             />
-            <button class={`send ${compose.trim() ? "ready" : ""}`} onClick={sendCompose} aria-label={compose.trim() ? "Send" : "Press Enter"} title={compose.trim() ? "Send" : "Press Enter"}>
+            <button class={`send ${compose.trim() || attachments.length ? "ready" : ""}`} onClick={sendCompose} aria-label={uploading ? "Attaching" : compose.trim() || attachments.length ? "Send" : "Press Enter"} title={uploading ? "Attaching files…" : compose.trim() || attachments.length ? "Send" : "Press Enter"} disabled={uploading}>
               <Icon name="send" size={18} stroke={2.4} />
             </button>
           </div>
+          {attachments.length > 0 && (
+            <div class="attachment-list" aria-label="Attachments">
+              {attachments.map((f, i) => (
+                <span class="attachment-chip" key={`${f.name}-${i}`}>
+                  <span>{f.name}</span>
+                  <button onClick={() => setAttachments((old) => old.filter((_, j) => j !== i))} aria-label={`Remove ${f.name}`}><Icon name="x" size={13} /></button>
+                </span>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>

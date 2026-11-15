@@ -2,6 +2,7 @@ import { readdirSync, existsSync, statSync } from "node:fs";
 import { join, basename, relative, resolve } from "node:path";
 import { config } from "./config";
 import { db, now } from "./db";
+import { badRequest, notFound } from "./errors";
 
 export type Project = {
   id: string;
@@ -71,7 +72,7 @@ function addProjectRow(path: string): string {
 
 export function addProject(rawPath: string): Project {
   const path = resolve(rawPath.replace(/^~(?=$|\/)/, config.home));
-  if (!existsSync(path) || !statSync(path).isDirectory()) throw new Error(`not a directory: ${path}`);
+  if (!existsSync(path) || !statSync(path).isDirectory()) throw badRequest(`not a directory: ${path}`);
   const id = addProjectRow(path);
   db.query("UPDATE projects SET hidden = 0 WHERE id = ?").run(id);
   return getProject(id)!;
@@ -94,6 +95,7 @@ export function getProject(id: string): Project | null {
 }
 
 export function updateProject(id: string, patch: { pinned?: boolean; hidden?: boolean }) {
+  if (!getProject(id)) throw notFound("no such project");
   if (patch.pinned !== undefined) db.query("UPDATE projects SET pinned = ? WHERE id = ?").run(patch.pinned ? 1 : 0, id);
   if (patch.hidden !== undefined) db.query("UPDATE projects SET hidden = ? WHERE id = ?").run(patch.hidden ? 1 : 0, id);
   return getProject(id);

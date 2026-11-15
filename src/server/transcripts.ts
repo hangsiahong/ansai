@@ -103,7 +103,15 @@ export async function resolveTranscript(s: SessionRow): Promise<string | null> {
 
 // ------------------------------------------------------------------- parsing
 
-type ParseState = { tools: Map<string, ToolItem>; title: string | null; firstUser: string | null };
+type ParseState = {
+  tools: Map<string, ToolItem>;
+  title: string | null;
+  firstUser: string | null;
+  /** Latest model + reasoning effort the log reports (they change with /model, /effort). */
+  model: string | null;
+  effort: string | null;
+};
+const freshState = (): ParseState => ({ tools: new Map(), title: null, firstUser: null, model: null, effort: null });
 
 function toolTitle(name: string, input: any): { title: string; keep?: Record<string, unknown> } {
   const file = (p: unknown) => (typeof p === "string" ? p.replace(config.home, "~") : "");
@@ -191,6 +199,10 @@ function parseClaude(line: string, st: ParseState, out: ChatItem[]) {
   if (j.type === "ai-title" && j.aiTitle) st.title = String(j.aiTitle);
   if (j.isSidechain) return; // sub-agent internals
   const ts = Date.parse(j.timestamp) || Date.now();
+  if (j.type === "assistant" && typeof j.message?.model === "string" && !j.message.model.startsWith("<")) {
+    st.model = j.message.model; // "<synthetic>" = Claude's own error/interrupt notes
+    st.effort = typeof j.effort === "string" ? j.effort : null;
+  }
   if (j.type === "user") {
     if (j.isMeta) return;
     if (j.isCompactSummary) return void out.push({ id: j.uuid, k: "note", text: "Conversation compacted", ts });
@@ -268,6 +280,13 @@ function codexTool(name: string, raw: string): { title: string; keep?: Record<st
 
 function parseCodex(line: string, st: ParseState, out: ChatItem[], key: string) {
   const j = JSON.parse(line);
+  if (j.type === "turn_context") {
+    const c = j.payload ?? {};
+    if (typeof c.model === "string") st.model = c.model;
+    const effort = c.effort ?? c.collaboration_mode?.settings?.reasoning_effort;
+    st.effort = typeof effort === "string" ? effort : null;
+    return;
+  }
   if (j.type !== "response_item") return;
   const p = j.payload ?? {};
   const ts = Date.parse(j.timestamp) || Date.now();
@@ -320,7 +339,7 @@ class ChatTail {
   offset = 0;
   items: ChatItem[] = [];
   index = new Map<string, number>();
-  st: ParseState = { tools: new Map(), title: null, firstUser: null };
+  st: ParseState = freshState();
   subs = new Set<Sub>();
   timer: ReturnType<typeof setInterval> | null = null;
   idleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -334,7 +353,7 @@ class ChatTail {
     this.offset = 0;
     this.items = [];
     this.index.clear();
-    this.st = { tools: new Map(), title: null, firstUser: null };
+    this.st = freshState();
     this.truncated = false;
   }
 
@@ -414,6 +433,7 @@ class ChatTail {
       if (!firstLoad && changed.length) this.broadcast({ t: "items", items: changed });
       if (firstLoad) for (const ws of this.subs) this.sendInit(ws);
       this.autoTitle(s);
+      this.recordModel(s);
       this.recordAsTask(s);
       this.mirrorPlan(s, changed);
     } catch (e) {
@@ -434,6 +454,15 @@ class ChatTail {
     const plans = changed.filter((x): x is ToolItem => x.k === "tool" && Array.isArray((x.input as any)?.todos));
     const last = plans[plans.length - 1];
     if (last) setPlan(taskId, (last.input as any).todos);
+  }
+
+  /** Keep the session's model + effort in step with what the agent last ran on. */
+  private recordModel(s: SessionRow) {
+    if (!this.st.model) return;
+    const fresh = getSession(s.id);
+    if (!fresh || (fresh.model === this.st.model && fresh.effort === this.st.effort)) return;
+    db.query("UPDATE sessions SET model = ?, effort = ? WHERE id = ?").run(this.st.model, this.st.effort, s.id);
+    emit("sessions");
   }
 
   /** Sessions you start by hand are recorded in the backlog (Settings → Backlog). */

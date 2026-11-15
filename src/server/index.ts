@@ -5,6 +5,8 @@ import manifestPath from "../web/public/manifest.webmanifest" with { type: "file
 import iconSvgPath from "../web/public/icon.svg" with { type: "file" };
 import icon192Path from "../web/public/icon-192.png" with { type: "file" };
 import icon512Path from "../web/public/icon-512.png" with { type: "file" };
+import { mkdir } from "node:fs/promises";
+import { basename, join } from "node:path";
 
 import { config, cleanEnv } from "./config";
 import { authorize, deviceList, setAllowedDevices, tailscaleStatus } from "./auth";
@@ -26,7 +28,9 @@ import {
   tmuxBase,
   writeTmuxConf,
 } from "./sessions";
-import { isTool, toolList } from "./tools";
+import { TOOLS, toolList, type ToolId } from "./tools";
+import { HttpError, badRequest, errorCode, notFound, tooLarge } from "./errors";
+import { parseBody, v } from "./validate";
 import { onChange, emit, type Topic } from "./events";
 import { handleHook, writeHookFiles } from "./hooks";
 import { getPrefs, publicKey, subscribe, testPush, unsubscribe } from "./push";
@@ -34,8 +38,9 @@ import { setViewer } from "./viewers";
 import { startBackgroundTails, subscribeChat, unsubscribeChat } from "./transcripts";
 import { mcpHttp } from "./mcp";
 import { getSettings, setProjectAutopilot, startAutopilot, updateSettings } from "./autopilot";
-import { createTask, deleteTask, listTasks, runTask, updateTask } from "./tasks";
+import { STATUSES, createTask, deleteTask, listTasks, runTask, updateTask } from "./tasks";
 import {
+  AGENT_TOOLS,
   createAccount,
   deleteAccount,
   ensureDefaultAccounts,
@@ -56,7 +61,7 @@ type WSData =
 
 const json = (data: unknown, status = 200) =>
   new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
-const fail = (status: number, error: string) => json({ error }, status);
+const fail = (status: number, error: string) => json({ error, code: errorCode(status) }, status);
 
 type Handler = (
   req: Request & { params: Record<string, string> },
@@ -65,26 +70,41 @@ type Handler = (
   device: string,
 ) => Response | Promise<Response | undefined> | undefined;
 
-/** Every API/WS route goes through this: auth first, errors become JSON. */
+/**
+ * Every API/WS route goes through this: auth first, then errors become JSON.
+ * HttpErrors keep their status (400/404/409/413); anything else is a server
+ * fault, logged and returned as 500.
+ */
 function guard(h: Handler) {
   return async (req: Request & { params: Record<string, string> }, server: Server<WSData>) => {
-    const a = await authorize(req);
-    if (!a.ok) return json({ error: a.reason, code: a.code ?? "auth" }, a.status);
     try {
+      const a = await authorize(req);
+      if (!a.ok) return json({ error: a.reason, code: a.code ?? "auth" }, a.status);
       return await h(req, server, a.user, a.device);
     } catch (e) {
-      return fail(400, e instanceof Error ? e.message : String(e));
+      if (e instanceof HttpError) return fail(e.status, e.message);
+      console.error(`[ansai] ${req.method} ${new URL(req.url).pathname} failed:`, e);
+      return fail(500, e instanceof Error ? e.message : String(e));
     }
   };
 }
 
-async function body<T = Record<string, unknown>>(req: Request): Promise<T> {
-  try {
-    return (await req.json()) as T;
-  } catch {
-    return {} as T;
-  }
-}
+// Body size limits. JSON routes read at most JSON_LIMIT (1 MB). Hook payloads
+// carry whole tool inputs (a file an agent writes), so they get more room.
+// Bun itself refuses anything over MAX_BODY before a route runs.
+const HOOK_LIMIT = 16 * 1024 * 1024;
+const ATTACH_LIMIT = 51 * 1024 * 1024; // 50 MB of files plus multipart framing
+const MAX_BODY = 64 * 1024 * 1024;
+// Prompts (and task bodies, which become prompts) are passed to the agent as
+// one argv entry; Linux caps that at 128 KB, and a character can be 4 bytes.
+const PROMPT_MAX = 30_000;
+
+// Field checks shared by several routes.
+const TOOL_IDS = Object.keys(TOOLS) as ToolId[];
+const optRef = v.optional(v.nullable(v.string({ max: 200 })));
+const optBool = v.optional(v.boolean());
+const priority = v.number({ int: true, min: 0, max: 3 });
+const endpointBody = v.object({ endpoint: v.string({ min: 1, max: 2048 }) });
 
 const clampDim = (v: string | null, def: number, max: number) => {
   const n = Number(v);
@@ -121,6 +141,7 @@ const server = Bun.serve<WSData>({
   port: config.port,
   development: config.dev,
   idleTimeout: 120,
+  maxRequestBodySize: MAX_BODY,
 
   routes: {
     "/": index,
@@ -139,10 +160,9 @@ const server = Bun.serve<WSData>({
     "/api/devices": {
       GET: guard(async () => json(await deviceList())),
       PUT: guard(async (req, _s, _u, device) => {
-        const b = await body<{ allowed?: string[] }>(req);
-        if (!Array.isArray(b.allowed)) return fail(400, "allowed must be a list of device ids");
+        const b = await parseBody(req, v.object({ allowed: v.array(v.string({ max: 200 }), { max: 1000 }) }));
         const list = await deviceList();
-        const ids = new Set(b.allowed.map(String));
+        const ids = new Set(b.allowed);
         // Never lock out the device making the change.
         const me = list.devices.find((d) => d.name === device);
         if (me && !me.self) ids.add(me.id);
@@ -155,7 +175,8 @@ const server = Bun.serve<WSData>({
     "/api/projects": {
       GET: guard((req) => json(listProjects(new URL(req.url).searchParams.has("all")))),
       POST: guard(async (req) => {
-        const p = addProject(String((await body(req)).path ?? ""));
+        const b = await parseBody(req, v.object({ path: v.string({ min: 1, max: 4096, trim: true }) }));
+        const p = addProject(b.path);
         emit("projects");
         return json(p);
       }),
@@ -173,7 +194,7 @@ const server = Bun.serve<WSData>({
         return p ? json({ ...p, sessions: listSessions({ projectId: p.id }) }) : fail(404, "no such project");
       }),
       PATCH: guard(async (req) => {
-        const p = updateProject(req.params.id!, await body(req));
+        const p = updateProject(req.params.id!, await parseBody(req, v.object({ pinned: optBool, hidden: optBool })));
         emit("projects");
         emit("tasks");
         return json(p);
@@ -182,10 +203,37 @@ const server = Bun.serve<WSData>({
 
     "/api/tasks": {
       GET: guard(() => json(listTasks())),
-      POST: guard(async (req) => json(createTask(await body(req)))),
+      POST: guard(async (req) => {
+        const b = await parseBody(
+          req,
+          v.object({
+            title: v.string({ min: 1, max: 300, trim: true }),
+            body: v.optional(v.string({ max: PROMPT_MAX })),
+            projectId: optRef,
+            status: v.optional(v.oneOf(STATUSES)),
+            priority: v.optional(priority),
+            queued: optBool,
+          }),
+        );
+        return json(createTask(b));
+      }),
     },
     "/api/tasks/:id": {
-      PATCH: guard(async (req) => json(updateTask(req.params.id!, await body(req)))),
+      PATCH: guard(async (req) => {
+        const b = await parseBody(
+          req,
+          v.object({
+            title: v.optional(v.string({ min: 1, max: 300, trim: true })),
+            body: v.optional(v.string({ max: PROMPT_MAX })),
+            projectId: optRef,
+            status: v.optional(v.oneOf(STATUSES)),
+            priority: v.optional(priority),
+            position: v.optional(v.number()),
+            queued: optBool,
+          }),
+        );
+        return json(updateTask(req.params.id!, b));
+      }),
       DELETE: guard((req) => {
         deleteTask(req.params.id!);
         return json({ ok: true });
@@ -193,20 +241,23 @@ const server = Bun.serve<WSData>({
     },
     "/api/tasks/:id/run": {
       POST: guard(async (req) => {
-        const b = await body<{ tool?: string; yolo?: boolean; accountId?: string | null }>(req);
-        if (!isTool(b.tool)) return fail(400, "unknown tool");
-        return json(await runTask(req.params.id!, { tool: b.tool, yolo: b.yolo === true, accountId: b.accountId ? String(b.accountId) : null }));
+        const b = await parseBody(req, v.object({ tool: v.oneOf(TOOL_IDS), yolo: optBool, accountId: optRef }));
+        return json(await runTask(req.params.id!, { tool: b.tool, yolo: b.yolo === true, accountId: b.accountId || null }));
       }),
     },
 
     "/mcp": guard((req) => mcpHttp(req)),
     "/api/settings": {
       GET: guard(() => json(getSettings())),
-      PUT: guard(async (req) => json(updateSettings(await body(req)))),
+      PUT: guard(async (req) => {
+        const b = await parseBody(req, v.object({ autopilotMax: v.optional(v.number({ int: true, min: 1, max: 6 })), trackSessions: optBool }));
+        return json(updateSettings(b));
+      }),
     },
     "/api/projects/:id/autopilot": {
       PUT: guard(async (req) => {
-        const ap = setProjectAutopilot(req.params.id!, await body(req));
+        const b = await parseBody(req, v.object({ on: optBool, tool: v.optional(v.oneOf(AGENT_TOOLS)), accountId: optRef, yolo: optBool }));
+        const ap = setProjectAutopilot(req.params.id!, b);
         emit("tasks");
         return json(ap);
       }),
@@ -214,30 +265,39 @@ const server = Bun.serve<WSData>({
     "/api/hooks/:tool/:event": {
       POST: guard(async (req) => {
         const sid = new URL(req.url).searchParams.get("s");
-        if (sid) handleHook(req.params.tool!, req.params.event!, sid, await body(req));
+        if (sid) handleHook(req.params.tool!, req.params.event!, sid, await parseBody(req, v.anyObject(), HOOK_LIMIT));
         return json({ ok: true });
       }),
     },
     "/api/push/key": guard(() => json({ publicKey: publicKey() })),
     "/api/push/subscribe": {
       POST: guard(async (req, _s, user) => {
-        const b = await body<{ subscription?: { endpoint?: string; keys?: unknown }; prefs?: Record<string, boolean> }>(req);
-        subscribe(b.subscription ?? {}, user, b.prefs ?? {});
+        const b = await parseBody(
+          req,
+          v.object({
+            subscription: v.object({
+              endpoint: v.string({ min: 1, max: 2048 }),
+              keys: v.object({ p256dh: v.string({ min: 1, max: 512 }), auth: v.string({ min: 1, max: 512 }) }),
+            }),
+            prefs: v.optional(v.object({ input: optBool, done: optBool, exited: optBool })),
+          }),
+        );
+        subscribe(b.subscription, user, b.prefs ?? {});
         return json({ ok: true });
       }),
     },
     "/api/push/unsubscribe": {
       POST: guard(async (req) => {
-        unsubscribe(String((await body(req)).endpoint ?? ""));
+        unsubscribe((await parseBody(req, endpointBody)).endpoint);
         return json({ ok: true });
       }),
     },
     "/api/push/status": {
-      POST: guard(async (req) => json({ prefs: getPrefs(String((await body(req)).endpoint ?? "")) })),
+      POST: guard(async (req) => json({ prefs: getPrefs((await parseBody(req, endpointBody)).endpoint) })),
     },
     "/api/push/test": {
       POST: guard(async (req) => {
-        await testPush(String((await body(req)).endpoint ?? ""));
+        await testPush((await parseBody(req, endpointBody)).endpoint);
         return json({ ok: true });
       }),
     },
@@ -245,7 +305,7 @@ const server = Bun.serve<WSData>({
     "/api/accounts": {
       GET: guard(() => json(listAccounts())),
       POST: guard(async (req) => {
-        const b = await body(req);
+        const b = await parseBody(req, v.object({ tool: v.oneOf(AGENT_TOOLS), name: v.string({ min: 1, max: 60, trim: true }) }));
         return json(createAccount(b.tool, b.name));
       }),
     },
@@ -256,7 +316,10 @@ const server = Bun.serve<WSData>({
       }),
     },
     "/api/accounts/:id": {
-      PATCH: guard(async (req) => json(updateAccount(req.params.id!, await body(req)))),
+      PATCH: guard(async (req) => {
+        const b = await parseBody(req, v.object({ name: v.optional(v.string({ min: 1, max: 60, trim: true })), preferred: optBool }));
+        return json(updateAccount(req.params.id!, b));
+      }),
       DELETE: guard((req) => {
         deleteAccount(req.params.id!);
         return json({ ok: true });
@@ -278,16 +341,25 @@ const server = Bun.serve<WSData>({
         return json(listSessions({ projectId: q.get("project") ?? undefined, includeClosed: q.has("all") }));
       }),
       POST: guard(async (req) => {
-        const b = await body<{ tool?: string; projectId?: string; title?: string; prompt?: string; yolo?: boolean; accountId?: string | null }>(req);
-        if (!isTool(b.tool)) return fail(400, "unknown tool");
+        const b = await parseBody(
+          req,
+          v.object({
+            tool: v.oneOf(TOOL_IDS),
+            projectId: optRef,
+            title: v.optional(v.string({ max: 120 })),
+            prompt: v.optional(v.string({ max: PROMPT_MAX })),
+            yolo: optBool,
+            accountId: optRef,
+          }),
+        );
         return json(
           await createSession({
             tool: b.tool,
-            projectId: b.projectId ? String(b.projectId) : undefined,
-            title: b.title ? String(b.title) : undefined,
-            prompt: b.prompt ? String(b.prompt) : undefined,
+            projectId: b.projectId || undefined,
+            title: b.title || undefined,
+            prompt: b.prompt || undefined,
             yolo: b.yolo === true,
-            accountId: b.accountId ? String(b.accountId) : null,
+            accountId: b.accountId || null,
           }),
         );
       }),
@@ -298,10 +370,12 @@ const server = Bun.serve<WSData>({
         return s ? json(sessionView(s)) : fail(404, "no such session");
       }),
       PATCH: guard(async (req) => {
-        const b = await body<{ title?: string }>(req);
-        if (b.title) await renameSession(req.params.id!, b.title);
+        const id = req.params.id!;
+        if (!getSession(id)) throw notFound("no such session");
+        const b = await parseBody(req, v.object({ title: v.optional(v.string({ min: 1, max: 120, trim: true })) }));
+        if (b.title) await renameSession(id, b.title);
         await reconcile();
-        return json(sessionView(getSession(req.params.id!)!));
+        return json(sessionView(getSession(id)!));
       }),
       DELETE: guard(async (req) => {
         await closeSession(req.params.id!);
@@ -319,25 +393,53 @@ const server = Bun.serve<WSData>({
     },
     "/api/sessions/:id/scroll": {
       POST: guard(async (req) => {
-        const dir = (await body<{ dir?: string }>(req)).dir;
-        if (dir !== "up" && dir !== "down" && dir !== "exit") return fail(400, "dir must be up|down|exit");
+        const { dir } = await parseBody(req, v.object({ dir: v.oneOf(["up", "down", "exit"]) }));
         await scroll(req.params.id!, dir);
         return json({ ok: true });
       }),
     },
     "/api/sessions/:id/keys": {
       POST: guard(async (req) => {
-        const b = await body<{ keys?: unknown }>(req);
-        if (!Array.isArray(b.keys) || !b.keys.every((k) => typeof k === "string")) return fail(400, "keys must be a list of key names");
-        await sendKeys(req.params.id!, b.keys as string[]);
+        const { keys } = await parseBody(req, v.object({ keys: v.array(v.string({ min: 1, max: 16 }), { max: 20 }) }));
+        await sendKeys(req.params.id!, keys);
         return json({ ok: true });
       }),
     },
     "/api/sessions/:id/send": {
       POST: guard(async (req) => {
-        const b = await body<{ text?: string; enter?: boolean }>(req);
-        await sendText(req.params.id!, String(b.text ?? ""), b.enter !== false);
+        const b = await parseBody(req, v.object({ text: v.optional(v.string({ max: 1_000_000 })), enter: optBool }));
+        await sendText(req.params.id!, b.text ?? "", b.enter !== false);
         return json({ ok: true });
+      }),
+    },
+    "/api/sessions/:id/attachments": {
+      POST: guard(async (req) => {
+        const s = getSession(req.params.id!);
+        if (!s || s.status === "closed") return fail(404, "no such active session");
+        if (!req.headers.get("content-type")?.startsWith("multipart/form-data")) throw badRequest("send attachments as multipart/form-data");
+        if (Number(req.headers.get("content-length")) > ATTACH_LIMIT) throw tooLarge("Attachments must total 50 MB or less");
+        let form: FormData;
+        try {
+          form = await req.formData();
+        } catch {
+          throw badRequest("could not read the uploaded files");
+        }
+        const files = form.getAll("files").filter((v): v is File => v instanceof File);
+        if (!files.length || files.length > 5) return fail(400, "Attach between 1 and 5 files");
+        if (files.some((f) => f.size > 20 * 1024 * 1024)) return fail(413, "Each attachment must be 20 MB or smaller");
+        if (files.reduce((n, f) => n + f.size, 0) > 50 * 1024 * 1024) return fail(413, "Attachments must total 50 MB or less");
+        const dir = join("/tmp/ansai-attachments", s.id);
+        await mkdir(dir, { recursive: true, mode: 0o700 });
+        const saved = [];
+        for (const file of files) {
+          // Keep the tail of long names so the extension survives (agents pick image readers by it).
+          const original = basename(file.name).replace(/[^\w.-]/g, "_").slice(-100) || "attachment";
+          const name = `${crypto.randomUUID()}-${original}`;
+          const path = join(dir, name);
+          await Bun.write(path, file);
+          saved.push({ name: file.name, path, type: file.type || "application/octet-stream", size: file.size });
+        }
+        return json({ files: saved });
       }),
     },
 

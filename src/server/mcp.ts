@@ -1,5 +1,7 @@
 import { db } from "./db";
+import { HttpError } from "./errors";
 import { getSession } from "./sessions";
+import { JSON_LIMIT, readJson } from "./validate";
 import { createTask, finishTask, getTask } from "./tasks";
 
 /**
@@ -110,13 +112,21 @@ export async function mcpHttp(req: Request): Promise<Response> {
   if (req.method === "GET") return new Response("ansai MCP: POST JSON-RPC here", { status: 405, headers: { allow: "POST" } });
   if (req.method === "DELETE") return new Response(null, { status: 204 });
   const sessionId = new URL(req.url).searchParams.get("s") ?? "";
-  let body: Rpc | Rpc[];
+  let body: unknown;
   try {
-    body = await req.json();
-  } catch {
+    body = await readJson(req, JSON_LIMIT);
+  } catch (e) {
+    if (e instanceof HttpError && e.status === 413) {
+      return Response.json({ jsonrpc: "2.0", id: null, error: { code: -32600, message: e.message } }, { status: 413 });
+    }
+    body = undefined;
+  }
+  if (body === undefined) {
     return Response.json({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } }, { status: 400 });
   }
-  const out = (Array.isArray(body) ? body : [body]).map((m) => handle(sessionId, m)).filter(Boolean);
+  const invalid = { jsonrpc: "2.0", id: null, error: { code: -32600, message: "Invalid Request" } };
+  const isRpc = (m: unknown): m is Rpc => typeof m === "object" && m !== null && typeof (m as Rpc).method === "string";
+  const out = (Array.isArray(body) ? body : [body]).map((m) => (isRpc(m) ? handle(sessionId, m) : invalid)).filter(Boolean);
   if (!out.length) return new Response(null, { status: 202 });
   return Response.json(Array.isArray(body) ? out : out[0]);
 }

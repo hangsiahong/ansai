@@ -3,6 +3,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { config } from "./config";
 import { db, now } from "./db";
+import { badRequest, notFound } from "./errors";
 
 /**
  * Web Push straight from the laptop to your phone/desktop browser (through the
@@ -30,9 +31,9 @@ type SubRow = { endpoint: string; keys: string; prefs: string };
 
 export function subscribe(sub: { endpoint?: unknown; keys?: unknown }, user: string, prefs: Prefs = {}) {
   const endpoint = String(sub?.endpoint ?? "");
-  if (!/^https:\/\//.test(endpoint)) throw new Error("bad push subscription");
+  if (!/^https:\/\//.test(endpoint)) throw badRequest("bad push subscription");
   const k = sub.keys as { p256dh?: string; auth?: string } | undefined;
-  if (!k?.p256dh || !k?.auth) throw new Error("bad push subscription keys");
+  if (!k?.p256dh || !k?.auth) throw badRequest("bad push subscription keys");
   db.query(
     `INSERT INTO push_subs (endpoint, keys, user, prefs, created_at) VALUES (?, ?, ?, ?, ?)
      ON CONFLICT(endpoint) DO UPDATE SET keys = excluded.keys, user = excluded.user, prefs = excluded.prefs`,
@@ -68,6 +69,6 @@ export async function notify(kind: PushKind, n: { title: string; body: string; u
 
 export async function testPush(endpoint: string) {
   const row = db.query("SELECT endpoint, keys, prefs FROM push_subs WHERE endpoint = ?").get(endpoint) as SubRow | null;
-  if (!row) throw new Error("this device isn't subscribed");
+  if (!row) throw notFound("this device isn't subscribed");
   await sendTo(row, { title: "ansai", body: "Notifications work on this device.", url: "/", kind: "test", tag: "test" }, "normal");
 }

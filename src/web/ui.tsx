@@ -123,6 +123,21 @@ export const AGENTS: ToolId[] = ["claude", "codex", "agy"];
 // Real CLI logos (from @lobehub/icons, MIT); bundled as hashed assets.
 const TOOL_ICON: Partial<Record<ToolId, string>> = { claude: claudeIcon, codex: codexIcon, agy: agyIcon };
 
+/** "claude-opus-5-5" → "Opus 5.5", "claude-sonnet-4-20250514" → "Sonnet 4"; other ids (Codex's) pass through. */
+export function modelName(id: string): string {
+  const m = id.match(/^claude-(opus|sonnet|haiku|fable)-(\d+)(?:-(\d{1,2})(?!\d))?/i);
+  if (m) return `${m[1]![0]!.toUpperCase()}${m[1]!.slice(1)} ${m[2]}${m[3] ? "." + m[3] : ""}`;
+  const old = id.match(/^claude-(\d+)(?:-(\d{1,2})(?!\d))?-(opus|sonnet|haiku)/i); // claude-3-5-sonnet-…
+  if (old) return `${old[3]![0]!.toUpperCase()}${old[3]!.slice(1)} ${old[1]}${old[2] ? "." + old[2] : ""}`;
+  return id;
+}
+
+/** What a session runs on, e.g. "Opus 5.5 · xhigh". Empty until the agent reports it. */
+export function modelLabel(s: { model: string | null; effort: string | null }): string {
+  if (!s.model) return "";
+  return s.effort ? `${modelName(s.model)} · ${s.effort}` : modelName(s.model);
+}
+
 export function ago(ts: number | null) {
   if (!ts) return "";
   const s = Math.max(0, Math.round((Date.now() - ts) / 1000));

@@ -28,6 +28,9 @@ export type Session = {
   agent_state: string | null;
   agent_state_at: number | null;
   agent_message: string | null;
+  /** Model id and reasoning effort from the agent's own log (null until it says). */
+  model: string | null;
+  effort: string | null;
   created_at: number;
   ended_at: number | null;
   activity_at: number | null;
@@ -54,6 +57,8 @@ export type Task = {
   queued: number;
   plan: Plan | null;
   summary: string | null;
+  worktree_path: string | null;
+  worktree_branch: string | null;
   source: "you" | "agent" | "session";
   sessions: { id: string; tool: ToolId; status: string; agent_state: string | null; auto: number }[];
 };
@@ -152,6 +157,15 @@ export const api = {
   scroll: (id: string, dir: "up" | "down" | "exit") => call<{ ok: true }>("POST", `/api/sessions/${id}/scroll`, { dir }),
   keys: (id: string, keys: string[]) => call<{ ok: true }>("POST", `/api/sessions/${id}/keys`, { keys }),
   send: (id: string, text: string, enter = true) => call<{ ok: true }>("POST", `/api/sessions/${id}/send`, { text, enter }),
+  uploadAttachments: async (id: string, files: File[]) => {
+    const form = new FormData();
+    for (const file of files) form.append("files", file, file.name);
+    const res = await fetch(`/api/sessions/${id}/attachments`, { method: "POST", body: form });
+    // Bun answers an oversized upload itself, with an empty body.
+    const data = (res.headers.get("content-type") || "").includes("json") ? await res.json() : null;
+    if (!res.ok) throw new Error(data?.error || `${res.status} ${res.statusText}`);
+    return data as { files: { name: string; path: string; type: string; size: number }[] };
+  },
 };
 
 export function wsUrl(path: string) {

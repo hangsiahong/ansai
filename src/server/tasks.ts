@@ -1,7 +1,9 @@
 import { db, newId, now } from "./db";
+import { badRequest, conflict, notFound } from "./errors";
 import { emit } from "./events";
 import { getProject } from "./projects";
 import { createSession } from "./sessions";
+import { ensureTaskWorktree } from "./worktrees";
 import type { ToolId } from "./tools";
 
 export const STATUSES = ["todo", "doing", "review", "done"] as const;
@@ -24,6 +26,8 @@ export type Task = {
   plan: string | null;
   summary: string | null;
   source: TaskSource;
+  worktree_path: string | null;
+  worktree_branch: string | null;
 };
 
 export type Autopilot = { on: boolean; tool: ToolId; accountId: string | null; yolo: boolean };
@@ -73,6 +77,7 @@ export function getTask(id: string): Task | null {
 }
 
 const clampPriority = (p: unknown) => Math.max(0, Math.min(3, Math.floor(Number(p) || 0)));
+const startingTasks = new Set<string>();
 
 export function createTask(o: {
   title?: unknown;
@@ -84,9 +89,9 @@ export function createTask(o: {
   source?: TaskSource;
 }) {
   const title = String(o.title ?? "").trim();
-  if (!title) throw new Error("a task needs a title");
+  if (!title) throw badRequest("a task needs a title");
   const projectId = o.projectId ? String(o.projectId) : null;
-  if (projectId && !getProject(projectId)) throw new Error("no such project");
+  if (projectId && !getProject(projectId)) throw badRequest("no such project");
   const status = isStatus(o.status) ? o.status : "todo";
   const source = o.source ?? "you";
   // Projects on autopilot queue every task you add; agents' own follow-ups wait for you.
@@ -108,22 +113,23 @@ export function updateTask(
   patch: { title?: unknown; body?: unknown; status?: unknown; projectId?: unknown; priority?: unknown; position?: unknown; queued?: unknown },
 ) {
   const cur = getTask(id);
-  if (!cur) throw new Error("no such task");
+  if (!cur) throw notFound("no such task");
   const next = { ...cur };
   if (patch.title !== undefined) {
     const title = String(patch.title).trim();
-    if (!title) throw new Error("a task needs a title");
+    if (!title) throw badRequest("a task needs a title");
     next.title = title.slice(0, 300);
   }
   if (patch.body !== undefined) next.body = String(patch.body);
   if (patch.priority !== undefined) next.priority = clampPriority(patch.priority);
   if (patch.projectId !== undefined) {
     const pid = patch.projectId ? String(patch.projectId) : null;
-    if (pid && !getProject(pid)) throw new Error("no such project");
+    if (pid && !getProject(pid)) throw badRequest("no such project");
+    if (cur.worktree_path && pid !== cur.project_id) throw conflict("this task already has a worktree; keep it in its current project");
     next.project_id = pid;
   }
   if (patch.status !== undefined) {
-    if (!isStatus(patch.status)) throw new Error("bad status");
+    if (!isStatus(patch.status)) throw badRequest("bad status");
     if (patch.status !== cur.status) {
       next.status = patch.status;
       next.done_at = patch.status === "done" ? now() : null;
@@ -133,7 +139,7 @@ export function updateTask(
   }
   if (patch.queued !== undefined) {
     next.queued = patch.queued ? 1 : 0;
-    if (next.queued && !next.project_id) throw new Error("pick a project first — the agent works inside it");
+    if (next.queued && !next.project_id) throw conflict("pick a project first — the agent works inside it");
   }
   if (patch.position !== undefined && Number.isFinite(Number(patch.position))) next.position = Number(patch.position);
   next.updated_at = now();
@@ -145,7 +151,7 @@ export function updateTask(
 }
 
 export function deleteTask(id: string) {
-  db.query("DELETE FROM tasks WHERE id = ?").run(id);
+  if (!db.query("DELETE FROM tasks WHERE id = ?").run(id).changes) throw notFound("no such task");
   emit("tasks");
 }
 
@@ -153,6 +159,7 @@ export function deleteTask(id: string) {
 function taskPrompt(task: Task): string {
   return [
     `Backlog task: ${task.title}`,
+    task.worktree_path ? `Worktree: ${task.worktree_path} (branch ${task.worktree_branch})` : "",
     task.body.trim(),
     [
       "How to work this task:",
@@ -168,29 +175,43 @@ function taskPrompt(task: Task): string {
 /** Start an agent on a task: the task becomes its first prompt, and the task moves to "doing". */
 export async function runTask(id: string, o: { tool: ToolId; yolo?: boolean; accountId?: string | null; auto?: boolean }) {
   const task = getTask(id);
-  if (!task) throw new Error("no such task");
-  if (!task.project_id) throw new Error("pick a project for this task first");
-  if (o.tool === "shell") throw new Error("pick an agent, not a shell");
-  const session = await createSession({
-    projectId: task.project_id,
-    tool: o.tool,
-    prompt: taskPrompt(task),
-    title: task.title,
-    yolo: o.yolo,
-    accountId: o.accountId ?? null,
-    taskId: task.id,
-    auto: o.auto,
-  });
-  db.query("UPDATE tasks SET queued = 0, summary = NULL, plan = NULL WHERE id = ?").run(id);
-  if (task.status === "todo" || task.status === "done") updateTask(id, { status: "doing" });
-  else emit("tasks");
-  return session;
+  if (!task) throw notFound("no such task");
+  if (!task.project_id) throw conflict("pick a project for this task first");
+  if (o.tool === "shell") throw badRequest("pick an agent, not a shell");
+  if (startingTasks.has(id)) throw conflict("this task is already starting");
+  if (db.query("SELECT 1 FROM sessions WHERE task_id = ? AND status = 'running'").get(id)) {
+    throw conflict("this task already has a running agent session");
+  }
+  startingTasks.add(id);
+  try {
+    const project = getProject(task.project_id);
+    if (!project) throw conflict("this task's project no longer exists");
+    const worktree = await ensureTaskWorktree(task, project.path);
+    const launchTask = worktree ? { ...task, worktree_path: worktree.path, worktree_branch: worktree.branch } : task;
+    const session = await createSession({
+      projectId: task.project_id,
+      cwd: worktree?.cwd,
+      tool: o.tool,
+      prompt: taskPrompt(launchTask),
+      title: task.title,
+      yolo: o.yolo,
+      accountId: o.accountId ?? null,
+      taskId: task.id,
+      auto: o.auto,
+    });
+    db.query("UPDATE tasks SET queued = 0, summary = NULL, plan = NULL WHERE id = ?").run(id);
+    if (task.status === "todo" || task.status === "done") updateTask(id, { status: "doing" });
+    else emit("tasks");
+    return session;
+  } finally {
+    startingTasks.delete(id);
+  }
 }
 
 /** Called by an agent (MCP finish_task): record its summary and hand the task back for review. */
 export function finishTask(id: string, summary: string) {
   const task = getTask(id);
-  if (!task) throw new Error("no such task");
+  if (!task) throw notFound("no such task");
   db.query("UPDATE tasks SET summary = ?, updated_at = ? WHERE id = ?").run(summary.slice(0, 4000), now(), id);
   if (task.status !== "done") updateTask(id, { status: "review" });
   else emit("tasks");

@@ -383,6 +383,13 @@ function TaskSheet(p: { taskId: string; onClose: () => void }) {
           </div>
         )}
 
+        {task.worktree_path && (
+          <div class="field">
+            <span>Task worktree · {task.worktree_branch}</span>
+            <div class="muted small">{task.worktree_path}</div>
+          </div>
+        )}
+
         {task.plan && task.plan.total > 0 && (
           <div class="field">
             <span>

@@ -1,7 +1,7 @@
 import { useMemo } from "preact/hooks";
 import type { Account, Session, ToolId } from "../api";
 import { openPalette, openSheet, useStore } from "../store";
-import { AGENTS, Empty, FolderIcon, Icon, Link, TOOL_SHORT, ToolBadge, ago, sessionOrder, sessionState, useTick } from "../ui";
+import { AGENTS, Empty, FolderIcon, Icon, Link, TOOL_SHORT, ToolBadge, ago, modelLabel, sessionOrder, sessionState, useTick } from "../ui";
 import { TaskRow } from "./tasks";
 
 function greeting() {
@@ -15,13 +15,16 @@ export function SessionCell({ s }: { s: Session }) {
   const acc = s.account_id ? accounts.find((a) => a.id === s.account_id) : null;
   const st = sessionState(s);
   const showMsg = (st.cls === "attn" || st.cls === "turn") && s.agent_message;
+  const model = modelLabel(s);
   return (
     <Link href={`/s/${s.id}`} class={`cell ${st.cls}`}>
       <ToolBadge tool={s.tool} size={38} />
       <span class="cell-main">
         <span class="cell-title">{s.title}</span>
         <span class="cell-sub">
-          {showMsg ? s.agent_message : `${s.project_name ?? "~"}${acc && !acc.is_default ? ` · ${acc.name}` : ""} · ${ago(s.activity_at ?? s.created_at)}`}
+          {showMsg
+            ? s.agent_message
+            : `${s.project_name ?? "~"}${acc && !acc.is_default ? ` · ${acc.name}` : ""} · ${ago(s.activity_at ?? s.created_at)}${model ? ` · ${model}` : ""}`}
         </span>
       </span>
       <span class={`cell-detail ${st.cls}`}>{st.label}</span>

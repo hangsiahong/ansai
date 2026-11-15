@@ -1,6 +1,7 @@
 import { writeFileSync, existsSync } from "node:fs";
 import { config, cleanEnv } from "./config";
 import { db, newId, now } from "./db";
+import { badRequest, conflict, notFound } from "./errors";
 import { TOOLS, type ToolId } from "./tools";
 import { getProject, touchProject } from "./projects";
 import { emit } from "./events";
@@ -95,6 +96,8 @@ export type SessionRow = {
   agent_state_at: number | null;
   agent_message: string | null;
   transcript: string | null;
+  model: string | null;
+  effort: string | null;
   auto: number;
   created_at: number;
   ended_at: number | null;
@@ -152,16 +155,17 @@ export type CreateOpts = {
   auto?: boolean;
 };
 
-function sessionEnv(id: string, account: AccountRow | null): string[] {
-  const env: Record<string, string> = { ANSAI_SESSION_ID: id, ...accountEnv(account) };
+function sessionEnv(id: string, account: AccountRow | null, cwd: string): string[] {
+  const env: Record<string, string> = { ANSAI_SESSION_ID: id, ...accountEnv(account, cwd) };
   return Object.entries(env).flatMap(([k, v]) => ["-e", `${k}=${v}`]);
 }
 
 export async function createSession(o: CreateOpts) {
   const tool = TOOLS[o.tool];
   const project = o.projectId ? getProject(o.projectId) : null;
-  const cwd = project?.path ?? o.cwd ?? config.home;
-  if (!existsSync(cwd)) throw new Error(`directory does not exist: ${cwd}`);
+  if (o.projectId && !project) throw badRequest("no such project");
+  const cwd = o.cwd ?? project?.path ?? config.home;
+  if (!existsSync(cwd)) throw conflict(`directory does not exist: ${cwd}`);
   if (!Bun.which(tool.bin)) throw new Error(`${tool.label} (${tool.bin}) is not installed`);
 
   const account = o.tool === "shell" ? null : resolveAccount(o.tool, o.accountId);
@@ -173,7 +177,7 @@ export async function createSession(o: CreateOpts) {
     (o.prompt?.trim() ? o.prompt.trim().split("\n")[0]!.slice(0, 60) : `${tool.label}${project ? " · " + project.name : ""}`);
 
   await ensureServer();
-  const r = await tmux(["new-session", "-d", "-s", tmuxName, "-x", "160", "-y", "48", "-c", cwd, ...sessionEnv(id, account), "--", ...argv]);
+  const r = await tmux(["new-session", "-d", "-s", tmuxName, "-x", "160", "-y", "48", "-c", cwd, ...sessionEnv(id, account, cwd), "--", ...argv]);
   if (r.code !== 0) throw new Error(`tmux: ${r.err || "failed to start session"}`);
 
   db.query(
@@ -189,19 +193,20 @@ export async function createSession(o: CreateOpts) {
 /** Re-run the same command in the same pane (after the agent exited, or to force a restart). */
 export async function restartSession(id: string) {
   const s = getSession(id);
-  if (!s) throw new Error("no such session");
+  if (!s) throw notFound("no such session");
   const argv = JSON.parse(s.argv) as string[];
   // A restarted agent shouldn't replay the original prompt (or a login flow).
   const tool = TOOLS[s.tool];
   const base = s.tool === "shell" ? argv : withHooks(s.tool, tool.argv({ yolo: argv.some((a) => a.startsWith("--dangerously")) }), s.id);
   const account = s.account_id ? getAccount(s.account_id) : null;
+  const env = sessionEnv(s.id, account, s.cwd); // also prepares the profile, which a respawn needs too
   const alive = (await tmux(["has-session", "-t", s.tmux_name])).code === 0;
   if (alive) {
     const r = await tmux(["respawn-pane", "-k", "-t", s.tmux_name, "-c", s.cwd, "--", ...base]);
     if (r.code !== 0) throw new Error(`tmux: ${r.err}`);
   } else {
     await ensureServer();
-    const r = await tmux(["new-session", "-d", "-s", s.tmux_name, "-x", "160", "-y", "48", "-c", s.cwd, ...sessionEnv(s.id, account), "--", ...base]);
+    const r = await tmux(["new-session", "-d", "-s", s.tmux_name, "-x", "160", "-y", "48", "-c", s.cwd, ...env, "--", ...base]);
     if (r.code !== 0) throw new Error(`tmux: ${r.err}`);
   }
   db.query("UPDATE sessions SET argv = ?, agent_state = NULL WHERE id = ?").run(JSON.stringify(base), id);
@@ -212,9 +217,10 @@ export async function restartSession(id: string) {
 
 export async function closeSession(id: string) {
   const s = getSession(id);
-  if (!s) throw new Error("no such session");
+  if (!s) throw notFound("no such session");
   await tmux(["kill-session", "-t", s.tmux_name]);
   db.query("UPDATE sessions SET status = 'closed', ended_at = COALESCE(ended_at, ?) WHERE id = ?").run(now(), id);
+  if (s.status === "running") onExited(id, null); // closing an already-exited session changes nothing
   live.delete(s.tmux_name);
   await reconcile();
 }
@@ -227,7 +233,7 @@ export async function renameSession(id: string, title: string) {
 
 export async function captureHistory(id: string, lines = 3000): Promise<string> {
   const s = getSession(id);
-  if (!s) throw new Error("no such session");
+  if (!s) throw notFound("no such session");
   const r = await tmux(["capture-pane", "-p", "-J", "-S", `-${lines}`, "-t", s.tmux_name]);
   if (r.code !== 0) throw new Error(`tmux: ${r.err}`);
   return r.out.replace(/\s+$/, "") + "\n";
@@ -235,7 +241,7 @@ export async function captureHistory(id: string, lines = 3000): Promise<string> 
 
 export async function scroll(id: string, dir: "up" | "down" | "exit") {
   const s = getSession(id);
-  if (!s) throw new Error("no such session");
+  if (!s) throw notFound("no such session");
   if (dir === "up") await tmux(["copy-mode", "-e", "-u", "-t", s.tmux_name]);
   else {
     const inMode = (await tmux(["display", "-p", "-t", s.tmux_name, "#{pane_in_mode}"])).out.trim() === "1";
@@ -246,7 +252,7 @@ export async function scroll(id: string, dir: "up" | "down" | "exit") {
 /** Paste text as a bracketed paste (so multi-line prompts don't submit early), then optionally press Enter. */
 export async function sendText(id: string, text: string, enter = true) {
   const s = getSession(id);
-  if (!s) throw new Error("no such session");
+  if (!s) throw notFound("no such session");
   const t = s.tmux_name;
   const inMode = (await tmux(["display", "-p", "-t", t, "#{pane_in_mode}"])).out.trim() === "1";
   if (inMode) await tmux(["send-keys", "-t", t, "-X", "cancel"]);
@@ -268,11 +274,11 @@ const NAMED_KEYS = new Set(["Enter", "Escape", "Tab", "BTab", "Up", "Down", "Lef
 /** Press keys in the agent's terminal without a terminal open (chat view answers prompts this way). */
 export async function sendKeys(id: string, keys: string[]) {
   const s = getSession(id);
-  if (!s) throw new Error("no such session");
+  if (!s) throw notFound("no such session");
   for (const k of keys.slice(0, 20)) {
     if (NAMED_KEYS.has(k)) await tmux(["send-keys", "-t", s.tmux_name, k]);
     else if (/^[ -~]{1,8}$/.test(k)) await tmux(["send-keys", "-t", s.tmux_name, "-l", k]);
-    else throw new Error(`unsupported key: ${k}`);
+    else throw badRequest(`unsupported key: ${k}`);
   }
 }
 
@@ -332,6 +338,8 @@ export async function reconcile(): Promise<boolean> {
     if (!t) {
       // tmux session vanished (killed outside ansai, or reboot)
       upd.run("exited", null, now(), s.id);
+      // Only on the transition: exited sessions whose tmux is gone come through here every tick.
+      if (s.status === "running") onExited(s.id, null);
       live.delete(s.tmux_name);
     } else if (t.dead && s.status === "running") {
       upd.run("exited", t.code, now(), s.id);

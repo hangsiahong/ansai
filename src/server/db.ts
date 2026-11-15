@@ -130,6 +130,16 @@ const migrations: string[] = [
   ALTER TABLE projects ADD COLUMN autopilot TEXT;
   ALTER TABLE sessions ADD COLUMN auto INTEGER NOT NULL DEFAULT 0;
   `,
+  // v8: each task can keep an isolated Git worktree for its agent sessions.
+  `
+  ALTER TABLE tasks ADD COLUMN worktree_path TEXT;
+  ALTER TABLE tasks ADD COLUMN worktree_branch TEXT;
+  `,
+  // v9: the model and reasoning effort each agent is actually running with (read from its log).
+  `
+  ALTER TABLE sessions ADD COLUMN model TEXT;
+  ALTER TABLE sessions ADD COLUMN effort TEXT;
+  `,
 ];
 
 export function getSetting<T>(key: string, fallback: T): T {

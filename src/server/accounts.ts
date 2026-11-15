@@ -1,8 +1,9 @@
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { config } from "./config";
 import { db, now } from "./db";
 import { emit } from "./events";
+import { badRequest, conflict, notFound } from "./errors";
 import { prune, scanClaude, scanCodex, storedLimits, tokenSummary, type TokenSummary } from "./usage";
 
 export type AgentTool = "claude" | "codex" | "agy";
@@ -57,6 +58,51 @@ function linkShared(tool: AgentTool, dir: string) {
   for (const name of SHARED[tool]) linkIfMissing(join(base, name), join(dir, name));
 }
 
+// Same shape Claude Code gives a project entry it creates itself.
+const CLAUDE_PROJECT_DEFAULTS = {
+  allowedTools: [],
+  mcpContextUris: [],
+  mcpServers: {},
+  enabledMcpjsonServers: [],
+  disabledMcpjsonServers: [],
+  hasTrustDialogAccepted: false,
+  hasClaudeMdExternalIncludesApproved: false,
+  hasClaudeMdExternalIncludesWarningShown: false,
+};
+
+/** Trusted here or in a parent folder, the way Claude Code checks it. */
+function claudeTrusts(cfg: any, folder: string): boolean {
+  for (let p = folder; ; p = dirname(p)) {
+    if (cfg?.projects?.[p]?.hasTrustDialogAccepted === true) return true;
+    if (p === dirname(p)) return false;
+  }
+}
+
+/**
+ * Claude Code asks "Do you trust this folder?" once per config dir, and a new profile trusts
+ * nothing, so sessions on a second account stop at that dialog (default answer: exit).
+ * A folder your normal login already trusts is marked trusted in the profile too.
+ */
+function carryClaudeTrust(dir: string, cwd: string) {
+  const folder = resolve(cwd);
+  if (folder === H) return; // Claude only trusts the home folder for one session at a time
+  const path = join(dir, ".claude.json");
+  if (!existsSync(path)) return; // not signed in yet; the login flow comes first
+  const prof = readJson(path);
+  if (!prof || typeof prof !== "object") return; // unreadable (mid-write?): leave it alone
+  if (prof.projects?.[folder]?.hasTrustDialogAccepted === true) return;
+  if (!claudeTrusts(readJson(join(H, ".claude.json")), folder)) return;
+  prof.projects = { ...prof.projects, [folder]: { ...CLAUDE_PROJECT_DEFAULTS, ...prof.projects?.[folder], hasTrustDialogAccepted: true } };
+  const tmp = `${path}.ansai-${process.pid}`;
+  try {
+    writeFileSync(tmp, JSON.stringify(prof, null, 2), { mode: 0o600 });
+    renameSync(tmp, path);
+  } catch (e) {
+    rmSync(tmp, { force: true });
+    console.error("[ansai] could not carry folder trust into the profile:", e);
+  }
+}
+
 // ------------------------------------------------------------------ rows
 
 export function ensureDefaultAccounts() {
@@ -78,17 +124,18 @@ export function resolveAccount(tool: string, accountId?: string | null): Account
   if (!isAgentTool(tool)) return null;
   if (accountId) {
     const a = getAccount(accountId);
-    if (!a) throw new Error("no such account");
-    if (a.tool !== tool) throw new Error(`that account belongs to ${a.tool}, not ${tool}`);
+    if (!a) throw badRequest("no such account");
+    if (a.tool !== tool) throw badRequest(`that account belongs to ${a.tool}, not ${tool}`);
     return a;
   }
   return db.query("SELECT * FROM accounts WHERE tool = ? ORDER BY is_default DESC, created_at LIMIT 1").get(tool) as AccountRow | null;
 }
 
-/** Env that points the CLI at this account's profile. Empty for your normal login. */
-export function accountEnv(a: AccountRow | null): Record<string, string> {
+/** Env that points the CLI at this account's profile (prepared for a session in `cwd`). Empty for your normal login. */
+export function accountEnv(a: AccountRow | null, cwd: string): Record<string, string> {
   if (!a?.dir) return {};
   linkShared(a.tool, a.dir); // pick up config added since the profile was made
+  if (a.tool === "claude") carryClaudeTrust(a.dir, cwd);
   if (a.tool === "claude") return { CLAUDE_CONFIG_DIR: a.dir };
   if (a.tool === "codex") return { CODEX_HOME: a.dir };
   // agy keeps its login in the desktop keychain; without D-Bus it can't see the main login.
@@ -96,10 +143,10 @@ export function accountEnv(a: AccountRow | null): Record<string, string> {
 }
 
 export function createAccount(toolRaw: unknown, nameRaw: unknown): AccountRow {
-  if (!isAgentTool(toolRaw)) throw new Error("accounts are for claude, codex or agy");
+  if (!isAgentTool(toolRaw)) throw badRequest("accounts are for claude, codex or agy");
   const tool = toolRaw;
   const name = String(nameRaw ?? "").trim().slice(0, 60);
-  if (!name) throw new Error("give the account a name, e.g. Work or Personal");
+  if (!name) throw badRequest("give the account a name, e.g. Work or Personal");
   const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "account";
   let id = `${tool}-${slug}`;
   for (let n = 2; getAccount(id); n++) id = `${tool}-${slug}-${n}`;
@@ -113,10 +160,10 @@ export function createAccount(toolRaw: unknown, nameRaw: unknown): AccountRow {
 
 export function updateAccount(id: string, patch: { name?: unknown; preferred?: unknown }) {
   const a = getAccount(id);
-  if (!a) throw new Error("no such account");
+  if (!a) throw notFound("no such account");
   if (patch.name !== undefined) {
     const name = String(patch.name).trim().slice(0, 60);
-    if (!name) throw new Error("name can't be empty");
+    if (!name) throw badRequest("name can't be empty");
     db.query("UPDATE accounts SET name = ? WHERE id = ?").run(name, id);
   }
   if (patch.preferred) db.query("UPDATE accounts SET is_default = (id = ?) WHERE tool = ?").run(id, a.tool);
@@ -126,10 +173,10 @@ export function updateAccount(id: string, patch: { name?: unknown; preferred?: u
 
 export function deleteAccount(id: string) {
   const a = getAccount(id);
-  if (!a) throw new Error("no such account");
-  if (!a.dir) throw new Error("this is your laptop's normal login; sign out from the CLI itself");
+  if (!a) throw notFound("no such account");
+  if (!a.dir) throw conflict("this is your laptop's normal login; sign out from the CLI itself");
   const running = db.query("SELECT count(*) AS n FROM sessions WHERE account_id = ? AND status = 'running'").get(id) as { n: number };
-  if (running.n) throw new Error("close the sessions using this account first");
+  if (running.n) throw conflict("close the sessions using this account first");
   const dir = resolve(a.dir);
   if (!dir.startsWith(PROFILES + "/")) throw new Error("refusing to delete a folder outside ~/.ansai/profiles");
   rmSync(dir, { recursive: true, force: true });

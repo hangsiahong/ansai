@@ -112,8 +112,13 @@ export function handleHook(tool: string, event: string, sessionId: string, paylo
 
   if (tool === "claude") {
     switch (event) {
-      case "SessionStart":
+      case "SessionStart": {
+        // Claude names its model at startup; the effort only shows up in the log with the first reply.
+        const model = typeof payload?.model === "string" ? payload.model : null;
+        if (model)
+          db.query("UPDATE sessions SET model = ?, effort = CASE WHEN COALESCE(model, '') = ? THEN effort END WHERE id = ?").run(model, model, s.id);
         return setState(s, "waiting");
+      }
       case "UserPromptSubmit":
         moveTask(s.task_id, "review", "doing");
         return setState(s, "working");
@@ -162,6 +167,23 @@ export function codexScreen(id: string, prompt: string | null) {
 /** Called by the reconciler when an agent process exits. */
 export function onExited(id: string, code: number | null) {
   const s = db.query("SELECT id, title, tool, task_id, agent_state, status FROM sessions WHERE id = ?").get(id) as Row | null;
-  if (!s || isWatched(id) || !code) return; // clean exits are expected
+  if (!s) return;
+
+  // If the process disappeared before finish_task (or a turn-complete hook),
+  // release the task from Doing so it cannot look active forever or block the
+  // project's next queued task. Keep it for the user to review and rerun.
+  // Leave it alone while another session (a rerun) is still working the task.
+  if (s.task_id) {
+    const reason = code === null
+      ? "The agent session ended before the task was marked complete. Check the session, then rerun or update the task."
+      : `The agent session exited with code ${code} before the task was marked complete. Check the session, then rerun or update the task.`;
+    const recovered = db.query(
+      `UPDATE tasks SET status = 'review', summary = COALESCE(summary, ?), updated_at = ? WHERE id = ? AND status = 'doing'
+         AND NOT EXISTS (SELECT 1 FROM sessions WHERE task_id = ? AND id != ? AND status = 'running')`,
+    ).run(reason, now(), s.task_id, s.task_id, s.id);
+    if (recovered.changes) emit("tasks");
+  }
+
+  if (isWatched(id) || !code) return; // clean exits are expected
   notify("exited", { title: `Exited · ${s.title}`, body: `The agent stopped with code ${code}.`, url: `/s/${id}`, tag: `s-${id}` }).catch(() => {});
 }
