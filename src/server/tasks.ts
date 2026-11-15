@@ -4,7 +4,7 @@ import { emit } from "./events";
 import { getProject } from "./projects";
 import { createSession } from "./sessions";
 import { ensureTaskWorktree } from "./worktrees";
-import { changesIn } from "./changes";
+import { changesIn, taskDir } from "./changes";
 import type { ToolId } from "./tools";
 
 export const STATUSES = ["todo", "doing", "review", "done"] as const;
@@ -36,6 +36,9 @@ export type Task = {
   dependencies?: TaskDependency[];
   blocked_by?: TaskDependency[];
 };
+
+export type ReviewFinding = { file: string; line: number; severity: "high" | "medium" | "low"; message: string };
+export type TaskReview = { session_id: string | null; reviewer_tool: "claude" | "codex"; status: "running" | "complete" | "stopped"; summary: string | null; findings: ReviewFinding[] };
 
 export type Autopilot = {
   on: boolean;
@@ -91,10 +94,55 @@ export function listTasks() {
   ).all() as ({ task_id: string } & TaskDependency)[];
   const byDependency = new Map<string, TaskDependency[]>();
   for (const d of dependencies) byDependency.set(d.task_id, [...(byDependency.get(d.task_id) ?? []), { id: d.id, title: d.title, status: d.status }]);
+  const reviews = db.query(`SELECT r.*, s.status AS session_status FROM task_reviews r LEFT JOIN sessions s ON s.id = r.session_id`).all() as ({ task_id: string; session_id: string | null; reviewer_tool: "claude" | "codex"; status: "running" | "complete" | "stopped"; summary: string | null; findings: string; session_status: string | null })[];
+  const byReview = new Map(reviews.map((r) => [r.task_id, { session_id: r.session_id, reviewer_tool: r.reviewer_tool, status: r.status === "running" && r.session_status !== "running" ? "stopped" as const : r.status, summary: r.summary, findings: JSON.parse(r.findings) as ReviewFinding[] }]));
   return rows.map((t) => {
     const deps = byDependency.get(t.id) ?? [];
-    return { ...t, plan: t.plan ? (JSON.parse(t.plan) as Plan) : null, sessions: byTask.get(t.id) ?? [], dependencies: deps, blocked_by: deps.filter((d) => d.status !== "done") };
+    return { ...t, plan: t.plan ? (JSON.parse(t.plan) as Plan) : null, sessions: byTask.get(t.id) ?? [], dependencies: deps, blocked_by: deps.filter((d) => d.status !== "done"), review: byReview.get(t.id) ?? null };
   });
+}
+
+/** Start a separate, constrained reviewer in the task's existing worktree. */
+export async function startTaskReview(id: string, reviewer?: "claude" | "codex") {
+  const task = getTask(id);
+  if (!task) throw notFound("no such task");
+  if (task.status !== "review") throw conflict("the task must be in Review first");
+  if (!task.project_id || !task.worktree_path) throw conflict("this task needs a project worktree before it can be reviewed");
+  const project = getProject(task.project_id);
+  if (!project) throw conflict("this task's project no longer exists");
+  const previous = db.query("SELECT session_id FROM task_reviews WHERE task_id = ?").get(id) as { session_id: string | null } | null;
+  if (previous && db.query("SELECT 1 FROM sessions WHERE id = ? AND status = 'running'").get(previous.session_id)) throw conflict("the reviewer is still running");
+  const implementer = db.query("SELECT tool FROM sessions WHERE task_id = ? AND id != COALESCE(?, '') ORDER BY created_at DESC LIMIT 1").get(id, previous?.session_id ?? "") as { tool: string } | null;
+  const tool = reviewer ?? (implementer?.tool === "claude" ? "codex" : "claude");
+  if (tool !== "claude" && tool !== "codex") throw badRequest("choose Claude or Codex as the reviewer");
+  const prompt = [
+    `Independent review for backlog task: ${task.title}`,
+    `Requirements (task body):\n${task.body || "(no additional details)"}`,
+    `Review the task's complete diff in this worktree against its merge-base with the main checkout. Worktree: ${task.worktree_path}. Do not edit, create, or delete files.`,
+    "Find correctness bugs, regressions, and unmet requirements. Ignore style preferences. For each actionable issue call ansai report_finding with file, line, severity (high, medium, or low), and a concise message. If there are no findings, call no report_finding tools. When your inspection is complete, call ansai finish_review with a concise summary. Do not call finish_task.",
+  ].join("\n\n");
+  const session = await createSession({ projectId: task.project_id, cwd: await taskDir(task, project.path), tool, title: `Review · ${task.title}`, prompt, taskId: task.id, readOnly: true,
+    instructions: "You are an independent code reviewer. You may inspect files and run read-only commands, but must not modify the worktree. Report actionable findings using ansai report_finding, then call ansai finish_review. Do not use finish_task.",
+    onCreated: (sessionId) => db.query(`INSERT INTO task_reviews (task_id, session_id, reviewer_tool, status, summary, findings, updated_at) VALUES (?, ?, ?, 'running', NULL, '[]', ?) ON CONFLICT(task_id) DO UPDATE SET session_id=excluded.session_id, reviewer_tool=excluded.reviewer_tool, status='running', summary=NULL, findings='[]', updated_at=excluded.updated_at`).run(id, sessionId, tool, now()),
+  });
+  emit("tasks");
+  return session;
+}
+
+export function reportReviewFinding(sessionId: string, finding: ReviewFinding) {
+  const review = db.query("SELECT * FROM task_reviews WHERE session_id = ?").get(sessionId) as { task_id: string; status: string; findings: string } | null;
+  if (!review || review.status !== "running") throw conflict("this session is not the active reviewer for a task");
+  if (!finding.file.trim() || !Number.isInteger(finding.line) || finding.line < 1 || !finding.message.trim()) throw badRequest("finding needs a file, positive line, and message");
+  const findings = JSON.parse(review.findings) as ReviewFinding[];
+  findings.push({ ...finding, file: finding.file.trim(), message: finding.message.trim().slice(0, 2000) });
+  db.query("UPDATE task_reviews SET findings = ?, updated_at = ? WHERE task_id = ?").run(JSON.stringify(findings), now(), review.task_id);
+  emit("tasks");
+}
+
+export function finishTaskReview(sessionId: string, summary: string) {
+  const r = db.query("UPDATE task_reviews SET status = 'complete', summary = ?, updated_at = ? WHERE session_id = ? AND status = 'running'").run(summary.trim().slice(0, 4000), now(), sessionId);
+  if (!r.changes) throw conflict("this session is not the active reviewer for a task");
+  emit("tasks");
 }
 
 function dependencyList(id: string): TaskDependency[] {

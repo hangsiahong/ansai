@@ -9,6 +9,7 @@ export type LaunchOpts = {
   model?: string;
   /** Reasoning effort to start with; unset = the agent's own default. */
   effort?: string;
+  readOnly?: boolean;
 };
 
 type ToolDef = {
@@ -34,6 +35,7 @@ export const TOOLS: Record<ToolId, ToolDef> = {
     bin: "claude",
     argv: (o) => [
       "claude",
+      ...(o.readOnly ? ["--permission-mode", "plan"] : []),
       ...(o.yolo ? ["--dangerously-skip-permissions"] : []),
       ...modelFlags("--model", o),
       ...(o.effort ? ["--effort", o.effort] : []),
@@ -46,6 +48,7 @@ export const TOOLS: Record<ToolId, ToolDef> = {
     bin: "codex",
     argv: (o) => [
       "codex",
+      ...(o.readOnly ? ["--sandbox", "read-only"] : []),
       ...(o.yolo ? ["--dangerously-bypass-approvals-and-sandbox"] : []),
       ...modelFlags("-m", o),
       ...(o.effort ? ["-c", `model_reasoning_effort="${o.effort}"`] : []),

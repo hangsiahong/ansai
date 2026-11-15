@@ -19,6 +19,11 @@ describe("launchChoice", () => {
   test("a launch without a pick has nothing to keep", () => {
     expect(launchChoice(TOOLS.claude.argv({ prompt: "--model" }))).toEqual({});
   });
+
+  test("reviewer launches use each CLI's read-only mode", () => {
+    expect(TOOLS.claude.argv({ prompt: "review", readOnly: true })).toContain("plan");
+    expect(TOOLS.codex.argv({ prompt: "review", readOnly: true })).toContain("read-only");
+  });
 });
 
 describe("relaunchChoice", () => {

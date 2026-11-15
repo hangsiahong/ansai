@@ -74,8 +74,8 @@ export function playbookNote(projectId: string | null | undefined): string {
  * those reliably, and it never becomes a prompt of its own. (MCP server instructions
  * were tried first; neither agent acted on them.)
  */
-export function withHooks(tool: ToolId, argv: string[], sessionId: string, playbook = ""): string[] {
-  const note = playbook ? `${AGENT_NOTE}\n\n${playbook}` : AGENT_NOTE;
+export function withHooks(tool: ToolId, argv: string[], sessionId: string, playbook = "", instructions?: string): string[] {
+  const note = instructions ?? (playbook ? `${AGENT_NOTE}\n\n${playbook}` : AGENT_NOTE);
   if (tool === "claude")
     return [
       argv[0]!,

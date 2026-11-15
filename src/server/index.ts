@@ -43,7 +43,7 @@ import { deliverIdle, getPlaybook, listMessages, postMessage, setPlaybook, teamB
 import { digest, markSeen } from "./digest";
 import { endProjectShift, endShift, nudgeIdle, stopPressed, shiftView, startProjectShift, startShift } from "./shifts";
 import { getSettings, setProjectAutopilot, startAutopilot, updateSettings } from "./autopilot";
-import { STATUSES, createTask, deleteTask, getTask, listTasks, runTask, updateTask } from "./tasks";
+import { STATUSES, createTask, deleteTask, getTask, listTasks, runTask, startTaskReview, updateTask } from "./tasks";
 import { changesIn, taskDir } from "./changes";
 import { discardTaskWorktree, mergeTaskWorktree } from "./worktrees";
 import { db } from "./db";
@@ -307,6 +307,12 @@ const server = Bun.serve<WSData>({
         const project = task.project_id ? getProject(task.project_id) : null;
         if (!project) throw conflict("this task isn't in a project, so it has no code changes");
         return json(await changesIn(await taskDir(task, project.path)));
+      }),
+    },
+    "/api/tasks/:id/review": {
+      POST: guard(async (req) => {
+        const b = await parseBody(req, v.object({ tool: v.optional(v.oneOf(["claude", "codex"] as const)) }));
+        return json(await startTaskReview(req.params.id!, b.tool));
       }),
     },
     "/api/tasks/:id/merge": {

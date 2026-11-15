@@ -200,6 +200,19 @@ const migrations: string[] = [
   );
   CREATE INDEX task_dependencies_prerequisite ON task_dependencies(depends_on_task_id);
   `,
+  // v15: independent reviewer runs and their anchored findings, one current review per task.
+  `
+  CREATE TABLE task_reviews (
+    task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+    session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+    reviewer_tool TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'running',
+    summary TEXT,
+    findings TEXT NOT NULL DEFAULT '[]',
+    updated_at INTEGER NOT NULL
+  );
+  CREATE INDEX task_reviews_session ON task_reviews(session_id);
+  `,
 ];
 
 export function getSetting<T>(key: string, fallback: T): T {
