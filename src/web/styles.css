@@ -1193,7 +1193,7 @@ a.prow:active, button.prow:active { background: var(--press); }
   .trow-title { font-size: 16px; line-height: 1.38; }
   .sdot { width: 24px; height: 24px; margin-top: 2px; }
   .sheet .form { gap: 14px; padding-left: 18px; padding-right: 18px; }
-  .title-input { min-height: 2.5em; max-height: 5em; overflow-y: auto; }
+  .title-input { field-sizing: content; min-height: 2.5em; max-height: 5em; overflow-y: auto; }
   .sheet .segmented .seg { height: 42px; font-size: 13px; }
   .runbox { gap: 12px; padding: 14px; }
   .runbox-head { font-size: 16px; }
