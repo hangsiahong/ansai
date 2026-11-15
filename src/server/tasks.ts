@@ -30,7 +30,15 @@ export type Task = {
   worktree_branch: string | null;
 };
 
-export type Autopilot = { on: boolean; tool: ToolId; accountId: string | null; yolo: boolean };
+export type Autopilot = {
+  on: boolean;
+  tool: ToolId;
+  accountId: string | null;
+  yolo: boolean;
+  /** null = the agent's own default. Saved before these existed → undefined, same meaning. */
+  model?: string | null;
+  effort?: string | null;
+};
 
 const isStatus = (s: unknown): s is TaskStatus => typeof s === "string" && (STATUSES as readonly string[]).includes(s);
 
@@ -176,7 +184,10 @@ function taskPrompt(task: Task & { notes?: string[] }): string {
 }
 
 /** Start an agent on a task: the task becomes its first prompt, and the task moves to "doing". */
-export async function runTask(id: string, o: { tool: ToolId; yolo?: boolean; accountId?: string | null; auto?: boolean }) {
+export async function runTask(
+  id: string,
+  o: { tool: ToolId; yolo?: boolean; accountId?: string | null; model?: string | null; effort?: string | null; auto?: boolean },
+) {
   const task = getTask(id);
   if (!task) throw notFound("no such task");
   if (!task.project_id) throw conflict("pick a project for this task first");
@@ -198,6 +209,8 @@ export async function runTask(id: string, o: { tool: ToolId; yolo?: boolean; acc
       prompt: taskPrompt(launchTask),
       title: task.title,
       yolo: o.yolo,
+      model: o.model,
+      effort: o.effort,
       accountId: o.accountId ?? null,
       taskId: task.id,
       auto: o.auto,

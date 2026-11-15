@@ -6,6 +6,7 @@ export type SheetState =
   | { kind: "new"; projectId?: string; tool?: ToolId; accountId?: string }
   | { kind: "history"; sessionId: string }
   | { kind: "changes"; taskId?: string; sessionId?: string }
+  | { kind: "model"; sessionId: string; showTerminal?: () => void }
   | { kind: "add-project" }
   | { kind: "task"; taskId: string }
   | { kind: "new-task"; projectId?: string | null }

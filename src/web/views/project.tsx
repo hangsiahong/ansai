@@ -3,6 +3,7 @@ import { api, type Autopilot, type Project, type ToolId } from "../api";
 import { confirmDialog, openSheet, refreshProjects, toast, toastError, useStore } from "../store";
 import { AGENTS, Empty, FolderIcon, Icon, TOOL_LABEL, ToolBadge, goBack, nav, shortPath, useTick } from "../ui";
 import { AccountPicker } from "../accounts";
+import { ModelPicker } from "../models";
 import { Launchers, SessionCell } from "./now";
 import { QuickAdd, TaskList } from "./tasks";
 import { TeamPanel } from "../team";
@@ -39,6 +40,7 @@ function AutopilotCard({ project, openTodo }: { project: Project; openTodo: stri
               ))}
             </div>
             <AccountPicker tool={ap.tool} value={ap.accountId} onChange={(v) => set({ accountId: v })} />
+            <ModelPicker tool={ap.tool} accountId={ap.accountId} value={{ model: ap.model ?? null, effort: ap.effort ?? null }} onChange={(v) => set(v)} />
             <label class="switch-row inner">
               <span>
                 <b>Auto-approve</b>

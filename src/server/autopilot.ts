@@ -35,11 +35,15 @@ export function updateSettings(patch: Partial<Settings>) {
 export function setProjectAutopilot(projectId: string, raw: Partial<Autopilot>): Autopilot {
   if (!getProject(projectId)) throw notFound("no such project");
   const cur = projectAutopilot(projectId) ?? { on: false, tool: "claude", accountId: null, yolo: false };
+  const tool = raw.tool && (AGENT_TOOLS as string[]).includes(raw.tool) ? raw.tool : cur.tool;
+  const sameTool = tool === cur.tool; // model ids belong to one agent; a new agent starts on its default
   const next: Autopilot = {
     on: raw.on !== undefined ? !!raw.on : cur.on,
-    tool: raw.tool && (AGENT_TOOLS as string[]).includes(raw.tool) ? raw.tool : cur.tool,
+    tool,
     accountId: raw.accountId !== undefined ? (raw.accountId ? String(raw.accountId) : null) : cur.accountId,
     yolo: raw.yolo !== undefined ? !!raw.yolo : cur.yolo,
+    model: raw.model !== undefined ? raw.model || null : sameTool ? (cur.model ?? null) : null,
+    effort: raw.effort !== undefined ? raw.effort || null : sameTool ? (cur.effort ?? null) : null,
   };
   db.query("UPDATE projects SET autopilot = ? WHERE id = ?").run(JSON.stringify(next), projectId);
   emit("projects");
@@ -76,7 +80,7 @@ export async function autopilotTick() {
       if (busySharedProjects.has(t.project_id)) continue;
       const ap = projectAutopilot(t.project_id) ?? { on: false, tool: "claude", accountId: null, yolo: false };
       try {
-        await runTask(t.id, { tool: ap.tool, yolo: ap.yolo, accountId: ap.accountId, auto: true });
+        await runTask(t.id, { tool: ap.tool, yolo: ap.yolo, accountId: ap.accountId, model: ap.model, effort: ap.effort, auto: true });
         running++;
         if (!getTask(t.id)?.worktree_path) busySharedProjects.add(t.project_id);
       } catch (e) {

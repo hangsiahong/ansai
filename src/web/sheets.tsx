@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "preact/hooks";
-import { api, STATUS_LABEL, TASK_STATUSES, type DeviceList, type Settings, type ToolId } from "./api";
+import { api, STATUS_LABEL, TASK_STATUSES, type DeviceList, type ModelPick, type Settings, type ToolId } from "./api";
 import { confirmDialog, getState, openSheet, patchTaskLocal, refreshProjects, setTheme, toast, toastError, useStore, type ThemePref } from "./store";
 import { AGENTS, Icon, Sheet, StatusPill, TOOL_LABEL, TOOL_SHORT, ToolBadge, ago, nav, shortPath } from "./ui";
 import { AccountPicker } from "./accounts";
 import { NotifyPanel } from "./notify";
 import { ChangesSheet } from "./changes";
+import { ModelPicker, ModelSheet } from "./models";
 
 export function Sheets() {
   const sheet = useStore((s) => s.sheet);
@@ -17,6 +18,7 @@ export function Sheets() {
   if (sheet.kind === "task") return <TaskSheet key={sheet.taskId} taskId={sheet.taskId} onClose={close} />;
   if (sheet.kind === "new-task") return <NewTaskSheet projectId={sheet.projectId ?? null} onClose={close} />;
   if (sheet.kind === "settings") return <SettingsSheet onClose={close} />;
+  if (sheet.kind === "model") return <ModelSheet sessionId={sheet.sessionId} showTerminal={sheet.showTerminal} onClose={close} />;
   return null;
 }
 
@@ -83,18 +85,22 @@ function YoloSwitch(p: { value: boolean; onChange: (v: boolean) => void }) {
   );
 }
 
+const NO_PICK: ModelPick = { model: null, effort: null };
+
 function NewSessionSheet(p: { projectId?: string; tool?: ToolId; accountId?: string; onClose: () => void }) {
   const [projectId, setProjectId] = useState(p.projectId ?? getState().projects.find((x) => x.pinned)?.id ?? getState().projects[0]?.id ?? "");
   const [tool, setTool] = useState<ToolId>(p.tool ?? "claude");
   const [accountId, setAccountId] = useState<string | null>(p.accountId ?? null);
   const [prompt, setPrompt] = useState("");
   const [yolo, setYolo] = useState(false);
+  const [picks, setPicks] = useState<Partial<Record<ToolId, ModelPick>>>({}); // model ids belong to one agent
+  const pick = picks[tool] ?? NO_PICK;
   const [busy, setBusy] = useState(false);
 
   const start = async () => {
     setBusy(true);
     try {
-      const s = await api.createSession({ tool, projectId: projectId || undefined, prompt, yolo, accountId });
+      const s = await api.createSession({ tool, projectId: projectId || undefined, prompt, yolo, accountId, ...(tool === "shell" ? {} : pick) });
       p.onClose();
       nav(`/s/${s.id}`);
     } catch (e) {
@@ -112,6 +118,7 @@ function NewSessionSheet(p: { projectId?: string; tool?: ToolId; accountId?: str
           <ProjectSelect value={projectId} onChange={setProjectId} emptyLabel="Home folder (~)" />
         </label>
         {tool !== "shell" && <AccountPicker tool={tool} value={accountId} onChange={setAccountId} />}
+        {tool !== "shell" && <ModelPicker tool={tool} accountId={accountId} value={pick} onChange={(v) => setPicks({ ...picks, [tool]: v })} />}
         {tool !== "shell" && (
           <label class="field">
             <span>First message</span>
@@ -256,6 +263,7 @@ function TaskSheet(p: { taskId: string; onClose: () => void }) {
   const [body, setBody] = useState(task?.body ?? "");
   const [yolo, setYolo] = useState(false);
   const [accountByTool, setAccountByTool] = useState<Record<string, string | null>>({});
+  const [pickByTool, setPickByTool] = useState<Partial<Record<ToolId, ModelPick>>>({});
   const [agent, setAgent] = useState<ToolId>(() => getState().projects.find((x) => x.id === task?.project_id)?.autopilot?.tool ?? "claude");
   const [busy, setBusy] = useState(false);
   const dirty = useRef(false);
@@ -301,7 +309,7 @@ function TaskSheet(p: { taskId: string; onClose: () => void }) {
     setBusy(true);
     try {
       if (dirty.current) await save({ title, body });
-      const s = await api.runTask(task.id, { tool: agent, yolo, accountId: accountByTool[agent] ?? null });
+      const s = await api.runTask(task.id, { tool: agent, yolo, accountId: accountByTool[agent] ?? null, ...(pickByTool[agent] ?? NO_PICK) });
       p.onClose();
       nav(`/s/${s.id}`);
     } catch (e) {
@@ -438,6 +446,12 @@ function TaskSheet(p: { taskId: string; onClose: () => void }) {
               <div class="or-sep">or start it now</div>
               <AgentPicker value={agent} onChange={setAgent} />
               <AccountPicker tool={agent} value={accountByTool[agent] ?? null} onChange={(v) => setAccountByTool({ ...accountByTool, [agent]: v })} />
+              <ModelPicker
+                tool={agent}
+                accountId={accountByTool[agent] ?? null}
+                value={pickByTool[agent] ?? NO_PICK}
+                onChange={(v) => setPickByTool({ ...pickByTool, [agent]: v })}
+              />
               <YoloSwitch value={yolo} onChange={setYolo} />
               <button class="btn primary lg" disabled={busy} onClick={run}>
                 {busy ? "Starting…" : `Run now with ${TOOL_LABEL[agent]}`}
