@@ -185,6 +185,11 @@ const migrations: string[] = [
     report TEXT
   );
   `,
+  // v13: autopilot runs that die mid-task: how often it was retried, and why the last run stopped.
+  `
+  ALTER TABLE tasks ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE tasks ADD COLUMN last_failure TEXT;
+  `,
 ];
 
 export function getSetting<T>(key: string, fallback: T): T {
