@@ -228,3 +228,23 @@ describe("older hook files", () => {
     expect(shift("old")).toMatchObject({ active: true, idle: 0 });
   });
 });
+
+describe("hooks whose reply Claude doesn't read", () => {
+  test("Stop lets the agent stop (the next prompt gets typed in) and doesn't hand the task back", () => {
+    agent("old", { task: "t1" });
+    shifts.startShift("old", { until: now() + HOUR });
+    expect(handleHook("claude", "Stop", "old", {}, false)).toBeUndefined();
+    expect(shift("old")).toMatchObject({ active: true, nudges: 0 }); // no nudge recorded that Claude never saw
+    expect((db.query("SELECT agent_state FROM sessions WHERE id = 'old'").get() as { agent_state: string }).agent_state).toBe("waiting");
+    expect(taskStatus("t1")).toBe("doing");
+  });
+
+  test("team messages stay queued instead of vanishing into /dev/null", () => {
+    agent("a");
+    agent("old");
+    team.postMessage({ from: db.query("SELECT * FROM sessions WHERE id = 'a'").get() as never, to: "old", body: "ping" });
+    expect(handleHook("claude", "UserPromptSubmit", "old", {}, false)).toBeUndefined();
+    expect(handleHook("claude", "Stop", "old", {}, false)).toBeUndefined();
+    expect(team.takePending("old")).toContain("ping");
+  });
+});

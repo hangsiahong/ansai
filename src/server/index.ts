@@ -399,7 +399,8 @@ const server = Bun.serve<WSData>({
       POST: guard(async (req) => {
         // Claude reads this reply (team messages as additionalContext); an empty body means "nothing to add".
         const sid = new URL(req.url).searchParams.get("s");
-        const out = sid ? handleHook(req.params.tool!, req.params.event!, sid, await parseBody(req, v.anyObject(), HOOK_LIMIT)) : undefined;
+        const reads = new URL(req.url).searchParams.get("r") === "1"; // the hook's reply reaches Claude
+        const out = sid ? handleHook(req.params.tool!, req.params.event!, sid, await parseBody(req, v.anyObject(), HOOK_LIMIT), reads) : undefined;
         return out ? json(out) : new Response(null, { status: 204 });
       }),
     },

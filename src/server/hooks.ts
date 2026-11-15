@@ -7,7 +7,7 @@ import { notify } from "./push";
 import { isWatched } from "./viewers";
 import { dropClaims, editWarning, getPlaybook, takePending, wakes } from "./team";
 import { clearStartup, getSession, sessionView } from "./sessions";
-import { claudeStop, codexTurnEnded, shiftWorked } from "./shifts";
+import { claudeStop, codexTurnEnded, shiftView, shiftWorked } from "./shifts";
 
 const EDITS = new Set(["Edit", "MultiEdit", "Write", "NotebookEdit"]);
 import type { ToolId } from "./tools";
@@ -26,7 +26,7 @@ export function writeHookFiles() {
   // `speaks`: Claude reads the hook's stdout, so ansai can hand over team messages as
   // additionalContext. ansai answers those with an empty body when it has nothing to say.
   const cmd = (event: string, speaks = false) =>
-    `curl -s${speaks ? "f" : ""} -m 2 -X POST -H 'content-type: application/json' --data-binary @- "${base()}/claude/${event}?s=$ANSAI_SESSION_ID"${speaks ? " 2>/dev/null" : " >/dev/null 2>&1"} || true`;
+    `curl -s${speaks ? "f" : ""} -m 2 -X POST -H 'content-type: application/json' --data-binary @- "${base()}/claude/${event}?s=$ANSAI_SESSION_ID${speaks ? "&r=1" : ""}"${speaks ? " 2>/dev/null" : " >/dev/null 2>&1"} || true`;
   const entry = (event: string, o: { matcher?: string; speaks?: boolean } = {}) => [
     { ...(o.matcher ? { matcher: o.matcher } : {}), hooks: [{ type: "command", command: cmd(event, o.speaks), timeout: 5 }] },
   ];
@@ -151,7 +151,13 @@ function push(s: Row, kind: "input" | "done", body: string, actions: PushAction[
 export type HookReply = { hookSpecificOutput?: { hookEventName: string; additionalContext: string }; decision?: "block"; reason?: string };
 const context = (event: string, text: string): HookReply => ({ hookSpecificOutput: { hookEventName: event, additionalContext: text } });
 
-export function handleHook(tool: string, event: string, sessionId: string, payload: any): HookReply | undefined {
+/**
+ * `reads`: Claude reads this hook's reply (the hooks file marks those commands with r=1).
+ * Agents started with an older hooks file send their output to /dev/null, so anything
+ * handed over there would be lost: team messages stay queued (they get typed in when the
+ * agent is idle) and a shift lets the agent stop, then types its next prompt instead.
+ */
+export function handleHook(tool: string, event: string, sessionId: string, payload: any, reads = true): HookReply | undefined {
   const s = db.query("SELECT id, title, tool, task_id, agent_state, status FROM sessions WHERE id = ?").get(sessionId) as Row | null;
   if (!s || s.status === "closed") return;
   // Hooks run only once the agent is past its startup screens: forget any dialog seen before.
@@ -175,7 +181,7 @@ export function handleHook(tool: string, event: string, sessionId: string, paylo
       case "UserPromptSubmit": {
         moveTask(s.task_id, "review", "doing");
         setState(s, "working");
-        const msgs = takePending(s.id);
+        const msgs = reads ? takePending(s.id) : null;
         return msgs ? context(event, msgs) : undefined;
       }
       case "PreToolUse":
@@ -185,6 +191,7 @@ export function handleHook(tool: string, event: string, sessionId: string, paylo
         return;
       case "PostToolUse": {
         shiftWorked(s.id);
+        if (!reads) return;
         const msgs = takePending(s.id);
         const file = payload?.tool_input?.file_path ?? payload?.tool_input?.notebook_path;
         const full = typeof file === "string" && EDITS.has(String(payload?.tool_name)) ? getSession(s.id) : null;
@@ -208,16 +215,21 @@ export function handleHook(tool: string, event: string, sessionId: string, paylo
         // Messages that arrived during the turn and are worth another turn (direct ones, or yours):
         // Claude reads them and keeps going. Other agents' broadcasts wait for its next turn.
         const full = getSession(s.id);
-        const msgs = full && wakes(full) ? takePending(s.id) : null;
+        const msgs = reads && full && wakes(full) ? takePending(s.id) : null;
         if (msgs) {
           if (s.agent_state !== "working") setState(s, "working");
           return context(event, msgs);
         }
         // On shift: Claude gets its next prompt and continues in the same turn.
-        const keepGoing = claudeStop(getSession(s.id)!);
+        const keepGoing = reads ? claudeStop(getSession(s.id)!) : null;
         if (keepGoing) {
           if (s.agent_state !== "working") setState(s, "working");
           return keepGoing;
+        }
+        if (!reads && shiftView(s.id)?.active) {
+          // An older hooks file can't keep it going in the same turn: it stops, and the next prompt is typed in.
+          setState(s, "waiting");
+          return;
         }
         const was = s.agent_state;
         setState(s, "waiting");
