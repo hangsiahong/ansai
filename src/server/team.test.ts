@@ -89,6 +89,21 @@ describe("waking idle agents", () => {
   });
 });
 
+describe("when typing in is safe", () => {
+  test("a finished turn, a still screen, and never mid-turn, at an approval, or unseen", () => {
+    expect(team.isIdle({ tool: "claude", agent_state: "waiting" }, 5000)).toBe(true);
+    expect(team.isIdle({ tool: "claude", agent_state: "waiting" }, 1000)).toBe(false); // still redrawing
+    expect(team.isIdle({ tool: "claude", agent_state: "working" }, 60_000)).toBe(false); // hooks deliver instead
+    expect(team.isIdle({ tool: "claude", agent_state: "needs-input" }, 60_000)).toBe(false);
+    expect(team.isIdle({ tool: "claude", agent_state: null }, 60_000)).toBe(false); // e.g. on a startup dialog
+    expect(team.isIdle({ tool: "codex", agent_state: "waiting" }, 5000)).toBe(true);
+    // Codex before its first finished turn: only once the screen has been still a while.
+    expect(team.isIdle({ tool: "codex", agent_state: null }, 4000)).toBe(false);
+    expect(team.isIdle({ tool: "codex", agent_state: null }, 12_000)).toBe(true);
+    expect(team.isIdle({ tool: "codex", agent_state: null }, null)).toBe(false);
+  });
+});
+
 describe("rate limit", () => {
   test("an agent can send 12 messages per 10 minutes", () => {
     const a = agent("a", "p1");

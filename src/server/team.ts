@@ -170,14 +170,30 @@ export function wakes(s: SessionRow): boolean {
  * Only when the agent is truly idle: its turn ended (not at a permission prompt
  * or a startup dialog) and its screen has been still for a few seconds.
  */
+/**
+ * Is this agent sitting at its prompt, so typing a message in is safe? Its turn
+ * ended and the screen has been still. Codex reports only when a turn ends, so
+ * one that hasn't finished a turn yet (no state) counts once its screen has been
+ * still for 10 s — a working Codex keeps redrawing its spinner and timer.
+ */
+export function isIdle(s: Pick<SessionRow, "tool" | "agent_state">, quietMs: number | null): boolean {
+  if (quietMs === null) return false; // ansai hasn't seen the screen yet
+  if (s.agent_state === "waiting") return quietMs >= 3000;
+  if (s.tool === "codex" && s.agent_state === null) return quietMs >= 10_000;
+  return false;
+}
+
 export async function deliverIdle() {
   const rows = db
-    .query(`SELECT * FROM sessions WHERE status = 'running' AND tool IN ('claude', 'codex') AND agent_state = 'waiting'`)
+    .query(
+      `SELECT * FROM sessions WHERE status = 'running' AND tool IN ('claude', 'codex')
+         AND (agent_state = 'waiting' OR (tool = 'codex' AND agent_state IS NULL))`,
+    )
     .all() as SessionRow[];
   for (const s of rows) {
     if (delivering.has(s.id)) continue;
-    const quietFor = Date.now() - (sessionView(s).activity_at ?? 0);
-    if (quietFor < 3000 || !wakes(s)) continue;
+    const at = sessionView(s).activity_at;
+    if (!isIdle(s, at ? Date.now() - at : null) || !wakes(s)) continue;
     delivering.add(s.id);
     try {
       const text = takePending(s.id);
