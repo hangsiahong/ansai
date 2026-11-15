@@ -1,4 +1,4 @@
-import { useEffect, useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import { api, wsUrl, type Account, type Me, type Message, type Project, type Session, type Task, type Tool, type ToolId } from "./api";
 
 export type SheetState =
@@ -69,14 +69,27 @@ export function setState(patch: Partial<State>) {
 }
 export const getState = () => state;
 
+/**
+ * Read from the store. The selector runs on every render, so one that reads props
+ * (or other render-time values) always sees the current ones; the subscription only
+ * re-renders when the selected value changes. (It used to keep the first render's
+ * selector forever, so such selectors went stale.)
+ */
 export function useStore<T>(pick: (s: State) => T): T {
-  const [v, setV] = useState(() => pick(state));
+  const pickRef = useRef(pick);
+  pickRef.current = pick;
+  const last = useRef<T | undefined>(undefined);
+  const [, rerender] = useState(0);
   useEffect(() => {
-    const f = () => setV(() => pick(state));
+    const f = () => {
+      if (!Object.is(pickRef.current(state), last.current)) rerender((n) => n + 1);
+    };
     subs.add(f);
     f();
     return () => void subs.delete(f);
   }, []);
+  const v = pick(state);
+  last.current = v;
   return v;
 }
 
