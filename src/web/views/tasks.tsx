@@ -87,6 +87,11 @@ function TaskMeta({ task, showProject }: { task: Task; showProject?: boolean }) 
           <Icon name="history" size={11} stroke={2.6} /> Queued
         </span>
       ) : null}
+      {!!task.blocked_by?.length && (
+        <span class="tchip blocked" title={`Waiting for: ${task.blocked_by.map((d) => d.title).join(", ")}`}>
+          Blocked by {task.blocked_by.length === 1 ? task.blocked_by[0]!.title : `${task.blocked_by.length} tasks`}
+        </span>
+      )}
       {plan && (
         <span class="tplan" title={plan.current ?? "Agent's plan"}>
           <span class="tplan-bar">

@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 
 const { db, now } = await import("./db");
 const { autopilotTick, setTaskStarter, updateSettings } = await import("./autopilot");
+const { listTasks, updateTask } = await import("./tasks");
 
 let started: string[] = [];
 let failing = new Set<string>();
@@ -71,6 +72,34 @@ describe("autopilot", () => {
     task("b", "p1", { worktree: true });
     await autopilotTick();
     expect(started).toEqual(["a", "b"]);
+  });
+
+  test("queued tasks wait until every prerequisite is done", async () => {
+    task("prerequisite-a", "p1", { worktree: true });
+    task("prerequisite-b", "p2", { worktree: true });
+    task("downstream", "p3", { worktree: true, priority: 3 });
+    db.query("INSERT INTO task_dependencies (task_id, depends_on_task_id) VALUES ('downstream', 'prerequisite-a'), ('downstream', 'prerequisite-b')").run();
+    await autopilotTick();
+    expect(started).toEqual(["prerequisite-a", "prerequisite-b"]);
+    db.query("UPDATE tasks SET status = 'done' WHERE id IN ('prerequisite-a', 'prerequisite-b')").run();
+    await autopilotTick();
+    expect(started).toEqual(["prerequisite-a", "prerequisite-b", "downstream"]);
+  });
+
+  test("dependencies are exposed as blocked-by state and cycles are rejected", () => {
+    task("first", "p1", { queued: false });
+    task("second", "p1", { queued: false });
+    updateTask("second", { dependencies: ["first"] });
+    expect(listTasks().find((t) => t.id === "second")?.blocked_by?.map((d) => d.title)).toEqual(["first"]);
+    expect(() => updateTask("first", { dependencies: ["second"] })).toThrow("cycle");
+    expect(() => updateTask("second", { dependencies: ["first", "first"] })).not.toThrow();
+    expect(listTasks().find((t) => t.id === "second")?.dependencies).toHaveLength(1);
+  });
+
+  test("dependencies cannot cross projects", () => {
+    task("same", "p1", { queued: false });
+    task("other-project", "p2", { queued: false });
+    expect(() => updateTask("same", { dependencies: ["other-project"] })).toThrow("same project");
   });
 
   test("an agent that stopped to ask you still holds its slot", async () => {

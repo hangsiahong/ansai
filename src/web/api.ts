@@ -96,6 +96,8 @@ export type Task = {
   worktree_branch: string | null;
   source: "you" | "agent" | "session";
   sessions: { id: string; tool: ToolId; status: string; agent_state: string | null; auto: number }[];
+  dependencies?: { id: string; title: string; status: TaskStatus }[];
+  blocked_by?: { id: string; title: string; status: TaskStatus }[];
 };
 
 export type UsageLimit = { id: string; label: string; used_percent: number; resets_at: number | null; reset: boolean };
@@ -190,7 +192,7 @@ export const api = {
   tasks: () => call<Task[]>("GET", "/api/tasks"),
   createTask: (o: { title: string; body?: string; projectId?: string | null; status?: TaskStatus; priority?: number }) =>
     call<Task>("POST", "/api/tasks", o),
-  updateTask: (id: string, patch: { title?: string; body?: string; status?: TaskStatus; projectId?: string | null; priority?: number; position?: number; queued?: boolean }) =>
+  updateTask: (id: string, patch: { title?: string; body?: string; status?: TaskStatus; projectId?: string | null; priority?: number; position?: number; queued?: boolean; dependencies?: string[] }) =>
     call<Task>("PATCH", `/api/tasks/${id}`, patch),
   deleteTask: (id: string) => call<{ ok: true }>("DELETE", `/api/tasks/${id}`),
   taskChanges: (id: string) => call<Changes>("GET", `/api/tasks/${id}/changes`),
