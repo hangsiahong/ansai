@@ -4,6 +4,7 @@ import { config, cleanEnv } from "./config";
 import { db, newId, now } from "./db";
 import { badRequest, conflict, notFound } from "./errors";
 import { TOOLS, relaunchChoice, type ToolId } from "./tools";
+import { runDeadline, sessionTokens } from "./runs";
 import { getProject, touchProject } from "./projects";
 import { emit } from "./events";
 import { shiftView } from "./shifts";
@@ -195,6 +196,9 @@ export function sessionView(s: SessionRow) {
     clients: l?.attached ?? 0,
     startup: visibleStartup(s),
     shift: shiftView(s.id),
+    /** Tokens spent so far (from the agent's log), and when an autopilot run hits its time limit. */
+    tokens: sessionTokens(s.id),
+    deadline: runDeadline(s),
   };
 }
 export type SessionView = ReturnType<typeof sessionView>;

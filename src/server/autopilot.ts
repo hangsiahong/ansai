@@ -44,6 +44,7 @@ export function setProjectAutopilot(projectId: string, raw: Partial<Autopilot>):
     yolo: raw.yolo !== undefined ? !!raw.yolo : cur.yolo,
     model: raw.model !== undefined ? raw.model || null : sameTool ? (cur.model ?? null) : null,
     effort: raw.effort !== undefined ? raw.effort || null : sameTool ? (cur.effort ?? null) : null,
+    maxMinutes: raw.maxMinutes !== undefined ? raw.maxMinutes || null : (cur.maxMinutes ?? null),
   };
   db.query("UPDATE projects SET autopilot = ? WHERE id = ?").run(JSON.stringify(next), projectId);
   emit("projects");
