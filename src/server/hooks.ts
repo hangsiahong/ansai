@@ -61,13 +61,8 @@ const AGENT_NOTE =
 const mcpUrl = (sessionId: string) => `http://127.0.0.1:${config.port}/mcp?s=${sessionId}`;
 const toml = (s: string) => JSON.stringify(s); // TOML basic strings share JSON's escaping for our text
 
-/**
- * Add status hooks, the ansai MCP server and the backlog note to an agent's command line.
- * `playbook` (the project's own instructions) rides along with the note as system-level
- * guidance, so it never becomes a prompt of its own (no extra turn, nothing replayed on restart).
- */
-export function withHooks(tool: ToolId, argv: string[], sessionId: string, playbook = ""): string[] {
-  const note = playbook ? `${AGENT_NOTE}\n\n${playbook}` : AGENT_NOTE;
+/** Add status hooks, the ansai MCP server and the backlog note to an agent's command line. */
+export function withHooks(tool: ToolId, argv: string[], sessionId: string): string[] {
   if (tool === "claude")
     return [
       argv[0]!,
@@ -76,7 +71,7 @@ export function withHooks(tool: ToolId, argv: string[], sessionId: string, playb
       "--mcp-config",
       JSON.stringify({ mcpServers: { ansai: { type: "http", url: mcpUrl(sessionId) } } }),
       "--append-system-prompt",
-      note,
+      AGENT_NOTE,
       ...argv.slice(1),
     ];
   if (tool === "codex")
@@ -90,7 +85,7 @@ export function withHooks(tool: ToolId, argv: string[], sessionId: string, playb
       "-c",
       `mcp_servers.ansai.default_tools_approval_mode="approve"`,
       "-c",
-      `developer_instructions=${toml(note)}`,
+      `developer_instructions=${toml(AGENT_NOTE)}`,
       ...argv.slice(1),
     ];
   return argv;

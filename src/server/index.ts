@@ -253,7 +253,7 @@ const server = Bun.serve<WSData>({
         return p ? json({ ...p, sessions: listSessions({ projectId: p.id }) }) : fail(404, "no such project");
       }),
       PATCH: guard(async (req) => {
-        const p = updateProject(req.params.id!, await parseBody(req, v.object({ pinned: optBool, hidden: optBool, playbook: v.optional(v.string({ max: 20_000 })) })));
+        const p = updateProject(req.params.id!, await parseBody(req, v.object({ pinned: optBool, hidden: optBool })));
         emit("projects");
         emit("tasks");
         return json(p);
