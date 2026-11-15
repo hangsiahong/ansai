@@ -1446,3 +1446,6 @@ i.del { color: var(--danger); }
 .digest-commits { padding: 0 0 8px 28px; }
 .digest-link { display: inline-block; margin: 4px 14px 0; font-size: 14px; color: var(--accent-text); }
 .digest-more { width: 100%; padding: 11px 14px; border: 0; border-top: 0.5px solid var(--line); background: none; color: var(--accent-text); font-size: 14.5px; text-align: left; cursor: pointer; }
+
+.team-dlv { font-size: 11px; font-weight: 600; color: var(--faint); display: inline-flex; align-items: center; gap: 2px; }
+.team-dlv.ok { color: var(--green); }
