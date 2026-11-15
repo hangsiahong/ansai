@@ -1136,6 +1136,7 @@ a.prow:active, button.prow:active { background: var(--press); }
 }
 @media (max-width: 420px) {
   .cell-detail { display: none; }
+  .cell-detail.attn, .cell-detail.turn { display: block; max-width: 58px; white-space: normal; text-align: right; font-size: 11px; line-height: 1.15; }
   .cell > svg:last-child { margin-left: 2px; }
   .now-title h1 { font-size: 29px; }
   .launchers { gap: 4px; }
