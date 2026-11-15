@@ -1,5 +1,5 @@
 import { isAbsolute, normalize, relative } from "node:path";
-import { db, now } from "./db";
+import { db, getSetting, now, setSetting } from "./db";
 import { badRequest, conflict, notFound } from "./errors";
 import { emit } from "./events";
 import { getProject } from "./projects";
@@ -436,4 +436,20 @@ export function teamBoard(projectId: string): Board {
   for (const a of agents) for (const f of new Set([...a.files, ...a.claims])) by.set(f, (by.get(f) ?? new Set()).add(a.id));
   const overlaps = [...by.entries()].filter(([, ids]) => ids.size > 1).map(([path, ids]) => ({ path, agents: [...ids] }));
   return { agents, overlaps };
+}
+
+// ------------------------------------------------------------------ playbooks
+
+/**
+ * A project's playbook: your standing instructions for every agent working in it
+ * ("run bun test before finishing", "never touch the migrations"). Editable from
+ * the project page; agents get it with ansai's MCP instructions when they start.
+ */
+const PLAYBOOK_MAX = 8000;
+export const getPlaybook = (projectId: string) => getSetting<string>(`playbook:${projectId}`, "");
+export function setPlaybook(projectId: string, text: string) {
+  const t = text.trim();
+  if (t.length > PLAYBOOK_MAX) throw badRequest(`keep the playbook under ${PLAYBOOK_MAX} characters`);
+  setSetting(`playbook:${projectId}`, t);
+  return t;
 }

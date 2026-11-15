@@ -3,7 +3,7 @@ import { HttpError } from "./errors";
 import { getSession } from "./sessions";
 import { JSON_LIMIT, readJson } from "./validate";
 import { createTask, finishTask, getTask } from "./tasks";
-import { claimFiles, deliveryNote, describeAgents, describeHistory, postMessage, releaseFiles, takePending } from "./team";
+import { getPlaybook, claimFiles, deliveryNote, describeAgents, describeHistory, postMessage, releaseFiles, takePending } from "./team";
 import { endShift, shiftView } from "./shifts";
 
 /**
@@ -186,6 +186,14 @@ function runTool(sessionId: string, name: string, args: any) {
   return text(`Unknown tool ${name}`, true);
 }
 
+/** ansai's own note, plus the project's playbook (your standing instructions) when it has one. */
+function instructionsFor(sessionId: string): string {
+  const base = "The user's ansai backlog for this project. Use add_task for follow-ups and finish_task when a backlog task is done.";
+  const pid = getSession(sessionId)?.project_id;
+  const playbook = pid ? getPlaybook(pid) : "";
+  return playbook ? `${base}\n\nThe user's playbook for this project (follow it in all your work here):\n${playbook}` : base;
+}
+
 function handle(sessionId: string, msg: Rpc): object | null {
   const reply = (result: unknown) => ({ jsonrpc: "2.0", id: msg.id ?? null, result });
   switch (msg.method) {
@@ -195,7 +203,7 @@ function handle(sessionId: string, msg: Rpc): object | null {
         protocolVersion: msg.params?.protocolVersion ?? "2025-06-18",
         capabilities: { tools: { listChanged: false } },
         serverInfo: { name: "ansai", version: "0.1.0" },
-        instructions: "The user's ansai backlog for this project. Use add_task for follow-ups and finish_task when a backlog task is done.",
+        instructions: instructionsFor(sessionId),
       });
     case "ping":
       return reply({});
