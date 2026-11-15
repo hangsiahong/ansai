@@ -37,6 +37,7 @@ import { getPrefs, publicKey, subscribe, testPush, unsubscribe } from "./push";
 import { setViewer } from "./viewers";
 import { startBackgroundTails, subscribeChat, unsubscribeChat } from "./transcripts";
 import { mcpHttp } from "./mcp";
+import { deliverIdle, listMessages, postMessage } from "./team";
 import { getSettings, setProjectAutopilot, startAutopilot, updateSettings } from "./autopilot";
 import { STATUSES, createTask, deleteTask, listTasks, runTask, updateTask } from "./tasks";
 import {
@@ -114,11 +115,36 @@ const clampDim = (v: string | null, def: number, max: number) => {
 const asset = (path: string, type: string, cache = "public, max-age=86400") => () =>
   new Response(Bun.file(path), { headers: { "content-type": type, "cache-control": cache } });
 
+const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
+
+/**
+ * API routes declared per method answer other methods with a JSON 405 (and an
+ * Allow header) instead of falling through to the plain-text 404.
+ */
+function allowMethods<T extends Record<string, unknown>>(routes: T): T {
+  for (const [path, r] of Object.entries(routes)) {
+    if (!path.startsWith("/api/") || typeof r !== "object" || r === null || r instanceof Response) continue;
+    const handlers = r as Record<string, unknown>;
+    const allow = METHODS.filter((m) => m in handlers);
+    if (!allow.length) continue;
+    for (const m of METHODS) {
+      if (!(m in handlers))
+        handlers[m] = () =>
+          new Response(JSON.stringify({ error: `use ${allow.join(" or ")} here`, code: "method_not_allowed" }), {
+            status: 405,
+            headers: { "content-type": "application/json", allow: allow.join(", ") },
+          });
+    }
+  }
+  return routes;
+}
+
 function snapshot(t: Topic): string {
   if (t === "sessions") return JSON.stringify({ t, sessions: listSessions() });
   if (t === "tasks") return JSON.stringify({ t, tasks: listTasks() });
   if (t === "projects") return JSON.stringify({ t, projects: listProjects() });
   if (t === "accounts") return JSON.stringify({ t, accounts: listAccounts() });
+  if (t === "messages") return JSON.stringify({ t, messages: listMessages({ limit: 200 }) });
   return JSON.stringify({ t });
 }
 
@@ -143,7 +169,7 @@ const server = Bun.serve<WSData>({
   idleTimeout: 120,
   maxRequestBodySize: MAX_BODY,
 
-  routes: {
+  routes: allowMethods({
     "/": index,
     "/p/*": index,
     "/backlog": index,
@@ -264,9 +290,23 @@ const server = Bun.serve<WSData>({
     },
     "/api/hooks/:tool/:event": {
       POST: guard(async (req) => {
+        // Claude reads this reply (team messages as additionalContext); an empty body means "nothing to add".
         const sid = new URL(req.url).searchParams.get("s");
-        if (sid) handleHook(req.params.tool!, req.params.event!, sid, await parseBody(req, v.anyObject(), HOOK_LIMIT));
-        return json({ ok: true });
+        const out = sid ? handleHook(req.params.tool!, req.params.event!, sid, await parseBody(req, v.anyObject(), HOOK_LIMIT)) : undefined;
+        return out ? json(out) : new Response(null, { status: 204 });
+      }),
+    },
+    "/api/messages": {
+      GET: guard((req) => {
+        const q = new URL(req.url).searchParams;
+        return json(listMessages({ projectId: q.get("project"), sessionId: q.get("session") ?? undefined, limit: clampDim(q.get("limit"), 150, 500) }));
+      }),
+      POST: guard(async (req) => {
+        const b = await parseBody(
+          req,
+          v.object({ body: v.string({ min: 1, max: 8000 }), to: v.optional(v.nullable(v.string({ max: 200 }))), projectId: optRef }),
+        );
+        return json(postMessage({ from: null, to: b.to ?? null, projectId: b.projectId ?? null, body: b.body }));
       }),
     },
     "/api/push/key": guard(() => json({ publicKey: publicKey() })),
@@ -469,7 +509,7 @@ const server = Bun.serve<WSData>({
     }),
 
     "/api/*": guard(() => fail(404, "not found")),
-  },
+  }),
 
   fetch() {
     return new Response("not found", { status: 404 });
@@ -488,7 +528,7 @@ const server = Bun.serve<WSData>({
       }
       if (d.kind === "events") {
         ws.subscribe("events");
-        for (const t of ["sessions", "tasks", "projects", "accounts"] as Topic[]) ws.send(snapshot(t));
+        for (const t of ["sessions", "tasks", "projects", "accounts", "messages"] as Topic[]) ws.send(snapshot(t));
         return;
       }
       const s = getSession(d.sessionId)!;
@@ -554,6 +594,8 @@ startReconcileLoop();
 startUsageLoop();
 startBackgroundTails();
 startAutopilot();
+// Idle agents get their direct messages typed in (busy Claude sessions get them through hooks).
+setInterval(() => deliverIdle().catch((e) => console.error("[ansai] team delivery:", e)), 2000);
 
 console.log(`[ansai] listening on http://${server.hostname}:${server.port}`);
 tailscaleStatus().then((t) => {

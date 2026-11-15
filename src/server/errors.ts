@@ -23,6 +23,7 @@ export class HttpError extends Error {
 const CODES: Record<number, string> = {
   400: "bad_request",
   404: "not_found",
+  405: "method_not_allowed",
   409: "conflict",
   413: "too_large",
   426: "upgrade_required",

@@ -103,6 +103,9 @@ export async function resolveTranscript(s: SessionRow): Promise<string | null> {
 
 // ------------------------------------------------------------------- parsing
 
+/** Team messages ansai typed into an idle agent; the chat shows them from the team channel instead. */
+const isTeamDelivery = (t: string) => /^ansai: (a message|\d+ messages) from your team\./.test(t);
+
 type ParseState = {
   tools: Map<string, ToolItem>;
   title: string | null;
@@ -110,8 +113,18 @@ type ParseState = {
   /** Latest model + reasoning effort the log reports (they change with /model, /effort). */
   model: string | null;
   effort: string | null;
+  /** Files this agent has written or edited (absolute or cwd-relative path → last time), for teammates. */
+  touched: Map<string, number>;
 };
-const freshState = (): ParseState => ({ tools: new Map(), title: null, firstUser: null, model: null, effort: null });
+const freshState = (): ParseState => ({ tools: new Map(), title: null, firstUser: null, model: null, effort: null, touched: new Map() });
+
+const EDIT_TOOLS = new Set(["Edit", "MultiEdit", "Write", "NotebookEdit"]);
+function noteTouched(st: ParseState, path: unknown, ts: number) {
+  if (typeof path !== "string" || !path) return;
+  st.touched.delete(path); // keep insertion order = recency
+  st.touched.set(path, ts);
+  if (st.touched.size > 200) st.touched.delete(st.touched.keys().next().value!);
+}
 
 function toolTitle(name: string, input: any): { title: string; keep?: Record<string, unknown> } {
   const file = (p: unknown) => (typeof p === "string" ? p.replace(config.home, "~") : "");
@@ -182,8 +195,13 @@ function resultText(content: unknown): string {
 
 /** Claude stores slash commands, reminders and command output as user text; keep only what a person typed. */
 function cleanClaudeUser(text: string): { kind: "user" | "note"; text: string } | null {
-  let t = text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim();
+  let t = text
+    .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "")
+    // Claude Code 2.1 wraps pasted text (everything the compose box sends) in these tags.
+    .replace(/<pasted_content id="[^"]*">\n?([\s\S]*?)\n?<\/pasted_content id="[^"]*">/g, "$1")
+    .trim();
   if (!t) return null;
+  if (isTeamDelivery(t)) return null; // shown from the team channel instead
   if (t.startsWith("[Request interrupted")) return { kind: "note", text: "Interrupted" };
   const cmd = t.match(/<command-name>([\s\S]*?)<\/command-name>[\s\S]*?(?:<command-args>([\s\S]*?)<\/command-args>)?/);
   if (cmd) return { kind: "user", text: `${cmd[1]!.trim()} ${cmd[2]?.trim() ?? ""}`.trim() };
@@ -231,6 +249,7 @@ function parseClaude(line: string, st: ParseState, out: ChatItem[]) {
       if (b.type === "text" && String(b.text ?? "").trim()) out.push({ id, k: "assistant", text: clip(String(b.text), 40000), ts });
       else if (b.type === "thinking" && String(b.thinking ?? "").trim()) out.push({ id, k: "thinking", text: clip(String(b.thinking), 12000), ts });
       else if (b.type === "tool_use") {
+        if (EDIT_TOOLS.has(String(b.name))) noteTouched(st, b.input?.file_path ?? b.input?.notebook_path, ts);
         const { title, keep } = toolTitle(String(b.name), b.input);
         const item: ToolItem = { id: String(b.id), k: "tool", ts, name: String(b.name), title, input: keep, done: false };
         st.tools.set(item.id, item);
@@ -297,6 +316,7 @@ function parseCodex(line: string, st: ParseState, out: ChatItem[], key: string) 
       if (p.role === "user") {
         // environment, AGENTS.md and other instructions Codex injects as user turns
         if (text.startsWith("<") || text.startsWith("# AGENTS.md instructions") || text.includes("<INSTRUCTIONS>")) return;
+        if (isTeamDelivery(text)) return;
         if (!st.firstUser) st.firstUser = text;
         out.push({ id: key, k: "user", text, ts });
       } else if (p.role === "assistant") out.push({ id: key, k: "assistant", text: clip(text, 40000), ts });
@@ -311,6 +331,7 @@ function parseCodex(line: string, st: ParseState, out: ChatItem[], key: string) 
     case "custom_tool_call":
     case "local_shell_call": {
       const raw = p.type === "local_shell_call" ? JSON.stringify({ command: p.action?.command ?? [] }) : String(p.input ?? p.arguments ?? "");
+      for (const m of raw.matchAll(/\*\*\* (?:Update|Add|Delete) File: ([^\n\\"]+)/g)) noteTouched(st, m[1]!.trim(), ts);
       const { title, keep } = codexTool(String(p.name ?? "shell"), raw);
       const item: ToolItem = { id: String(p.call_id ?? key), k: "tool", ts, name: String(p.name ?? "shell"), title, input: keep, done: false };
       st.tools.set(item.id, item);
@@ -536,6 +557,17 @@ export function startBackgroundTails(ms = 3000) {
     }
     for (const [id, tail] of tails) if (!ids.has(id) && !tail.subs.size && !tail.timer) tails.delete(id);
   }, ms);
+}
+
+/** Files a running agent has edited, most recent first (paths relative to its working folder when inside it). */
+export function touchedFiles(s: SessionRow, limit = 25): string[] {
+  const t = tails.get(s.id);
+  if (!t) return [];
+  const root = s.cwd.endsWith("/") ? s.cwd : s.cwd + "/";
+  return [...t.st.touched.keys()]
+    .reverse()
+    .slice(0, limit)
+    .map((p) => (p.startsWith(root) ? p.slice(root.length) : p.replace(config.home, "~")));
 }
 
 export function unsubscribeChat(sessionId: string, ws: Sub) {

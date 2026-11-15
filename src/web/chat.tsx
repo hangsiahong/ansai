@@ -1,8 +1,9 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
-import { api, wsUrl, type ChatItem, type Session } from "./api";
+import { api, wsUrl, type ChatItem, type Message, type Session } from "./api";
 import { toastError } from "./store";
 import { Icon, TOOL_LABEL, TOOL_SHORT, ToolBadge, sessionState } from "./ui";
 import { Markdown } from "./md";
+import { TeamBubble, useSessionMessages } from "./team";
 
 type ToolItem = Extract<ChatItem, { k: "tool" }>;
 
@@ -236,6 +237,34 @@ function ApprovalCard({ s }: { s: Session }) {
   );
 }
 
+/** Claude's pre-start dialogs (trust this folder, bypass warning): their menus open on "No, exit", so plain Enter would quit. */
+function StartupCard({ s }: { s: Session }) {
+  const p = s.startup!;
+  return (
+    <div class="live-card attn">
+      <div class="lc-head">
+        <Icon name="lock" size={16} /> Before {TOOL_SHORT[s.tool]} starts
+      </div>
+      <div class="lc-body strong">{p.message}</div>
+      <div class="lc-hint mono-path">{s.cwd}</div>
+      {p.accept ? (
+        <div class="lc-actions two">
+          <button class="btn primary" onClick={() => press(s.id, p.acceptKeys)}>
+            {p.accept}
+          </button>
+          {p.decline && (
+            <button class="btn ghost" onClick={() => press(s.id, p.declineKeys)}>
+              {p.decline}
+            </button>
+          )}
+        </div>
+      ) : (
+        <p class="lc-hint">Switch to Terminal to answer it.</p>
+      )}
+    </div>
+  );
+}
+
 function QuestionCard({ s, t }: { s: Session; t: ToolItem }) {
   const q = ((t.input?.questions as any[]) ?? [])[0];
   if (!q) return null;
@@ -273,6 +302,19 @@ function WorkingRow({ s }: { s: Session }) {
 }
 
 // ---------------------------------------------------------------- the view
+
+/** Team messages slot into the conversation by time; the log's own order is kept. */
+function interleave(items: ChatItem[], team: Message[]): (ChatItem | Message)[] {
+  if (!team.length) return items;
+  const out: (ChatItem | Message)[] = [];
+  let j = 0;
+  for (const it of items) {
+    while (j < team.length && team[j]!.created_at <= it.ts) out.push(team[j++]!);
+    out.push(it);
+  }
+  while (j < team.length) out.push(team[j++]!);
+  return out;
+}
 
 export function ChatView({ s }: { s: Session }) {
   const [items, setItems] = useState<ChatItem[]>([]);
@@ -356,6 +398,7 @@ export function ChatView({ s }: { s: Session }) {
     setShowJump(false);
   };
 
+  const team = useSessionMessages(s);
   const st = sessionState(s);
   const running = s.status === "running";
   const lastTool = [...items].reverse().find((x) => x.k === "tool") as ToolItem | undefined;
@@ -375,7 +418,8 @@ export function ChatView({ s }: { s: Session }) {
               <p>Send a message below. The conversation shows up here as the agent works — switch to Terminal any time for the full screen.</p>
             </div>
           )}
-          {items.map((it) => {
+          {interleave(items, team).map((it) => {
+            if ("body" in it) return <TeamBubble m={it} me={s.id} />;
             if (it.k === "user") return <UserBubble text={it.text} />;
             if (it.k === "assistant")
               return (
@@ -387,7 +431,8 @@ export function ChatView({ s }: { s: Session }) {
             if (it.k === "note") return <div class="chat-note">{it.text}</div>;
             return <ToolRow t={it} live={running && st.cls === "working" && it.id === lastToolId} />;
           })}
-          {running && st.cls === "attn" && !pendingQuestion && <ApprovalCard s={s} />}
+          {running && s.startup?.message && <StartupCard s={s} />}
+          {running && st.cls === "attn" && !pendingQuestion && !s.startup?.message && <ApprovalCard s={s} />}
           {pendingQuestion && <QuestionCard s={s} t={pendingQuestion} />}
           {running && st.cls === "working" && <WorkingRow s={s} />}
           {s.status === "exited" && <div class="chat-note">{TOOL_LABEL[s.tool]} exited.</div>}

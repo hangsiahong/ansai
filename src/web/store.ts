@@ -1,5 +1,5 @@
 import { useEffect, useState } from "preact/hooks";
-import { api, wsUrl, type Account, type Me, type Project, type Session, type Task, type Tool, type ToolId } from "./api";
+import { api, wsUrl, type Account, type Me, type Message, type Project, type Session, type Task, type Tool, type ToolId } from "./api";
 
 export type SheetState =
   | null
@@ -22,6 +22,7 @@ type State = {
   projects: Project[];
   tasks: Task[];
   accounts: Account[];
+  messages: Message[];
   tools: Tool[];
   me: Me | null;
   connected: boolean;
@@ -46,6 +47,7 @@ let state: State = {
   projects: [],
   tasks: [],
   accounts: [],
+  messages: [],
   tools: [],
   me: null,
   connected: false,
@@ -177,6 +179,7 @@ function connectEvents() {
         else if (m.t === "tasks") setState({ tasks: m.tasks });
         else if (m.t === "projects") setState({ projects: m.projects });
         else if (m.t === "accounts") setState({ accounts: m.accounts });
+        else if (m.t === "messages") setState({ messages: m.messages });
       } catch {}
     };
     ws.onclose = () => {

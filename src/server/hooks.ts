@@ -5,6 +5,7 @@ import { db, now } from "./db";
 import { emit } from "./events";
 import { notify } from "./push";
 import { isWatched } from "./viewers";
+import { takePending } from "./team";
 import type { ToolId } from "./tools";
 
 /**
@@ -18,16 +19,21 @@ const hooksFile = join(config.dataDir, "claude-hooks.json");
 const base = () => `http://127.0.0.1:${config.port}/api/hooks`;
 
 export function writeHookFiles() {
-  const cmd = (event: string) =>
-    `curl -s -m 2 -X POST -H 'content-type: application/json' --data-binary @- "${base()}/claude/${event}?s=$ANSAI_SESSION_ID" >/dev/null 2>&1 || true`;
-  const entry = (event: string, matcher?: string) => [{ ...(matcher ? { matcher } : {}), hooks: [{ type: "command", command: cmd(event), timeout: 5 }] }];
+  // `speaks`: Claude reads the hook's stdout, so ansai can hand over team messages as
+  // additionalContext. ansai answers those with an empty body when it has nothing to say.
+  const cmd = (event: string, speaks = false) =>
+    `curl -s${speaks ? "f" : ""} -m 2 -X POST -H 'content-type: application/json' --data-binary @- "${base()}/claude/${event}?s=$ANSAI_SESSION_ID"${speaks ? " 2>/dev/null" : " >/dev/null 2>&1"} || true`;
+  const entry = (event: string, o: { matcher?: string; speaks?: boolean } = {}) => [
+    { ...(o.matcher ? { matcher: o.matcher } : {}), hooks: [{ type: "command", command: cmd(event, o.speaks), timeout: 5 }] },
+  ];
   const settings = {
     hooks: {
       SessionStart: entry("SessionStart"),
-      UserPromptSubmit: entry("UserPromptSubmit"),
-      PreToolUse: entry("PreToolUse", "*"),
+      UserPromptSubmit: entry("UserPromptSubmit", { speaks: true }),
+      PreToolUse: entry("PreToolUse", { matcher: "*" }),
+      PostToolUse: entry("PostToolUse", { matcher: "*", speaks: true }),
       Notification: entry("Notification"),
-      Stop: entry("Stop"),
+      Stop: entry("Stop", { speaks: true }),
     },
   };
   writeFileSync(hooksFile, JSON.stringify(settings, null, 2));
@@ -43,7 +49,10 @@ const AGENT_NOTE =
   "An MCP server named \"ansai\" gives you the user's backlog: " +
   "call add_task to record follow-up work you notice (bugs, refactors, missing tests) instead of doing it unasked; " +
   "if you were given a backlog task, call finish_task with a 2-3 sentence summary when it is done. " +
-  "If a task is unclear or needs a decision, ask the user before changing anything.";
+  "If a task is unclear or needs a decision, ask the user before changing anything. " +
+  "Other agents may be working at the same time: list_agents shows them and the files they are editing, " +
+  "and send_message reaches one of them (or everyone in the project) — use it to avoid clashing edits, hand over findings, or ask a teammate who owns that code. " +
+  "Messages to you arrive by themselves, marked \"ansai: … from your team\".";
 
 const mcpUrl = (sessionId: string) => `http://127.0.0.1:${config.port}/mcp?s=${sessionId}`;
 const toml = (s: string) => JSON.stringify(s); // TOML basic strings share JSON's escaping for our text
@@ -101,7 +110,11 @@ function push(s: Row, kind: "input" | "done", body: string) {
   notify(kind, { title, body, url: `/s/${s.id}`, tag: `s-${s.id}` }).catch(() => {});
 }
 
-export function handleHook(tool: string, event: string, sessionId: string, payload: any) {
+/** What Claude reads back from a hook: extra context for the model (team messages). */
+export type HookReply = { hookSpecificOutput: { hookEventName: string; additionalContext: string } };
+const context = (event: string, text: string): HookReply => ({ hookSpecificOutput: { hookEventName: event, additionalContext: text } });
+
+export function handleHook(tool: string, event: string, sessionId: string, payload: any): HookReply | undefined {
   const s = db.query("SELECT id, title, tool, task_id, agent_state, status FROM sessions WHERE id = ?").get(sessionId) as Row | null;
   if (!s || s.status === "closed") return;
 
@@ -117,23 +130,41 @@ export function handleHook(tool: string, event: string, sessionId: string, paylo
         const model = typeof payload?.model === "string" ? payload.model : null;
         if (model)
           db.query("UPDATE sessions SET model = ?, effort = CASE WHEN COALESCE(model, '') = ? THEN effort END WHERE id = ?").run(model, model, s.id);
-        return setState(s, "waiting");
+        setState(s, "waiting");
+        return;
       }
-      case "UserPromptSubmit":
+      case "UserPromptSubmit": {
         moveTask(s.task_id, "review", "doing");
-        return setState(s, "working");
+        setState(s, "working");
+        const msgs = takePending(s.id);
+        return msgs ? context(event, msgs) : undefined;
+      }
       case "PreToolUse":
         if (s.agent_state !== "working") setState(s, "working");
         return;
+      case "PostToolUse": {
+        const msgs = takePending(s.id);
+        return msgs ? context(event, msgs) : undefined;
+      }
       case "Notification": {
         const msg = clip(payload?.message);
         const type = String(payload?.notification_type ?? "");
         const idle = type === "idle_prompt" || /waiting for your input/i.test(msg);
-        if (idle) return setState(s, "waiting", msg);
+        if (idle) {
+          setState(s, "waiting", msg);
+          return;
+        }
         setState(s, "needs-input", msg);
-        return push(s, "input", msg || "Waiting for your approval");
+        push(s, "input", msg || "Waiting for your approval");
+        return;
       }
       case "Stop": {
+        // Messages that arrived during the turn: Claude reads them and keeps going instead of stopping.
+        const msgs = takePending(s.id);
+        if (msgs) {
+          if (s.agent_state !== "working") setState(s, "working");
+          return context(event, msgs);
+        }
         const was = s.agent_state;
         setState(s, "waiting");
         moveTask(s.task_id, "doing", "review");
@@ -161,6 +192,20 @@ export function codexScreen(id: string, prompt: string | null) {
     push(s, "input", prompt);
   } else if (!prompt && s.agent_state === "needs-input") {
     setState(s, "working");
+  }
+}
+
+/** A startup dialog appeared (message) or went away (null) on a Claude screen. */
+export function startupScreen(id: string, message: string | null) {
+  const s = db.query("SELECT id, title, tool, task_id, agent_state, status FROM sessions WHERE id = ?").get(id) as Row | null;
+  if (!s || s.status !== "running") return;
+  if (message) {
+    setState(s, "needs-input", message);
+    push(s, "input", message);
+  } else if (s.agent_state === "needs-input") {
+    // Hooks take over from here (SessionStart sets "waiting").
+    db.query("UPDATE sessions SET agent_state = NULL, agent_message = NULL WHERE id = ? AND agent_state = 'needs-input'").run(id);
+    emit("sessions");
   }
 }
 

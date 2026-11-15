@@ -140,6 +140,24 @@ const migrations: string[] = [
   ALTER TABLE sessions ADD COLUMN model TEXT;
   ALTER TABLE sessions ADD COLUMN effort TEXT;
   `,
+  // v10: agents talk to each other (and you): direct messages and a project-wide channel.
+  // msg_cursor = the newest message id already delivered to that session.
+  `
+  CREATE TABLE messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
+    from_session TEXT,
+    from_label TEXT NOT NULL,
+    to_session TEXT,
+    to_label TEXT,
+    body TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    delivered_at INTEGER
+  );
+  CREATE INDEX messages_project ON messages(project_id, id);
+  CREATE INDEX messages_to ON messages(to_session, id);
+  ALTER TABLE sessions ADD COLUMN msg_cursor INTEGER NOT NULL DEFAULT 0;
+  `,
 ];
 
 export function getSetting<T>(key: string, fallback: T): T {

@@ -6,7 +6,7 @@ import { TOOLS, type ToolId } from "./tools";
 import { getProject, touchProject } from "./projects";
 import { emit } from "./events";
 import { accountEnv, getAccount, refreshAccountsSoon, resolveAccount, type AccountRow } from "./accounts";
-import { codexScreen, onExited, withHooks } from "./hooks";
+import { codexScreen, onExited, startupScreen, withHooks } from "./hooks";
 
 // ---------------------------------------------------------------- tmux plumbing
 
@@ -99,12 +99,44 @@ export type SessionRow = {
   model: string | null;
   effort: string | null;
   auto: number;
+  /** Newest team message id already delivered to this agent. */
+  msg_cursor: number;
   created_at: number;
   ended_at: number | null;
 };
 
 type Live = { activity: number; command: string; attached: number };
 const live = new Map<string, Live>(); // keyed by tmux_name
+
+/** A dialog the agent shows before it starts (trust this folder, bypass-mode warning, first-run setup). */
+export type StartupPrompt = { kind: string; message: string; accept: string | null; acceptKeys: string[]; decline: string | null; declineKeys: string[] };
+const startup = new Map<string, StartupPrompt>(); // keyed by session id
+
+type Dialog = { kind: string; match: RegExp; message: string; accept: string | null; acceptKeys: string[]; decline?: string; declineKeys?: string[] };
+// Claude Code 2.1's startup screens. Both yes/no menus open on "No, exit", so accepting is Down + Enter.
+const CLAUDE_DIALOGS: Dialog[] = [
+  {
+    kind: "trust",
+    match: /Is this a project you created or one you trust|Do you trust the files in this folder/i,
+    message: "Claude asks whether you trust this folder before it starts.",
+    accept: "Trust folder",
+    acceptKeys: ["Down", "Enter"],
+    decline: "Exit",
+    declineKeys: ["Enter"],
+  },
+  {
+    kind: "bypass",
+    match: /running in Bypass Permissions mode/i,
+    message: "Claude wants you to confirm auto-approve (bypass permissions) mode.",
+    accept: "Accept",
+    acceptKeys: ["Down", "Enter"],
+    decline: "Exit",
+    declineKeys: ["Enter"],
+  },
+  { kind: "theme", match: /Choose the text style that looks best/i, message: "First run: Claude asks for a text style.", accept: "Use default", acceptKeys: ["Enter"] },
+  { kind: "login", match: /Select login method/i, message: "This account isn't signed in. Open the terminal to sign in.", accept: null, acceptKeys: [] },
+  { kind: "apikey", match: /Do you want to use this API key\?/i, message: "Claude asks whether to use an API key from your environment.", accept: null, acceptKeys: [] },
+];
 
 export function sessionView(s: SessionRow) {
   const l = live.get(s.tmux_name);
@@ -116,6 +148,7 @@ export function sessionView(s: SessionRow) {
     activity_at: l?.activity ?? null,
     current_command: l?.command ?? null,
     clients: l?.attached ?? 0,
+    startup: startup.get(s.id) ?? null,
   };
 }
 export type SessionView = ReturnType<typeof sessionView>;
@@ -181,8 +214,8 @@ export async function createSession(o: CreateOpts) {
   if (r.code !== 0) throw new Error(`tmux: ${r.err || "failed to start session"}`);
 
   db.query(
-    `INSERT INTO sessions (id, project_id, task_id, account_id, tool, title, cwd, argv, tmux_name, status, created_at, auto)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?)`,
+    `INSERT INTO sessions (id, project_id, task_id, account_id, tool, title, cwd, argv, tmux_name, status, created_at, auto, msg_cursor)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, (SELECT COALESCE(MAX(id), 0) FROM messages))`,
   ).run(id, project?.id ?? null, o.taskId ?? null, account?.id ?? null, tool.id, title, cwd, JSON.stringify(argv), tmuxName, now(), o.auto ? 1 : 0);
   if (project) touchProject(project.id);
   await reconcile();
@@ -239,9 +272,16 @@ export async function captureHistory(id: string, lines = 3000): Promise<string> 
   return r.out.replace(/\s+$/, "") + "\n";
 }
 
-export async function scroll(id: string, dir: "up" | "down" | "exit") {
+/** Input only makes sense for a live agent; a stopped one answers 409 instead of a tmux error. */
+function liveSession(id: string): SessionRow {
   const s = getSession(id);
   if (!s) throw notFound("no such session");
+  if (s.status !== "running") throw conflict(s.status === "closed" ? "this session is closed" : "this session isn't running; restart it first");
+  return s;
+}
+
+export async function scroll(id: string, dir: "up" | "down" | "exit") {
+  const s = liveSession(id);
   if (dir === "up") await tmux(["copy-mode", "-e", "-u", "-t", s.tmux_name]);
   else {
     const inMode = (await tmux(["display", "-p", "-t", s.tmux_name, "#{pane_in_mode}"])).out.trim() === "1";
@@ -251,8 +291,7 @@ export async function scroll(id: string, dir: "up" | "down" | "exit") {
 
 /** Paste text as a bracketed paste (so multi-line prompts don't submit early), then optionally press Enter. */
 export async function sendText(id: string, text: string, enter = true) {
-  const s = getSession(id);
-  if (!s) throw notFound("no such session");
+  const s = liveSession(id);
   const t = s.tmux_name;
   const inMode = (await tmux(["display", "-p", "-t", t, "#{pane_in_mode}"])).out.trim() === "1";
   if (inMode) await tmux(["send-keys", "-t", t, "-X", "cancel"]);
@@ -273,8 +312,7 @@ const NAMED_KEYS = new Set(["Enter", "Escape", "Tab", "BTab", "Up", "Down", "Lef
 
 /** Press keys in the agent's terminal without a terminal open (chat view answers prompts this way). */
 export async function sendKeys(id: string, keys: string[]) {
-  const s = getSession(id);
-  if (!s) throw notFound("no such session");
+  const s = liveSession(id);
   for (const k of keys.slice(0, 20)) {
     if (NAMED_KEYS.has(k)) await tmux(["send-keys", "-t", s.tmux_name, k]);
     else if (/^[ -~]{1,8}$/.test(k)) await tmux(["send-keys", "-t", s.tmux_name, "-l", k]);
@@ -302,6 +340,40 @@ async function watchCodexScreens() {
       prompt = detail ? `${ask} ${detail}`.slice(0, 200) : ask;
     }
     codexScreen(r.id, prompt);
+  }
+}
+
+/**
+ * Claude shows a few screens before it runs hooks (so before ansai hears from it):
+ * the folder-trust question, the bypass-mode warning, first-run setup. Spot them on
+ * screen so the session says "Needs you" instead of sitting there silently. Task
+ * worktrees ansai made from your own project are trusted automatically.
+ */
+async function watchStartupScreens() {
+  const rows = db
+    .query(`SELECT id, tmux_name, cwd, agent_state FROM sessions WHERE tool = 'claude' AND status = 'running' AND (agent_state IS NULL OR agent_state = 'needs-input')`)
+    .all() as Pick<SessionRow, "id" | "tmux_name" | "cwd" | "agent_state">[];
+  for (const r of rows) {
+    if (r.agent_state === "needs-input" && !startup.has(r.id)) continue; // a real approval, from hooks
+    const cap = await tmux(["capture-pane", "-p", "-J", "-t", r.tmux_name]);
+    if (cap.code !== 0) continue;
+    const d = CLAUDE_DIALOGS.find((x) => x.match.test(cap.out));
+    const prev = startup.get(r.id);
+    if (d?.kind === "trust" && r.cwd.startsWith(config.dataDir + "/worktrees/")) {
+      if (prev?.kind !== "trust-auto") {
+        startup.set(r.id, { kind: "trust-auto", message: "", accept: null, acceptKeys: [], decline: null, declineKeys: [] });
+        await tmux(["send-keys", "-t", r.tmux_name, "Down"]);
+        await tmux(["send-keys", "-t", r.tmux_name, "Enter"]);
+      }
+      continue;
+    }
+    if (d && prev?.kind !== d.kind) {
+      startup.set(r.id, { kind: d.kind, message: d.message, accept: d.accept, acceptKeys: d.acceptKeys, decline: d.decline ?? null, declineKeys: d.declineKeys ?? [] });
+      startupScreen(r.id, d.message);
+    } else if (!d && prev) {
+      startup.delete(r.id);
+      if (prev.kind !== "trust-auto") startupScreen(r.id, null);
+    }
   }
 }
 
@@ -363,6 +435,7 @@ export function startReconcileLoop(ms = 2000) {
   const tick = () =>
     reconcile()
       .then(watchCodexScreens)
+      .then(watchStartupScreens)
       .catch((e) => console.error("reconcile:", e))
       .finally(() => setTimeout(tick, ms));
   tick();

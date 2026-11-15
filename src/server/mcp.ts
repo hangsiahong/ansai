@@ -3,6 +3,7 @@ import { HttpError } from "./errors";
 import { getSession } from "./sessions";
 import { JSON_LIMIT, readJson } from "./validate";
 import { createTask, finishTask, getTask } from "./tasks";
+import { describeAgents, describeHistory, postMessage, takePending } from "./team";
 
 /**
  * A tiny MCP server (streamable HTTP, JSON responses, no SSE) that every agent
@@ -32,6 +33,31 @@ const TOOLS = [
     inputSchema: { type: "object", properties: {} },
   },
   {
+    name: "list_agents",
+    description:
+      "List the other coding agents running right now (Claude Code and Codex sessions started from ansai): their id, what they are working on, whether they are busy, their branch, and the files they have edited. Call it before touching shared code, or to find who to ask.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "send_message",
+    description:
+      "Send a message to another agent (to: its id from list_agents) or to every agent in this project (to: \"all\"). Use it to avoid clashing edits, hand over a finding, ask the agent that owns some code, or say what you changed that others depend on. It is delivered right away: mid-task as context, or typed in if the agent is idle. Be brief and specific; don't send acknowledgements or small talk.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        to: { type: "string", description: "An agent id from list_agents, or \"all\" for everyone in this project" },
+        message: { type: "string", description: "What you want them to know or do. Include file paths and branch names when relevant." },
+      },
+      required: ["to", "message"],
+    },
+  },
+  {
+    name: "read_messages",
+    description:
+      "Read the team conversation: messages between agents and from the user in this project. New messages already reach you automatically; use this to look back at what was said.",
+    inputSchema: { type: "object", properties: { limit: { type: "integer", minimum: 1, maximum: 100, description: "How many recent messages (default 20)" } } },
+  },
+  {
     name: "finish_task",
     description:
       "Mark the backlog task you were given as ready for the user's review, with a 2-3 sentence summary of what changed and how to verify it. Only call this when the task is actually done.",
@@ -47,7 +73,17 @@ type Rpc = { jsonrpc: "2.0"; id?: string | number | null; method: string; params
 
 const text = (t: string, isError = false) => ({ content: [{ type: "text", text: t }], isError });
 
+/** Tool failures are results the agent can read and act on, never HTTP errors. */
 function callTool(sessionId: string, name: string, args: any) {
+  try {
+    return runTool(sessionId, name, args);
+  } catch (e) {
+    if (!(e instanceof HttpError)) console.error(`[ansai] mcp ${name} failed:`, e);
+    return text(e instanceof Error ? e.message : String(e), true);
+  }
+}
+
+function runTool(sessionId: string, name: string, args: any) {
   const s = getSession(sessionId);
   if (!s) return text("This ansai session no longer exists.", true);
   const label = s.tool === "codex" ? "Codex" : s.tool === "claude" ? "Claude" : "agent";
@@ -72,6 +108,21 @@ function callTool(sessionId: string, name: string, args: any) {
       .query("SELECT title, status FROM tasks WHERE project_id = ? AND status != 'done' ORDER BY status, position LIMIT 50")
       .all(s.project_id) as { title: string; status: string }[];
     return text(rows.length ? rows.map((r) => `- [${r.status}] ${r.title}`).join("\n") : "The backlog for this project is empty.");
+  }
+
+  if (name === "list_agents") return text(describeAgents(s));
+
+  if (name === "send_message") {
+    const to = String(args?.to ?? "").trim();
+    if (!to) return text('Say who it is for: an agent id from list_agents, or "all".', true);
+    const m = postMessage({ from: s, to, body: String(args?.message ?? "") });
+    return text(m.to_session ? `Sent to ${m.to_label}.` : "Sent to everyone in this project.");
+  }
+
+  if (name === "read_messages") {
+    const n = Math.max(1, Math.min(100, Number(args?.limit) || 20));
+    const fresh = takePending(s.id);
+    return text([fresh, "Recent team messages:\n\n" + describeHistory(s, n)].filter(Boolean).join("\n\n---\n\n"));
   }
 
   if (name === "finish_task") {

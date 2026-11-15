@@ -255,12 +255,16 @@ export function SessionPane({ id }: { id: string }) {
           <Icon name="bell" size={16} />
           <span class="banner-text">{s.agent_message || "The agent is waiting for an answer"}</span>
           <div class="banner-actions">
-            {(
-              [
-                [["Enter"], "Allow"],
-                [["Down", "Enter"], "Always"],
-                [["Escape"], "Deny"],
-              ] as [string[], string][]
+            {(s.startup?.message
+              ? ([
+                  ...(s.startup.accept ? [[s.startup.acceptKeys, s.startup.accept]] : []),
+                  ...(s.startup.decline ? [[s.startup.declineKeys, s.startup.decline]] : []),
+                ] as [string[], string][])
+              : ([
+                  [["Enter"], "Allow"],
+                  [["Down", "Enter"], "Always"],
+                  [["Escape"], "Deny"],
+                ] as [string[], string][])
             ).map(([keys, label]) => (
               <button class="btn sm" onClick={() => api.keys(id, keys).catch(toastError)}>
                 {label}

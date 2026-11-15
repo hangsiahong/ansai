@@ -5,6 +5,7 @@ import { AGENTS, Empty, FolderIcon, Icon, TOOL_LABEL, ToolBadge, goBack, nav, sh
 import { AccountPicker } from "../accounts";
 import { Launchers, SessionCell } from "./now";
 import { QuickAdd, TaskList } from "./tasks";
+import { TeamPanel } from "../team";
 
 function AutopilotCard({ project, openTodo }: { project: Project; openTodo: string[] }) {
   const ap: Autopilot = project.autopilot ?? { on: false, tool: "claude", accountId: null, yolo: false };
@@ -120,7 +121,8 @@ export function ProjectPane({ id }: { id: string }) {
             <QuickAdd projectId={id} placeholder={`Add a task to ${project.name}`} autopilot={!!project.autopilot?.on} />
             <TaskList tasks={tasks} emptyText="No open tasks. Add one, then start an agent on it." />
           </section>
-          <section class={`sec ${mine.length ? "first-narrow" : ""}`}>
+          <div class={mine.length ? "first-narrow" : ""}>
+          <section class="sec">
             <h2 class="sec-title">Sessions</h2>
             {mine.length ? (
               <div class="panel" style={{ "--sep": "66px" }}>
@@ -134,6 +136,8 @@ export function ProjectPane({ id }: { id: string }) {
               </Empty>
             )}
           </section>
+          <TeamPanel projectId={id} />
+          </div>
         </div>
       </div>
     </div>

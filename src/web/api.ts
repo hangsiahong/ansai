@@ -36,6 +36,23 @@ export type Session = {
   activity_at: number | null;
   current_command: string | null;
   clients: number;
+  /** A dialog Claude shows before it starts (trust this folder, bypass warning…), with the keys that answer it. */
+  startup: StartupPrompt | null;
+};
+
+export type StartupPrompt = { kind: string; message: string; accept: string | null; acceptKeys: string[]; decline: string | null; declineKeys: string[] };
+
+/** A team message: agent → agent, agent → everyone in the project, or you → them. */
+export type Message = {
+  id: number;
+  project_id: string | null;
+  from_session: string | null;
+  from_label: string;
+  to_session: string | null;
+  to_label: string | null;
+  body: string;
+  created_at: number;
+  delivered_at: number | null;
 };
 
 export type TaskStatus = "todo" | "doing" | "review" | "done";
@@ -145,6 +162,10 @@ export const api = {
   setAutopilot: (projectId: string, patch: Partial<Autopilot>) => call<Autopilot>("PUT", `/api/projects/${projectId}/autopilot`, patch),
   settings: () => call<Settings>("GET", "/api/settings"),
   updateSettings: (patch: Partial<Settings>) => call<Settings>("PUT", "/api/settings", patch),
+
+  messages: (q: { project?: string; session?: string } = {}) =>
+    call<Message[]>("GET", `/api/messages?${new URLSearchParams(q as Record<string, string>)}`),
+  postMessage: (o: { body: string; to?: string | null; projectId?: string | null }) => call<Message>("POST", "/api/messages", o),
 
   sessions: () => call<Session[]>("GET", "/api/sessions"),
   session: (id: string) => call<Session>("GET", `/api/sessions/${id}`),
