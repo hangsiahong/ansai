@@ -269,4 +269,17 @@ describe("handleHook() state moves", () => {
     onExited(s.id, 1);
     expect(getTask(t.id)!).toMatchObject({ status: "review", attempts: 0, last_failure: null });
   });
+
+  test("a superseded reviewer remains outside task lifecycle", () => {
+    const t = makeTask("t_old_reviewer", { status: "review" });
+    const old = makeSession("s_old_reviewer", t.id, { status: "running" });
+    const current = makeSession("s_new_reviewer", t.id, { status: "running" });
+    db.query("UPDATE sessions SET title = 'Review · old' WHERE id = ?").run(old.id);
+    db.query("UPDATE sessions SET title = 'Review · current' WHERE id = ?").run(current.id);
+    db.query("INSERT INTO task_reviews (task_id, session_id, reviewer_tool, status, updated_at) VALUES (?, ?, 'claude', 'running', ?)").run(t.id, current.id, now());
+    handleHook("claude", "UserPromptSubmit", old.id, {});
+    handleHook("claude", "Stop", old.id, {});
+    onExited(old.id, 1);
+    expect(getTask(t.id)!).toMatchObject({ status: "review", attempts: 0, last_failure: null });
+  });
 });

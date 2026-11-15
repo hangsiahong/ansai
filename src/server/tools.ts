@@ -35,7 +35,21 @@ export const TOOLS: Record<ToolId, ToolDef> = {
     bin: "claude",
     argv: (o) => [
       "claude",
-      ...(o.readOnly ? ["--permission-mode", "plan"] : []),
+      ...(o.readOnly
+        ? [
+            "--allowedTools",
+            "mcp__ansai__report_finding",
+            "mcp__ansai__finish_review",
+            "Read",
+            "Grep",
+            "Glob",
+            "Bash(git diff:*)",
+            "Bash(git log:*)",
+            "Bash(git show:*)",
+            "Bash(git status:*)",
+            "--permission-mode=auto",
+          ]
+        : []),
       ...(o.yolo ? ["--dangerously-skip-permissions"] : []),
       ...modelFlags("--model", o),
       ...(o.effort ? ["--effort", o.effort] : []),

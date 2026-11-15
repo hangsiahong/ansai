@@ -310,6 +310,7 @@ export function resumableConversation(s: Pick<SessionRow, "tool" | "transcript">
 export async function restartSession(id: string) {
   const s = getSession(id);
   if (!s) throw notFound("no such session");
+  if (db.query("SELECT 1 FROM sessions WHERE id = ? AND title LIKE 'Review · %'").get(id) || db.query("SELECT 1 FROM task_reviews WHERE session_id = ?").get(id)) throw conflict("retry this independent review from the task sheet");
   const argv = JSON.parse(s.argv) as string[];
   // A restarted agent shouldn't replay the original prompt (or a login flow), but keeps its model and effort.
   const tool = TOOLS[s.tool];

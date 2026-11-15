@@ -186,7 +186,7 @@ function runTool(sessionId: string, name: string, args: any) {
   }
 
   if (name === "finish_task") {
-    if (db.query("SELECT 1 FROM task_reviews WHERE session_id = ?").get(sessionId)) return text("Reviewers must call finish_review; this does not finish the backlog task.", true);
+    if (db.query("SELECT 1 FROM sessions WHERE id = ? AND title LIKE 'Review · %'").get(sessionId) || db.query("SELECT 1 FROM task_reviews WHERE session_id = ?").get(sessionId)) return text("Reviewers must call finish_review; this does not finish the backlog task.", true);
     if (!s.task_id || !getTask(s.task_id)) return text("This session wasn't started from a backlog task — just tell the user you're done.");
     const summary = String(args?.summary ?? "").trim();
     if (!summary) return text("A summary is required.", true);

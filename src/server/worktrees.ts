@@ -204,7 +204,8 @@ export async function mergeTaskWorktree(task: TaskRef): Promise<{ sha: string; i
   // Merging removes the worktree folder, so no agent may still be in it: not one
   // mid-turn (working, or paused on an approval), and not an idle one either,
   // whose next reply would run in a deleted folder.
-  const open = db.query("SELECT agent_state FROM sessions WHERE task_id = ? AND status = 'running'").all(task.id) as { agent_state: string | null }[];
+  const open = db.query(`SELECT s.agent_state FROM sessions s WHERE s.task_id = ? AND s.status = 'running'
+    AND NOT EXISTS (SELECT 1 FROM task_reviews r WHERE r.session_id = s.id AND r.status = 'complete')`).all(task.id) as { agent_state: string | null }[];
   if (open.some((s) => s.agent_state === "working" || s.agent_state === "needs-input"))
     throw conflict("the agent is still working on this task; wait for it to finish (or stop it) first");
   if (open.length) throw conflict("close the agent's session first: merging removes its worktree folder");

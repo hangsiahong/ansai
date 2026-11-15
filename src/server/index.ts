@@ -319,7 +319,8 @@ const server = Bun.serve<WSData>({
       POST: guard(async (req) => {
         const task = getTask(req.params.id!);
         if (!task) throw notFound("no such task");
-        if (db.query("SELECT 1 FROM sessions WHERE task_id = ? AND status = 'running' AND agent_state = 'working'").get(task.id))
+        if (db.query(`SELECT 1 FROM sessions s WHERE s.task_id = ? AND s.status = 'running' AND s.agent_state = 'working'
+          AND NOT EXISTS (SELECT 1 FROM task_reviews r WHERE r.session_id = s.id AND r.status = 'complete')`).get(task.id))
           throw conflict("the agent is still working on this task; wait for it to finish (or stop it) first");
         const r = await mergeTaskWorktree(task);
         updateTask(task.id, { status: "done" });
@@ -330,7 +331,8 @@ const server = Bun.serve<WSData>({
       DELETE: guard(async (req) => {
         const task = getTask(req.params.id!);
         if (!task) throw notFound("no such task");
-        if (db.query("SELECT 1 FROM sessions WHERE task_id = ? AND status = 'running'").get(task.id))
+        if (db.query(`SELECT 1 FROM sessions s WHERE s.task_id = ? AND s.status = 'running'
+          AND NOT EXISTS (SELECT 1 FROM task_reviews r WHERE r.session_id = s.id AND r.status = 'complete')`).get(task.id))
           throw conflict("an agent session is still open on this task; close it first");
         await discardTaskWorktree(task);
         return json({ ok: true });

@@ -124,7 +124,7 @@ function moveTask(taskId: string | null, from: string, to: string) {
 
 /** A reviewer shares the task link for MCP context, but never owns task lifecycle. */
 function isTaskReviewer(sessionId: string): boolean {
-  return !!db.query("SELECT 1 FROM task_reviews WHERE session_id = ?").get(sessionId);
+  return !!db.query("SELECT 1 FROM sessions s WHERE s.id = ? AND (s.title LIKE 'Review · %' OR EXISTS (SELECT 1 FROM task_reviews r WHERE r.session_id = s.id))").get(sessionId);
 }
 
 const clip = (s: unknown, n = 140) => {
