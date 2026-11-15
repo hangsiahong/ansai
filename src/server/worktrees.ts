@@ -201,6 +201,13 @@ export async function mergeTaskWorktree(task: TaskRef): Promise<{ sha: string; i
   const wt = task.worktree_path;
   const branch = task.worktree_branch;
   if (!wt || !branch || !existsSync(wt)) throw conflict("this task has no worktree to merge");
+  // Merging removes the worktree folder, so no agent may still be in it: not one
+  // mid-turn (working, or paused on an approval), and not an idle one either,
+  // whose next reply would run in a deleted folder.
+  const open = db.query("SELECT agent_state FROM sessions WHERE task_id = ? AND status = 'running'").all(task.id) as { agent_state: string | null }[];
+  if (open.some((s) => s.agent_state === "working" || s.agent_state === "needs-input"))
+    throw conflict("the agent is still working on this task; wait for it to finish (or stop it) first");
+  if (open.length) throw conflict("close the agent's session first: merging removes its worktree folder");
   const main = await mainCheckout(wt);
   if (!main.branch) throw conflict("the project folder isn't on a branch (detached HEAD), so there's nothing to merge into");
   const dirty = await gitIn(main.path, ["status", "--porcelain", "--untracked-files=no"]);
@@ -211,36 +218,53 @@ export async function mergeTaskWorktree(task: TaskRef): Promise<{ sha: string; i
 
   // 1. Whatever the agent didn't commit becomes one commit on its branch.
   const pending = await gitIn(wt, ["status", "--porcelain"]);
+  let wip = false;
   if (pending.stdout) {
     await gitIn(wt, ["add", "-A"]);
     const c = await gitIn(wt, ["commit", "-q", "-m", `WIP: ${task.title}`, "-m", "Uncommitted work, committed by ansai before merging."]);
-    if (c.code !== 0) throw conflict(`couldn't commit the task's work: ${c.stderr || c.stdout}`);
+    if (c.code !== 0) {
+      await gitIn(wt, ["reset", "-q"]);
+      throw conflict(`couldn't commit the task's work: ${c.stderr || c.stdout}`);
+    }
+    wip = true;
   }
 
-  // 2. Squash it onto the main branch.
-  const ahead = await gitIn(main.path, ["rev-list", "--count", `${main.branch}..${branch}`]);
-  if (ahead.code === 0 && ahead.stdout === "0") throw conflict(`nothing to merge: ${branch} has no commits that ${main.branch} doesn't have`);
-  const sq = await gitIn(main.path, ["merge", "--squash", branch]);
-  if (sq.code !== 0) {
-    const conflicted = (await gitIn(main.path, ["diff", "--name-only", "--diff-filter=U"])).stdout.split("\n").filter(Boolean);
-    await gitIn(main.path, ["reset", "--merge"]);
-    throw conflict(
-      conflicted.length
-        ? `merging would conflict in ${conflicted.slice(0, 5).join(", ")}${conflicted.length > 5 ? "…" : ""}. Ask the agent to rebase ${branch} on ${main.branch}, then merge again.`
-        : `git merge failed: ${sq.stderr || sq.stdout}`,
-    );
+  // 2. Squash it onto the main branch. If that's refused, take the WIP commit back
+  // off, so the worktree is left exactly as the agent had it.
+  let sha: string;
+  let staged: string[];
+  try {
+    ({ sha, staged } = await squash(main.path, main.branch, branch, task));
+  } catch (e) {
+    if (wip) await gitIn(wt, ["reset", "-q", "HEAD~1"]);
+    throw e;
   }
-  const staged = (await gitIn(main.path, ["diff", "--cached", "--name-only"])).stdout.split("\n").filter(Boolean);
-  if (!staged.length) throw conflict(`nothing to merge: ${main.branch} already has these changes`);
-  const msg = [task.title, task.summary?.trim() ?? "", `ansai task ${task.id} (branch ${branch})`].filter(Boolean);
-  const commit = await gitIn(main.path, ["commit", "-q", ...msg.flatMap((m) => ["-m", m])]);
-  if (commit.code !== 0) {
-    await gitIn(main.path, ["reset", "--merge"]);
-    throw conflict(`couldn't commit the merge: ${commit.stderr || commit.stdout}`);
-  }
-  const sha = (await gitIn(main.path, ["rev-parse", "HEAD"])).stdout;
 
   // 3. The branch is merged (as one commit): drop the worktree and branch.
   await discardTaskWorktree(task).catch((e) => console.error("[ansai] worktree cleanup after merge:", e));
   return { sha, into: main.branch, files: staged.length };
+}
+
+async function squash(mainPath: string, mainBranch: string, branch: string, task: TaskRef): Promise<{ sha: string; staged: string[] }> {
+  const ahead = await gitIn(mainPath, ["rev-list", "--count", `${mainBranch}..${branch}`]);
+  if (ahead.code === 0 && ahead.stdout === "0") throw conflict(`nothing to merge: ${branch} has no commits that ${mainBranch} doesn't have`);
+  const sq = await gitIn(mainPath, ["merge", "--squash", branch]);
+  if (sq.code !== 0) {
+    const conflicted = (await gitIn(mainPath, ["diff", "--name-only", "--diff-filter=U"])).stdout.split("\n").filter(Boolean);
+    await gitIn(mainPath, ["reset", "--merge"]);
+    throw conflict(
+      conflicted.length
+        ? `merging would conflict in ${conflicted.slice(0, 5).join(", ")}${conflicted.length > 5 ? "…" : ""}. Ask the agent to rebase ${branch} on ${mainBranch}, then merge again.`
+        : `git merge failed: ${sq.stderr || sq.stdout}`,
+    );
+  }
+  const staged = (await gitIn(mainPath, ["diff", "--cached", "--name-only"])).stdout.split("\n").filter(Boolean);
+  if (!staged.length) throw conflict(`nothing to merge: ${mainBranch} already has these changes`);
+  const msg = [task.title, task.summary?.trim() ?? "", `ansai task ${task.id} (branch ${branch})`].filter(Boolean);
+  const commit = await gitIn(mainPath, ["commit", "-q", ...msg.flatMap((m) => ["-m", m])]);
+  if (commit.code !== 0) {
+    await gitIn(mainPath, ["reset", "--merge"]);
+    throw conflict(`couldn't commit the merge: ${commit.stderr || commit.stdout}`);
+  }
+  return { sha: (await gitIn(mainPath, ["rev-parse", "HEAD"])).stdout, staged };
 }
