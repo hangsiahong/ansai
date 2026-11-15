@@ -1382,4 +1382,24 @@ i.del { color: var(--danger); }
 }
 @keyframes shift-glow { 50% { opacity: 0.45; } }
 
+/* Phone controls keep a 44px hit area even when their icon or label is compact. */
+@media (max-width: 820px) {
+  .icon-btn, .icon-btn.sm, .icon-btn.accent,
+  .btn.sm, .session-bar > .icon-btn, .session-bar .menu-wrap > .icon-btn {
+    min-width: 44px; min-height: 44px;
+  }
+  .key, .session-bar .viewtoggle button, .viewtoggle button,
+  .chip-btn, .team-to, .who-more, .shift-time, .shift-presets .chip-btn,
+  .sheet .segmented .seg { min-height: 44px; }
+  .key { height: 44px; }
+  .session-bar .viewtoggle button { width: 44px; }
+  .chg-head { min-height: 52px; }
+  .acct-section-head > .btn, .acct-section-head:has(.add-acct) .add-acct .btn,
+  .acct-actions > .btn { min-height: 44px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto !important; }
+}
+
 .tchip.fail { color: var(--danger); background: var(--danger-soft); }
