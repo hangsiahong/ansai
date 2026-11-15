@@ -320,6 +320,28 @@ function TaskSheet(p: { taskId: string; onClose: () => void }) {
     }
   };
 
+  // A task that already has an agent should carry on in it: its conversation (and warm
+  // prompt cache) is worth more than a fresh start that re-reads the code from scratch.
+  const live = sessions.find((s) => s.status === "running");
+  const last = live ? undefined : [...sessions].filter((s) => s.status === "exited").sort((a, b) => b.created_at - a.created_at)[0];
+  const carryOn = async () => {
+    try {
+      if (live) {
+        p.onClose();
+        return nav(`/s/${live.id}`);
+      }
+      if (!last) return;
+      setBusy(true);
+      const r = await api.restartSession(last.id);
+      toast(r.argv.includes("resume") || r.argv.includes("--resume") ? "Picking the conversation back up" : "Its conversation went cold, so it starts fresh");
+      p.onClose();
+      nav(`/s/${last.id}`);
+    } catch (e) {
+      toastError(e);
+      setBusy(false);
+    }
+  };
+
   const remove = async () => {
     if (!(await confirmDialog({ title: "Delete this task?", body: task.title, confirm: "Delete", danger: true }))) return;
     try {
@@ -432,6 +454,19 @@ function TaskSheet(p: { taskId: string; onClose: () => void }) {
             <p class="muted small">Pick a project first — the agent works inside it.</p>
           ) : (
             <>
+              {(live || last) && (
+                <>
+                  <button class="btn primary lg" disabled={busy} onClick={carryOn}>
+                    {live ? `Continue in the ${TOOL_SHORT[live.tool]} session` : `Pick up the last ${TOOL_SHORT[last!.tool]} session`}
+                  </button>
+                  <p class="muted small">
+                    {live
+                      ? "It keeps its whole conversation, so nothing is rebuilt from scratch."
+                      : "It resumes its conversation if it ran in the last hour; otherwise it restarts fresh."}
+                  </p>
+                  <div class="or-sep">or start over</div>
+                </>
+              )}
               <label class="switch-row">
                 <span>
                   <b>Queue for an agent</b>
@@ -455,9 +490,15 @@ function TaskSheet(p: { taskId: string; onClose: () => void }) {
                 onChange={(v) => setPickByTool({ ...pickByTool, [agent]: v })}
               />
               <YoloSwitch value={yolo} onChange={setYolo} />
-              <button class="btn primary lg" disabled={busy} onClick={run}>
-                {busy ? "Starting…" : `Run now with ${TOOL_LABEL[agent]}`}
+              <button
+                class={`btn lg ${live || last ? "" : "primary"}`}
+                disabled={busy || !!live}
+                title={live ? "Close the running session first: one agent per task at a time" : undefined}
+                onClick={run}
+              >
+                {busy ? "Starting…" : live || last ? `New run with ${TOOL_LABEL[agent]}` : `Run now with ${TOOL_LABEL[agent]}`}
               </button>
+              {(live || last) && <p class="muted small">A new run gets the last summary and the branch's commits as a handoff.</p>}
             </>
           )}
         </div>
