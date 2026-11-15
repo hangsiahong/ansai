@@ -11,6 +11,8 @@ export type Project = {
 
 export type Session = {
   id: string;
+  task_id: string | null;
+  account_id: string | null;
   project_id: string | null;
   project_name: string | null;
   tool: ToolId;
@@ -25,6 +27,44 @@ export type Session = {
   activity_at: number | null;
   current_command: string | null;
   clients: number;
+};
+
+export type TaskStatus = "todo" | "doing" | "review" | "done";
+export const TASK_STATUSES: TaskStatus[] = ["todo", "doing", "review", "done"];
+export const STATUS_LABEL: Record<TaskStatus, string> = { todo: "To do", doing: "Doing", review: "Review", done: "Done" };
+
+export type Task = {
+  id: string;
+  project_id: string | null;
+  project_name: string | null;
+  title: string;
+  body: string;
+  status: TaskStatus;
+  priority: number;
+  position: number;
+  created_at: number;
+  updated_at: number;
+  done_at: number | null;
+  sessions: { id: string; tool: ToolId; status: string }[];
+};
+
+export type UsageLimit = { id: string; label: string; used_percent: number; resets_at: number | null };
+export type Account = {
+  id: string;
+  tool: ToolId;
+  name: string;
+  dir: string | null;
+  is_default: number;
+  email: string | null;
+  plan: string | null;
+  logged_in: boolean;
+  running: number;
+  usage: null | {
+    limits: UsageLimit[];
+    limits_at: number | null;
+    tokens: { five_hour: number; today: number; week: number };
+    note?: string | null;
+  };
 };
 
 export type Tool = { id: ToolId; label: string; installed: boolean };
@@ -51,9 +91,17 @@ export const api = {
   scanProjects: () => call<{ added: number; projects: Project[] }>("POST", "/api/projects/scan"),
   updateProject: (id: string, patch: { pinned?: boolean; hidden?: boolean }) => call<Project>("PATCH", `/api/projects/${id}`, patch),
 
+  tasks: () => call<Task[]>("GET", "/api/tasks"),
+  createTask: (o: { title: string; body?: string; projectId?: string | null; status?: TaskStatus; priority?: number }) =>
+    call<Task>("POST", "/api/tasks", o),
+  updateTask: (id: string, patch: { title?: string; body?: string; status?: TaskStatus; projectId?: string | null; priority?: number; position?: number }) =>
+    call<Task>("PATCH", `/api/tasks/${id}`, patch),
+  deleteTask: (id: string) => call<{ ok: true }>("DELETE", `/api/tasks/${id}`),
+  runTask: (id: string, o: { tool: ToolId; yolo?: boolean; accountId?: string | null }) => call<Session>("POST", `/api/tasks/${id}/run`, o),
+
   sessions: () => call<Session[]>("GET", "/api/sessions"),
   session: (id: string) => call<Session>("GET", `/api/sessions/${id}`),
-  createSession: (o: { tool: ToolId; projectId?: string; prompt?: string; title?: string; yolo?: boolean }) =>
+  createSession: (o: { tool: ToolId; projectId?: string; prompt?: string; title?: string; yolo?: boolean; accountId?: string | null }) =>
     call<Session>("POST", "/api/sessions", o),
   renameSession: (id: string, title: string) => call<Session>("PATCH", `/api/sessions/${id}`, { title }),
   restartSession: (id: string) => call<Session>("POST", `/api/sessions/${id}/restart`),

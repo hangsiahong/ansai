@@ -56,15 +56,41 @@ const migrations: string[] = [
   CREATE INDEX sessions_status ON sessions(status);
   CREATE INDEX tasks_project ON tasks(project_id, status, position);
   `,
+  // v2: tasks may live in the Inbox (no project); priority + done_at.
+  `
+  CREATE TABLE tasks_v2 (
+    id TEXT PRIMARY KEY,
+    project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'todo',
+    priority INTEGER NOT NULL DEFAULT 0,
+    position REAL NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    done_at INTEGER
+  );
+  INSERT INTO tasks_v2 (id, project_id, title, body, status, position, created_at, updated_at)
+    SELECT id, project_id, title, body, status, position, created_at, updated_at FROM tasks;
+  DROP TABLE tasks;
+  ALTER TABLE tasks_v2 RENAME TO tasks;
+  CREATE INDEX tasks_project ON tasks(project_id, status, position);
+  CREATE INDEX sessions_task ON sessions(task_id);
+  `,
 ];
 
 {
   const current = (db.query("PRAGMA user_version").get() as { user_version: number }).user_version;
-  for (let v = current; v < migrations.length; v++) {
-    db.transaction(() => {
-      db.exec(migrations[v]!);
-      db.exec(`PRAGMA user_version = ${v + 1}`);
-    })();
+  if (current < migrations.length) {
+    // Table rebuilds must not fire ON DELETE actions; FK enforcement can only be toggled outside a transaction.
+    db.exec("PRAGMA foreign_keys = OFF");
+    for (let v = current; v < migrations.length; v++) {
+      db.transaction(() => {
+        db.exec(migrations[v]!);
+        db.exec(`PRAGMA user_version = ${v + 1}`);
+      })();
+    }
+    db.exec("PRAGMA foreign_keys = ON");
   }
 }
 

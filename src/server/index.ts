@@ -15,7 +15,6 @@ import {
   createSession,
   getSession,
   listSessions,
-  onSessionsChanged,
   reconcile,
   renameSession,
   restartSession,
@@ -27,6 +26,8 @@ import {
   writeTmuxConf,
 } from "./sessions";
 import { isTool, toolList } from "./tools";
+import { onChange, emit, type Topic } from "./events";
+import { createTask, deleteTask, listTasks, runTask, updateTask } from "./tasks";
 
 type WSData =
   | { kind: "events"; user: string }
@@ -69,6 +70,13 @@ const clampDim = (v: string | null, def: number, max: number) => {
 const asset = (path: string, type: string, cache = "public, max-age=86400") => () =>
   new Response(Bun.file(path), { headers: { "content-type": type, "cache-control": cache } });
 
+function snapshot(t: Topic): string {
+  if (t === "sessions") return JSON.stringify({ t, sessions: listSessions() });
+  if (t === "tasks") return JSON.stringify({ t, tasks: listTasks() });
+  if (t === "projects") return JSON.stringify({ t, projects: listProjects() });
+  return JSON.stringify({ t });
+}
+
 // ------------------------------------------------------------------- server
 
 writeTmuxConf();
@@ -90,6 +98,7 @@ const server = Bun.serve<WSData>({
   routes: {
     "/": index,
     "/p/*": index,
+    "/backlog": index,
     "/s/*": index,
     "/sw.js": asset(swPath, "text/javascript", "no-cache"),
     "/manifest.webmanifest": asset(manifestPath, "application/manifest+json"),
@@ -102,15 +111,49 @@ const server = Bun.serve<WSData>({
 
     "/api/projects": {
       GET: guard((req) => json(listProjects(new URL(req.url).searchParams.has("all")))),
-      POST: guard(async (req) => json(addProject(String((await body(req)).path ?? "")))),
+      POST: guard(async (req) => {
+        const p = addProject(String((await body(req)).path ?? ""));
+        emit("projects");
+        return json(p);
+      }),
     },
-    "/api/projects/scan": { POST: guard(() => json({ added: scanProjects(), projects: listProjects() })) },
+    "/api/projects/scan": {
+      POST: guard(() => {
+        const added = scanProjects();
+        emit("projects");
+        return json({ added, projects: listProjects() });
+      }),
+    },
     "/api/projects/:id": {
       GET: guard((req) => {
         const p = getProject(req.params.id!);
         return p ? json({ ...p, sessions: listSessions({ projectId: p.id }) }) : fail(404, "no such project");
       }),
-      PATCH: guard(async (req) => json(updateProject(req.params.id!, await body(req)))),
+      PATCH: guard(async (req) => {
+        const p = updateProject(req.params.id!, await body(req));
+        emit("projects");
+        emit("tasks");
+        return json(p);
+      }),
+    },
+
+    "/api/tasks": {
+      GET: guard(() => json(listTasks())),
+      POST: guard(async (req) => json(createTask(await body(req)))),
+    },
+    "/api/tasks/:id": {
+      PATCH: guard(async (req) => json(updateTask(req.params.id!, await body(req)))),
+      DELETE: guard((req) => {
+        deleteTask(req.params.id!);
+        return json({ ok: true });
+      }),
+    },
+    "/api/tasks/:id/run": {
+      POST: guard(async (req) => {
+        const b = await body<{ tool?: string; yolo?: boolean; accountId?: string; extra?: string }>(req);
+        if (!isTool(b.tool)) return fail(400, "unknown tool");
+        return json(await runTask(req.params.id!, { ...b, tool: b.tool }));
+      }),
     },
 
     "/api/sessions": {
@@ -200,7 +243,7 @@ const server = Bun.serve<WSData>({
       const d = ws.data;
       if (d.kind === "events") {
         ws.subscribe("events");
-        ws.send(JSON.stringify({ t: "sessions", sessions: listSessions() }));
+        for (const t of ["sessions", "tasks", "projects"] as Topic[]) ws.send(snapshot(t));
         return;
       }
       const s = getSession(d.sessionId)!;
@@ -251,7 +294,7 @@ const server = Bun.serve<WSData>({
   },
 });
 
-onSessionsChanged(() => server.publish("events", JSON.stringify({ t: "sessions", sessions: listSessions() })));
+onChange((t) => server.publish("events", snapshot(t)));
 startReconcileLoop();
 
 console.log(`[ansai] listening on http://${server.hostname}:${server.port}`);

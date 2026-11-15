@@ -1,16 +1,26 @@
 import { useEffect, useState } from "preact/hooks";
-import { api, wsUrl, type Me, type Project, type Session, type Tool } from "./api";
+import { api, wsUrl, type Account, type Me, type Project, type Session, type Task, type Tool, type ToolId } from "./api";
+
+export type SheetState =
+  | null
+  | { kind: "new"; projectId?: string; tool?: ToolId }
+  | { kind: "history"; sessionId: string }
+  | { kind: "add-project" }
+  | { kind: "task"; taskId: string };
 
 type State = {
   sessions: Session[];
   projects: Project[];
+  tasks: Task[];
+  accounts: Account[];
   tools: Tool[];
   me: Me | null;
   connected: boolean;
+  sheet: SheetState;
   toast: { msg: string; kind: "error" | "info"; at: number } | null;
 };
 
-let state: State = { sessions: [], projects: [], tools: [], me: null, connected: false, toast: null };
+let state: State = { sessions: [], projects: [], tasks: [], accounts: [], tools: [], me: null, connected: false, sheet: null, toast: null };
 const subs = new Set<() => void>();
 
 export function setState(patch: Partial<State>) {
@@ -30,6 +40,8 @@ export function useStore<T>(pick: (s: State) => T): T {
   return v;
 }
 
+export const openSheet = (sheet: SheetState) => setState({ sheet });
+
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
 export function toast(msg: string, kind: "error" | "info" = "info") {
   setState({ toast: { msg, kind, at: Date.now() } });
@@ -48,7 +60,12 @@ export async function refreshProjects() {
   }
 }
 
-// Live session list over a single reconnecting WebSocket.
+/** Optimistic local patch; the server's push brings the authoritative copy right after. */
+export function patchTaskLocal(id: string, patch: Partial<Task>) {
+  setState({ tasks: state.tasks.map((t) => (t.id === id ? { ...t, ...patch } : t)) });
+}
+
+// Live data over a single reconnecting WebSocket.
 function connectEvents() {
   let retry = 500;
   const open = () => {
@@ -61,6 +78,8 @@ function connectEvents() {
       try {
         const m = JSON.parse(ev.data);
         if (m.t === "sessions") setState({ sessions: m.sessions });
+        else if (m.t === "tasks") setState({ tasks: m.tasks });
+        else if (m.t === "projects") setState({ projects: m.projects });
       } catch {}
     };
     ws.onclose = () => {
@@ -80,5 +99,4 @@ export async function boot() {
   } catch (e) {
     toastError(e);
   }
-  await refreshProjects();
 }

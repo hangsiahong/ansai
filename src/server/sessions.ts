@@ -3,6 +3,7 @@ import { config, cleanEnv } from "./config";
 import { db, newId, now } from "./db";
 import { TOOLS, type ToolId } from "./tools";
 import { getProject, touchProject } from "./projects";
+import { emit } from "./events";
 
 // ---------------------------------------------------------------- tmux plumbing
 
@@ -222,12 +223,8 @@ export async function sendText(id: string, text: string, enter = true) {
 
 // ---------------------------------------------------------------- reconcile
 
-let lastSig = "";
-const listeners = new Set<() => void>();
-export function onSessionsChanged(fn: () => void) {
-  listeners.add(fn);
-  return () => listeners.delete(fn);
-}
+let lastStatusSig = "";
+let lastActivitySig = "";
 
 /** Sync DB status with what tmux actually has. Returns true if anything changed. */
 export async function reconcile(): Promise<boolean> {
@@ -261,14 +258,14 @@ export async function reconcile(): Promise<boolean> {
     else if (!t.dead && s.status === "exited")
       db.query("UPDATE sessions SET status = 'running', exit_code = NULL, ended_at = NULL WHERE id = ?").run(s.id);
   }
-  const sig = JSON.stringify(
-    (db.query("SELECT id, status, title FROM sessions WHERE status != 'closed'").all() as object[]).concat(
-      [...live.entries()].map(([k, v]) => [k, Math.floor(v.activity / 5000), v.attached]),
-    ),
-  );
-  const changed = sig !== lastSig;
-  lastSig = sig;
-  if (changed) for (const fn of listeners) fn();
+  const statusSig = JSON.stringify(db.query("SELECT id, status, title, agent_state FROM sessions WHERE status != 'closed'").all());
+  const activitySig = JSON.stringify([...live.entries()].map(([k, v]) => [k, Math.floor(v.activity / 3000), v.attached]));
+  const statusChanged = statusSig !== lastStatusSig;
+  const changed = statusChanged || activitySig !== lastActivitySig;
+  lastStatusSig = statusSig;
+  lastActivitySig = activitySig;
+  if (changed) emit("sessions");
+  if (statusChanged) emit("tasks"); // tasks show their linked sessions
   return changed;
 }
 

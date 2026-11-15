@@ -5,7 +5,8 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
 import { wsUrl } from "./api";
 
-export const isTouch = () => matchMedia("(pointer: coarse)").matches;
+import { isTouch } from "./ui";
+export { isTouch };
 
 export type TermHandle = {
   send: (data: string) => void;
