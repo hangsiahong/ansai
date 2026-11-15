@@ -3,7 +3,7 @@ import { toast, toastError } from "./store";
 
 /**
  * A project's playbook: standing instructions every agent here gets when it starts
- * (through ansai's MCP instructions), e.g. "run bun test before finishing".
+ * (as system-level instructions, see withHooks), e.g. "run bun test before finishing".
  */
 export function PlaybookCard({ projectId }: { projectId: string }) {
   const [saved, setSaved] = useState<string | null>(null);
@@ -30,7 +30,7 @@ export function PlaybookCard({ projectId }: { projectId: string }) {
       const d = await r.json();
       if (!r.ok) throw new Error(d.error || r.statusText);
       setSaved(d.text);
-      toast("Playbook saved: agents started from now on get it");
+      toast("Playbook saved: agents started or restarted from now on get it");
     } catch (e) {
       toastError(e);
     } finally {
