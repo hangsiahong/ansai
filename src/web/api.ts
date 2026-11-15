@@ -1,7 +1,16 @@
 export type ToolId = "claude" | "codex" | "agy" | "shell";
 
 /** model/effort null (or missing, on older saves) = the agent's own default. */
-export type Autopilot = { on: boolean; tool: ToolId; accountId: string | null; yolo: boolean; model?: string | null; effort?: string | null };
+export type Autopilot = {
+  on: boolean;
+  tool: ToolId;
+  accountId: string | null;
+  yolo: boolean;
+  model?: string | null;
+  effort?: string | null;
+  /** Time limit per run, in minutes (null = none). */
+  maxMinutes?: number | null;
+};
 export type Project = {
   id: string;
   name: string;
@@ -41,6 +50,10 @@ export type Session = {
   startup: StartupPrompt | null;
   /** The current or last shift ("keep working until…"); null if it never had one. */
   shift: Shift | null;
+  /** Spent so far, from the agent's log: fresh = input + cache writes + output; cache reads apart. */
+  tokens: { fresh: number; cached: number } | null;
+  /** When autopilot stops this run (its project's time limit), while its task is in Doing. */
+  deadline: number | null;
 };
 
 export type Shift = {

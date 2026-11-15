@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { api, type Session } from "../api";
 import { confirmDialog, openSheet, promptDialog, toast, toastError, useStore } from "../store";
 import { TerminalView, type TermHandle, type TermStatus } from "../Terminal";
-import { haptic, Icon, Link, StatusPill, TOOL_LABEL, ToolBadge, goBack, isTouch, modelLabel, nav, sessionState, useTick } from "../ui";
+import { compact, haptic, Icon, Link, StatusPill, TOOL_LABEL, ToolBadge, goBack, isTouch, modelLabel, nav, sessionState, until, useTick } from "../ui";
 import { ChatView } from "../chat";
 import { ShiftBar, canShift } from "../shift";
 
@@ -203,6 +203,18 @@ export function SessionPane({ id }: { id: string }) {
                   {modelLabel(s)}
                 </button>
               </>
+            )}
+            {s.tokens && (
+              <span title={`${s.tokens.fresh.toLocaleString()} fresh tokens (input, cache writes, output) and ${s.tokens.cached.toLocaleString()} cache reads so far`}>
+                {" · "}
+                {compact(s.tokens.fresh)} tok
+              </span>
+            )}
+            {s.deadline && (
+              <span class={s.deadline - Date.now() < 5 * 60_000 ? "warn-text" : ""} title="Autopilot stops this run at the project's time limit">
+                {" · "}
+                {until(s.deadline)} left
+              </span>
             )}
             {view === "terminal" && tstatus !== "live" && !closed && <span class="warn-text"> · {tstatus}</span>}
           </div>

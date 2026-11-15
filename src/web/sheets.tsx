@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { api, STATUS_LABEL, TASK_STATUSES, type DeviceList, type ModelPick, type Settings, type ToolId } from "./api";
 import { confirmDialog, getState, openSheet, patchTaskLocal, refreshProjects, setTheme, toast, toastError, useStore, type ThemePref } from "./store";
-import { AGENTS, Icon, Sheet, StatusPill, TOOL_LABEL, TOOL_SHORT, ToolBadge, ago, nav, shortPath } from "./ui";
+import { AGENTS, Icon, Sheet, StatusPill, TOOL_LABEL, TOOL_SHORT, ToolBadge, ago, compact, nav, shortPath, until } from "./ui";
 import { AccountPicker } from "./accounts";
 import { NotifyPanel } from "./notify";
 import { ChangesSheet } from "./changes";
@@ -518,7 +518,10 @@ function TaskSheet(p: { taskId: string; onClose: () => void }) {
                   <ToolBadge tool={s.tool} size={22} />
                   <span class="prow-main">
                     <span class="prow-name">{TOOL_LABEL[s.tool]}</span>
-                    <span class="prow-path">started {ago(s.created_at)} ago</span>
+                    <span class="prow-path">
+                      started {ago(s.created_at)} ago{s.tokens ? ` · ${compact(s.tokens.fresh)} tokens` : ""}
+                      {s.deadline ? ` · ${until(s.deadline)} left` : ""}
+                    </span>
                   </span>
                   <StatusPill s={s} compact />
                 </button>
