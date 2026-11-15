@@ -29,6 +29,9 @@ export type Task = {
   source: TaskSource;
   worktree_path: string | null;
   worktree_branch: string | null;
+  /** Autopilot retries used, and why the last run stopped early (null if it didn't). */
+  attempts: number;
+  last_failure: string | null;
 };
 
 export type Autopilot = {
@@ -244,7 +247,8 @@ export async function runTask(
       taskId: task.id,
       auto: o.auto,
     });
-    db.query("UPDATE tasks SET queued = 0, summary = NULL, plan = NULL WHERE id = ?").run(id);
+    // A run you start yourself resets autopilot's retry count.
+    db.query("UPDATE tasks SET queued = 0, summary = NULL, plan = NULL, attempts = CASE WHEN ? THEN attempts ELSE 0 END WHERE id = ?").run(o.auto ? 1 : 0, id);
     if (task.status === "todo" || task.status === "done") updateTask(id, { status: "doing" });
     else emit("tasks");
     return session;
@@ -257,7 +261,8 @@ export async function runTask(
 export function finishTask(id: string, summary: string) {
   const task = getTask(id);
   if (!task) throw notFound("no such task");
-  db.query("UPDATE tasks SET summary = ?, updated_at = ? WHERE id = ?").run(summary.slice(0, 4000), now(), id);
+  // A finished task starts its retry count over.
+  db.query("UPDATE tasks SET summary = ?, attempts = 0, last_failure = NULL, updated_at = ? WHERE id = ?").run(summary.slice(0, 4000), now(), id);
   if (task.status !== "done") updateTask(id, { status: "review" });
   else emit("tasks");
 }

@@ -313,7 +313,7 @@ export async function closeSession(id: string) {
   if (!s) throw notFound("no such session");
   await tmux(["kill-session", "-t", s.tmux_name]);
   db.query("UPDATE sessions SET status = 'closed', ended_at = COALESCE(ended_at, ?) WHERE id = ?").run(now(), id);
-  if (s.status === "running") onExited(id, null); // closing an already-exited session changes nothing
+  if (s.status === "running") onExited(id, null, "closed"); // closing an already-exited session changes nothing
   live.delete(s.tmux_name);
   await reconcile();
 }
@@ -481,11 +481,11 @@ export async function reconcile(): Promise<boolean> {
       // tmux session vanished (killed outside ansai, or reboot)
       upd.run("exited", null, now(), s.id);
       // Only on the transition: exited sessions whose tmux is gone come through here every tick.
-      if (s.status === "running") onExited(s.id, null);
+      if (s.status === "running") onExited(s.id, null, "vanished");
       live.delete(s.tmux_name);
     } else if (t.dead && s.status === "running") {
       upd.run("exited", t.code, now(), s.id);
-      onExited(s.id, t.code);
+      onExited(s.id, t.code, "exited");
     }
     else if (!t.dead && s.status === "exited")
       db.query("UPDATE sessions SET status = 'running', exit_code = NULL, ended_at = NULL WHERE id = ?").run(s.id);

@@ -93,7 +93,10 @@ export function withHooks(tool: ToolId, argv: string[], sessionId: string): stri
 
 // --------------------------------------------------------------- receiving
 
-type Row = { id: string; title: string; tool: string; task_id: string | null; agent_state: string | null; status: string };
+type Row = { id: string; title: string; tool: string; task_id: string | null; agent_state: string | null; status: string; auto?: number };
+
+/** An autopilot run that dies mid-task is started again this many times (with a handoff) before it waits for you. */
+export const AUTO_RETRIES = 1;
 
 function setState(s: Row, state: string, message: string | null = null) {
   db.query("UPDATE sessions SET agent_state = ?, agent_state_at = ?, agent_message = ? WHERE id = ?").run(state, now(), message, s.id);
@@ -231,9 +234,42 @@ export function startupScreen(id: string, message: string | null) {
   }
 }
 
+/** Why a run failed, or null when it ended normally (closed by you, or a clean exit). */
+function exitFailure(code: number | null, how: ExitHow): string | null {
+  if (how === "closed") return null;
+  if (how === "vanished") return "its terminal disappeared (killed, or the laptop restarted)";
+  return code ? `the agent exited with code ${code}` : null;
+}
+
+/**
+ * An autopilot run that died mid-task (still in Doing: it hadn't finished, and it wasn't
+ * waiting on a question) goes back in the queue, up to AUTO_RETRIES times. The next run's
+ * prompt carries this note and the branch's commits as a handoff. Returns true if re-queued.
+ */
+function retryAutopilotRun(s: Row, code: number | null, how: ExitHow): boolean {
+  const failure = exitFailure(code, how);
+  if (!s.auto || !failure || !s.task_id) return false;
+  const t = db.query("SELECT status, attempts FROM tasks WHERE id = ?").get(s.task_id) as { status: string; attempts: number } | null;
+  if (!t || t.status !== "doing" || t.attempts >= AUTO_RETRIES) return false;
+  if (db.query("SELECT 1 FROM sessions WHERE task_id = ? AND id != ? AND status = 'running'").get(s.task_id, s.id)) return false;
+  const n = t.attempts + 1;
+  db.query(
+    `UPDATE tasks SET status = 'todo', queued = 1, attempts = ?, last_failure = ?, summary = ?, done_at = NULL, updated_at = ? WHERE id = ?`,
+  ).run(n, failure, `The previous run stopped before finishing: ${failure}. Retry ${n} of ${AUTO_RETRIES}.`, now(), s.task_id);
+  emit("tasks");
+  return true;
+}
+
 /** Called by the reconciler when an agent process exits. */
-export function onExited(id: string, code: number | null) {
-  const s = db.query("SELECT id, title, tool, task_id, agent_state, status FROM sessions WHERE id = ?").get(id) as Row | null;
+/**
+ * How a session ended: "closed" = you closed it (never retried), "vanished" = its tmux
+ * session disappeared (killed, laptop restarted), "exited" = the agent process ended
+ * with `code` (0 is a normal exit, e.g. /exit).
+ */
+export type ExitHow = "closed" | "vanished" | "exited";
+
+export function onExited(id: string, code: number | null, how: ExitHow = "exited") {
+  const s = db.query("SELECT id, title, tool, task_id, agent_state, status, auto FROM sessions WHERE id = ?").get(id) as Row | null;
   if (!s) return;
   dropClaims(id);
 
@@ -241,14 +277,17 @@ export function onExited(id: string, code: number | null) {
   // release the task from Doing so it cannot look active forever or block the
   // project's next queued task. Keep it for the user to review and rerun.
   // Leave it alone while another session (a rerun) is still working the task.
-  if (s.task_id) {
+  if (s.task_id && retryAutopilotRun(s, code, how)) {
+    // re-queued; autopilot starts it again with a handoff
+  } else if (s.task_id) {
     const reason = code === null
       ? "The agent session ended before the task was marked complete. Check the session, then rerun or update the task."
       : `The agent session exited with code ${code} before the task was marked complete. Check the session, then rerun or update the task.`;
+    const failure = exitFailure(code, how);
     const recovered = db.query(
-      `UPDATE tasks SET status = 'review', summary = COALESCE(summary, ?), updated_at = ? WHERE id = ? AND status = 'doing'
+      `UPDATE tasks SET status = 'review', summary = COALESCE(summary, ?), last_failure = COALESCE(?, last_failure), updated_at = ? WHERE id = ? AND status = 'doing'
          AND NOT EXISTS (SELECT 1 FROM sessions WHERE task_id = ? AND id != ? AND status = 'running')`,
-    ).run(reason, now(), s.task_id, s.task_id, s.id);
+    ).run(reason, failure, now(), s.task_id, s.task_id, s.id);
     if (recovered.changes) emit("tasks");
   }
 
