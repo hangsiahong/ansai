@@ -91,11 +91,14 @@ export function ChangesView({
   actions,
   onLine,
   marked,
+  onData,
 }: {
   load: () => Promise<Changes>;
   actions?: (c: Changes, reload: () => void) => preact.ComponentChildren;
   onLine?: (r: LineRef) => void;
   marked?: Set<string>;
+  /** Every fresh copy of the diff (it refreshes while the agent works). */
+  onData?: (c: Changes) => void;
 }) {
   const [c, setC] = useState<Changes | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -106,6 +109,7 @@ export function ChangesView({
     load()
       .then((x) => {
         setC(x);
+        onData?.(x);
         setErr(null);
         // Small change sets open fully; big ones start collapsed.
         setOpen((prev) => (prev.size || x.files.length > 4 ? prev : new Set(x.files.map((f) => f.path))));
@@ -205,7 +209,8 @@ export function ChangesSheet(p: { taskId?: string; sessionId?: string; onClose: 
     const a = s.sessions.find((x) => (p.taskId ? x.task_id === p.taskId : x.id === p.sessionId) && x.status === "running" && (x.tool === "claude" || x.tool === "codex"));
     return a?.id ?? null;
   });
-  const review = useReview(agentId, task?.project_id ?? session?.project_id ?? null);
+  const [diff, setDiff] = useState<Changes | null>(null);
+  const review = useReview(agentId, task?.project_id ?? session?.project_id ?? null, diff);
   const load = () => (p.taskId ? api.taskChanges(p.taskId) : api.sessionChanges(p.sessionId!));
 
   const merge = async (c: Changes) => {
@@ -266,7 +271,7 @@ export function ChangesSheet(p: { taskId?: string; sessionId?: string; onClose: 
 
   return (
     <Sheet title={title} full onClose={p.onClose}>
-      <ChangesView load={load} actions={actions} onLine={review.onLine} marked={review.marked} />
+      <ChangesView load={load} actions={actions} onLine={review.onLine} marked={review.marked} onData={setDiff} />
       {review.panel}
     </Sheet>
   );
@@ -277,27 +282,38 @@ export function ChangesSheet(p: { taskId?: string; sessionId?: string; onClose: 
 type Comment = LineRef & { body: string };
 
 /** The message an agent gets for a review: each comment anchored by file, line and the line's text. */
-function reviewMessage(comments: Comment[]): string {
+/** Is this comment's line still in the current diff? It goes stale when the agent rewrites that line. */
+function stillThere(c: Comment, diff: Changes | null): boolean {
+  if (!diff) return true;
+  const f = diff.files.find((x) => x.path === c.path);
+  if (!f) return false;
+  const mark = c.side === "old" ? "-" : null;
+  return f.patch.split("\n").some((l) => l.slice(1) === c.text && (mark ? l[0] === mark : l[0] !== "-"));
+}
+
+function reviewMessage(comments: Comment[], diff: Changes | null): string {
   return [
     `Review of your changes (${comments.length} comment${comments.length === 1 ? "" : "s"}, from the Changes view):`,
     ...comments.map(
-      (c, i) => `${i + 1}. ${c.path}, line ${c.line}${c.side === "old" ? " (a removed line)" : ""}: \`${c.text.trim().slice(0, 160)}\`\n   ${c.body.trim().replace(/\n/g, "\n   ")}`,
+      (c, i) =>
+        `${i + 1}. ${c.path}, line ${c.line}${c.side === "old" ? " (a removed line)" : ""}${stillThere(c, diff) ? "" : " (that line has changed since this was written)"}: \`${c.text.trim().slice(0, 160)}\`\n   ${c.body.trim().replace(/\n/g, "\n   ")}`,
     ),
     "Line numbers are from the diff you were reviewed on. If a line moved, find it by its text. Address each comment, then say what you changed.",
   ].join("\n\n");
 }
 
 /** Comment on diff lines (tap a line), collect them, and send them to the task's agent as one message. */
-export function useReview(agentId: string | null, projectId: string | null) {
+export function useReview(agentId: string | null, projectId: string | null, diff: Changes | null = null) {
   const [comments, setComments] = useState<Comment[]>([]);
   const [draft, setDraft] = useState<{ ref: LineRef; body: string } | null>(null);
   const [sending, setSending] = useState(false);
   const marked = new Set(comments.map((c) => `${c.path}:${c.side}:${c.line}`));
+  const stale = comments.filter((c) => !stillThere(c, diff)).length;
   const send = async () => {
     if (!agentId || !comments.length) return;
     setSending(true);
     try {
-      await api.postMessage({ body: reviewMessage(comments), to: agentId, projectId });
+      await api.postMessage({ body: reviewMessage(comments, diff), to: agentId, projectId });
       haptic();
       toast(`Sent ${comments.length} comment${comments.length === 1 ? "" : "s"} to the agent`);
       setComments([]);
@@ -345,6 +361,11 @@ export function useReview(agentId: string | null, projectId: string | null) {
         <div class="rv-bar">
           <span>
             {comments.length} comment{comments.length === 1 ? "" : "s"}
+            {stale > 0 && (
+              <em class="rv-stale" style={{ color: "var(--warn)", fontStyle: "normal", fontWeight: 500 }} title="The agent changed these lines after you commented. They're sent with a note, and your text is kept.">
+                {" "}· {stale} line{stale === 1 ? "" : "s"} changed since
+              </em>
+            )}
           </span>
           <button class="btn ghost sm" onClick={() => setComments([])}>
             Discard
