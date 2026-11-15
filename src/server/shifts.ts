@@ -289,6 +289,13 @@ export async function nudgeIdle() {
     )
     .all() as SessionRow[];
   for (const s of rows) {
+    // Esc that didn't come through the keys API (the terminal key bar's esc, typing in the
+    // terminal, tmux attach) still interrupts Claude, and its log says so ("Interrupted").
+    // Someone stepped in during the shift, so end it rather than nudge the agent back to work.
+    if (s.agent_message === "Interrupted" && (s.agent_state_at ?? 0) > (active(s.id)?.started_at ?? Infinity)) {
+      endShift(s.id, "you");
+      continue;
+    }
     if (nudging.has(s.id) || wakes(s)) continue; // a waiting team message goes first; it starts a turn of its own
     const view = sessionView(s);
     const quietFor = t - (view.activity_at ?? 0);
