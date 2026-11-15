@@ -1098,6 +1098,14 @@ a.prow:active, button.prow:active { background: var(--press); }
 .summary-card { background: var(--green-soft); border-radius: var(--r-group); padding: 13px 16px; display: flex; flex-direction: column; gap: 6px; }
 .summary-head { display: flex; align-items: center; gap: 6px; color: var(--green); font-weight: 600; font-size: 13px; text-transform: uppercase; letter-spacing: 0.02em; }
 .summary-card p { line-height: 1.5; white-space: pre-wrap; }
+.reviewer-section { padding: 14px; border: 1px solid var(--line); border-radius: var(--r-group); background: var(--surface); }
+.review-summary { display: flex; flex-direction: column; gap: 10px; }
+.review-summary > p { margin: 0; line-height: 1.45; white-space: pre-wrap; }
+.review-finding { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 9px; padding: 10px; border-radius: 12px; background: var(--surface-2); }
+.review-finding code { overflow-wrap: anywhere; color: var(--muted); }
+.review-finding span { grid-column: 1 / -1; line-height: 1.4; }
+.severity { text-transform: uppercase; font-size: 10px; letter-spacing: .06em; }
+.severity.high { color: #ff453a; }.severity.medium { color: #ff9f0a; }.severity.low { color: var(--muted); }
 .plan-panel .todos { padding: 12px 16px; }
 .or-sep { text-align: center; color: var(--muted); font-size: 13px; margin: -2px 0; }
 .stepper { display: inline-flex; align-items: center; gap: 2px; background: var(--fill); border-radius: 999px; padding: 2px; }

@@ -19,6 +19,16 @@ describe("launchChoice", () => {
   test("a launch without a pick has nothing to keep", () => {
     expect(launchChoice(TOOLS.claude.argv({ prompt: "--model" }))).toEqual({});
   });
+
+  test("reviewer launches use each CLI's read-only mode", () => {
+    const claude = TOOLS.claude.argv({ prompt: "review", readOnly: true });
+    expect(claude).toContain("--allowedTools");
+    expect(claude).toContain("mcp__ansai__report_finding");
+    expect(claude).toContain("mcp__ansai__finish_review");
+    expect(claude).toContain("Bash(git diff:*)");
+    expect(claude).not.toContain("--dangerously-skip-permissions");
+    expect(TOOLS.codex.argv({ prompt: "review", readOnly: true })).toContain("read-only");
+  });
 });
 
 describe("relaunchChoice", () => {

@@ -2,7 +2,7 @@ import { db } from "./db";
 import { HttpError } from "./errors";
 import { getSession } from "./sessions";
 import { JSON_LIMIT, readJson } from "./validate";
-import { createTask, finishTask, getTask } from "./tasks";
+import { createTask, finishTask, finishTaskReview, getTask, reportReviewFinding } from "./tasks";
 import { claimFiles, deliveryNote, describeAgents, describeHistory, postMessage, releaseFiles, takePending } from "./team";
 import { endShift, shiftView } from "./shifts";
 
@@ -85,6 +85,16 @@ const TOOLS = [
       properties: { summary: { type: "string", description: "What you did this shift, and anything the user should look at first" } },
       required: ["summary"],
     },
+  },
+  {
+    name: "report_finding",
+    description: "Report one actionable finding from your independent code review. Do not report style preferences.",
+    inputSchema: { type: "object", properties: { file: { type: "string" }, line: { type: "integer", minimum: 1 }, severity: { type: "string", enum: ["high", "medium", "low"] }, message: { type: "string" } }, required: ["file", "line", "severity", "message"] },
+  },
+  {
+    name: "finish_review",
+    description: "Finish the independent review after reporting all findings. This does not change the task's Review status.",
+    inputSchema: { type: "object", properties: { summary: { type: "string" } }, required: ["summary"] },
   },
   {
     name: "finish_task",
@@ -176,11 +186,29 @@ function runTool(sessionId: string, name: string, args: any) {
   }
 
   if (name === "finish_task") {
+    if (db.query("SELECT 1 FROM sessions WHERE id = ? AND title LIKE 'Review · %'").get(sessionId) || db.query("SELECT 1 FROM task_reviews WHERE session_id = ?").get(sessionId)) return text("Reviewers must call finish_review; this does not finish the backlog task.", true);
     if (!s.task_id || !getTask(s.task_id)) return text("This session wasn't started from a backlog task — just tell the user you're done.");
     const summary = String(args?.summary ?? "").trim();
     if (!summary) return text("A summary is required.", true);
     finishTask(s.task_id, summary);
     return text("Thanks — the task is marked ready for the user's review.");
+  }
+
+  if (name === "report_finding") {
+    const file = String(args?.file ?? "").trim();
+    const line = Number(args?.line);
+    const severity = args?.severity;
+    const message = String(args?.message ?? "").trim();
+    if (!file || !Number.isInteger(line) || line < 1 || !["high", "medium", "low"].includes(severity) || !message) return text("A finding needs file, positive line, severity (high|medium|low), and message.", true);
+    reportReviewFinding(sessionId, { file, line, severity, message });
+    return text("Finding saved.");
+  }
+
+  if (name === "finish_review") {
+    const summary = String(args?.summary ?? "").trim();
+    if (!summary) return text("A summary is required.", true);
+    finishTaskReview(sessionId, summary);
+    return text("Review complete. The task remains in Review for the user.");
   }
 
   return text(`Unknown tool ${name}`, true);

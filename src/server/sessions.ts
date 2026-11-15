@@ -258,6 +258,11 @@ export type CreateOpts = {
   argv?: string[];
   /** Internal: started by autopilot from the queue. */
   auto?: boolean;
+  /** Special system instructions for constrained sessions such as independent reviewers. */
+  instructions?: string;
+  readOnly?: boolean;
+  /** Run immediately after the session row exists, before hooks can report results. */
+  onCreated?: (id: string) => void;
 };
 
 function sessionEnv(id: string, account: AccountRow | null, cwd: string): string[] {
@@ -276,11 +281,11 @@ export async function createSession(o: CreateOpts) {
   const account = o.tool === "shell" ? null : resolveAccount(o.tool, o.accountId);
   const id = newId("s");
   const tmuxName = `ansai-${id}`;
-  const launch = { yolo: o.yolo, model: o.model || undefined, effort: o.effort || undefined };
+  const launch = { yolo: o.yolo, model: o.model || undefined, effort: o.effort || undefined, readOnly: o.readOnly };
   // agy has no system-prompt flag, so its playbook goes in front of the first prompt (only when there is one).
   const playbook = o.tool === "shell" ? "" : playbookNote(project?.id);
   const prompt = o.tool === "agy" && playbook && o.prompt?.trim() ? `${playbook}\n\n${o.prompt.trim()}` : o.prompt?.trim();
-  const argv = o.argv ?? withHooks(o.tool, tool.argv({ ...launch, prompt: prompt || undefined }), id, playbook);
+  const argv = o.argv ?? withHooks(o.tool, tool.argv({ ...launch, prompt: prompt || undefined }), id, o.instructions ? "" : playbook, o.instructions);
   const title =
     o.title?.trim() ||
     (o.prompt?.trim() ? o.prompt.trim().split("\n")[0]!.slice(0, 60) : `${tool.label}${project ? " · " + project.name : ""}`);
@@ -293,6 +298,7 @@ export async function createSession(o: CreateOpts) {
     `INSERT INTO sessions (id, project_id, task_id, account_id, tool, title, cwd, argv, tmux_name, status, created_at, auto, msg_cursor)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, (SELECT COALESCE(MAX(id), 0) FROM messages))`,
   ).run(id, project?.id ?? null, o.taskId ?? null, account?.id ?? null, tool.id, title, cwd, JSON.stringify(argv), tmuxName, now(), o.auto ? 1 : 0);
+  o.onCreated?.(id);
   if (project) touchProject(project.id);
   await reconcile();
   refreshAccountsSoon();
@@ -323,6 +329,7 @@ export function resumableConversation(s: Pick<SessionRow, "tool" | "transcript">
 export async function restartSession(id: string) {
   const s = getSession(id);
   if (!s) throw notFound("no such session");
+  if (db.query("SELECT 1 FROM sessions WHERE id = ? AND title LIKE 'Review · %'").get(id) || db.query("SELECT 1 FROM task_reviews WHERE session_id = ?").get(id)) throw conflict("retry this independent review from the task sheet");
   const argv = JSON.parse(s.argv) as string[];
   // A restarted agent shouldn't replay the original prompt (or a login flow), but keeps its model and effort.
   const tool = TOOLS[s.tool];

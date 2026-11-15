@@ -74,8 +74,8 @@ export function playbookNote(projectId: string | null | undefined): string {
  * those reliably, and it never becomes a prompt of its own. (MCP server instructions
  * were tried first; neither agent acted on them.)
  */
-export function withHooks(tool: ToolId, argv: string[], sessionId: string, playbook = ""): string[] {
-  const note = playbook ? `${AGENT_NOTE}\n\n${playbook}` : AGENT_NOTE;
+export function withHooks(tool: ToolId, argv: string[], sessionId: string, playbook = "", instructions?: string): string[] {
+  const note = instructions ?? (playbook ? `${AGENT_NOTE}\n\n${playbook}` : AGENT_NOTE);
   if (tool === "claude")
     return [
       argv[0]!,
@@ -120,6 +120,11 @@ function moveTask(taskId: string | null, from: string, to: string) {
   if (!taskId) return;
   const r = db.query("UPDATE tasks SET status = ?, updated_at = ? WHERE id = ? AND status = ?").run(to, now(), taskId, from);
   if (r.changes) emit("tasks");
+}
+
+/** A reviewer shares the task link for MCP context, but never owns task lifecycle. */
+function isTaskReviewer(sessionId: string): boolean {
+  return !!db.query("SELECT 1 FROM sessions s WHERE s.id = ? AND (s.title LIKE 'Review · %' OR EXISTS (SELECT 1 FROM task_reviews r WHERE r.session_id = s.id))").get(sessionId);
 }
 
 const clip = (s: unknown, n = 140) => {
@@ -179,7 +184,7 @@ export function handleHook(tool: string, event: string, sessionId: string, paylo
         return;
       }
       case "UserPromptSubmit": {
-        moveTask(s.task_id, "review", "doing");
+        if (!isTaskReviewer(s.id)) moveTask(s.task_id, "review", "doing");
         setState(s, "working");
         const msgs = reads ? takePending(s.id) : null;
         return msgs ? context(event, msgs) : undefined;
@@ -233,8 +238,10 @@ export function handleHook(tool: string, event: string, sessionId: string, paylo
         }
         const was = s.agent_state;
         setState(s, "waiting");
-        moveTask(s.task_id, "doing", "review");
-        if (was === "working" || was === "needs-input") push(s, "done", "Finished — your turn.");
+        if (!isTaskReviewer(s.id)) {
+          moveTask(s.task_id, "doing", "review");
+          if (was === "working" || was === "needs-input") push(s, "done", "Finished — your turn.");
+        }
         return;
       }
     }
@@ -246,7 +253,7 @@ export function handleHook(tool: string, event: string, sessionId: string, paylo
     setState(s, "waiting", last || null);
     // On shift the next prompt gets typed in shortly (shifts.nudgeIdle), so the task stays in Doing and no push goes out.
     if (codexTurnEnded(getSession(s.id)!)) return;
-    moveTask(s.task_id, "doing", "review");
+    if (!isTaskReviewer(s.id)) moveTask(s.task_id, "doing", "review");
     push(s, "done", last || "Finished — your turn.");
   }
 }
@@ -324,9 +331,10 @@ export function onExited(id: string, code: number | null, how: ExitHow = "exited
   // release the task from Doing so it cannot look active forever or block the
   // project's next queued task. Keep it for the user to review and rerun.
   // Leave it alone while another session (a rerun) is still working the task.
-  if (s.task_id && retryAutopilotRun(s, code, how)) {
+  const reviewer = isTaskReviewer(s.id);
+  if (s.task_id && !reviewer && retryAutopilotRun(s, code, how)) {
     // re-queued; autopilot starts it again with a handoff
-  } else if (s.task_id) {
+  } else if (s.task_id && !reviewer) {
     const reason = code === null
       ? "The agent session ended before the task was marked complete. Check the session, then rerun or update the task."
       : `The agent session exited with code ${code} before the task was marked complete. Check the session, then rerun or update the task.`;

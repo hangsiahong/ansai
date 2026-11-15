@@ -7,6 +7,7 @@ const team = await import("./team");
 const { handleHook } = await import("./hooks");
 const { mcpHttp } = await import("./mcp");
 const { getSession } = await import("./sessions");
+const { listTasks } = await import("./tasks");
 
 
 function project(id: string) {
@@ -209,6 +210,37 @@ describe("MCP tools", () => {
     const r = await call("a", "send_message", { to: "ghost", message: "hi" });
     expect(r.isError).toBe(true);
     expect(r.content[0]!.text).toContain("list_agents");
+  });
+
+  test("independent reviewer findings are stored and finish_review preserves the user Review gate", async () => {
+    db.query("INSERT INTO tasks (id, project_id, title, body, status, created_at, updated_at, worktree_path) VALUES ('review-task', 'p1', 'Review me', 'Requirements', 'review', ?, ?, '/tmp/review-task')").run(now(), now());
+    agent("reviewer", "p1", { tool: "codex", task: "review-task" });
+    db.query("INSERT INTO task_reviews (task_id, session_id, reviewer_tool, status, updated_at) VALUES ('review-task', 'reviewer', 'codex', 'running', ?)").run(now());
+    const finding = await call("reviewer", "report_finding", { file: "src/example.ts", line: 19, severity: "high", message: "The null case throws before the fallback." });
+    expect(finding.isError).toBe(false);
+    expect((listTasks().find((t) => t.id === "review-task") as any).review.findings).toEqual([
+      { file: "src/example.ts", line: 19, severity: "high", message: "The null case throws before the fallback." },
+    ]);
+    const finished = await call("reviewer", "finish_review", { summary: "One high severity null-handling bug." });
+    expect(finished.isError).toBe(false);
+    expect((listTasks().find((t) => t.id === "review-task") as any).review).toMatchObject({ status: "complete", summary: "One high severity null-handling bug." });
+    expect((db.query("SELECT status FROM tasks WHERE id = 'review-task'").get() as { status: string }).status).toBe("review");
+  });
+
+  test("review tools reject invalid anchors and ordinary sessions", async () => {
+    agent("plain", "p1");
+    const bad = await call("plain", "report_finding", { file: "x.ts", line: 0, severity: "critical", message: "bad" });
+    expect(bad.isError).toBe(true);
+    const unauthorized = await call("plain", "report_finding", { file: "x.ts", line: 1, severity: "low", message: "not attached" });
+    expect(unauthorized.isError).toBe(true);
+  });
+
+  test("an exited reviewer without finish_review is exposed as stopped", () => {
+    db.query("INSERT INTO tasks (id, project_id, title, status, created_at, updated_at) VALUES ('stopped-task', 'p1', 'Stopped review', 'review', ?, ?)").run(now(), now());
+    agent("stopped-reviewer", "p1", { tool: "claude", task: "stopped-task" });
+    db.query("INSERT INTO task_reviews (task_id, session_id, reviewer_tool, status, updated_at) VALUES ('stopped-task', 'stopped-reviewer', 'claude', 'running', ?)").run(now());
+    db.query("UPDATE sessions SET status = 'exited' WHERE id = 'stopped-reviewer'").run();
+    expect((listTasks().find((t) => t.id === "stopped-task") as any).review.status).toBe("stopped");
   });
 });
 
