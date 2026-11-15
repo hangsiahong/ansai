@@ -105,6 +105,7 @@ const PATHS: Record<string, string> = {
   stop: "M7 7h10v10H7z",
   chat: "M4 5h16v11H9l-5 4z",
   dot: "M12 12h.01",
+  copy: "M9 9h11v11H9zM5 15H4V4h11v1",
   branch: "M6 3v12M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 9a9 9 0 0 1-9 9",
 };
 

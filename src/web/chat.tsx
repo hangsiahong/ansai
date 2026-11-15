@@ -303,6 +303,96 @@ function WorkingRow({ s }: { s: Session }) {
 
 // ---------------------------------------------------------------- the view
 
+type Steps = { k: "steps"; id: string; tools: ToolItem[] };
+const SOLO = new Set(["TodoWrite", "AskUserQuestion"]); // plans and questions always stand alone
+
+/**
+ * Runs of 3+ tool calls between messages fold into one "N steps" row, so a
+ * busy agent's chat reads as conversation rather than a wall of commands.
+ * The step running right now stays outside the fold, with its spinner.
+ */
+function groupSteps(list: (ChatItem | Message)[], liveId?: string): (ChatItem | Message | Steps)[] {
+  const out: (ChatItem | Message | Steps)[] = [];
+  let run: ToolItem[] = [];
+  const flush = () => {
+    const tail = run.length && run[run.length - 1]!.id === liveId ? run.pop()! : null;
+    if (run.length >= 3) out.push({ k: "steps", id: `steps:${run[0]!.id}`, tools: run });
+    else out.push(...run);
+    if (tail) out.push(tail);
+    run = [];
+  };
+  for (const it of list) {
+    if (!("body" in it) && it.k === "tool" && !SOLO.has(it.name)) run.push(it);
+    else {
+      flush();
+      out.push(it);
+    }
+  }
+  flush();
+  return out;
+}
+
+const KIND: Record<string, [string, string]> = {
+  pencil: ["edit", "edits"],
+  terminal: ["command", "commands"],
+  file: ["read", "reads"],
+  search: ["search", "searches"],
+  globe: ["fetch", "fetches"],
+  sparkle: ["sub-agent", "sub-agents"],
+  plug: ["tool call", "tool calls"],
+};
+
+function StepGroup({ tools }: { tools: ToolItem[] }) {
+  const [open, setOpen] = useState(false);
+  const counts = new Map<string, number>();
+  for (const t of tools) {
+    const k = toolIcon(t);
+    counts.set(k, (counts.get(k) ?? 0) + 1);
+  }
+  const parts = [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([k, n]) => `${n} ${(KIND[k] ?? ["step", "steps"])[n === 1 ? 0 : 1]}`);
+  const failed = tools.filter((t) => t.error).length;
+  return (
+    <div class={`steps ${open ? "open" : ""}`}>
+      <button class="steps-head" onClick={() => setOpen(!open)} aria-expanded={open}>
+        <span class="steps-icons" aria-hidden="true">
+          {[...counts.keys()].slice(0, 4).map((k) => (
+            <Icon name={k} size={13} />
+          ))}
+        </span>
+        <span class="steps-title">
+          {tools.length} steps <span>· {parts.join(", ")}</span>
+        </span>
+        {failed > 0 && <span class="steps-err">{failed} failed</span>}
+        <Icon name={open ? "chevD" : "chevR"} size={14} />
+      </button>
+      {open && (
+        <div class="steps-body">
+          {tools.map((t) => (
+            <ToolRow key={t.id} t={t} live={false} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CopyButton({ text }: { text: string }) {
+  const [done, setDone] = useState(false);
+  const copy = () =>
+    navigator.clipboard
+      ?.writeText(text)
+      .then(() => {
+        setDone(true);
+        setTimeout(() => setDone(false), 1500);
+      })
+      .catch(() => toastError(new Error("Clipboard blocked — use History to select the text")));
+  return (
+    <button class={`msg-copy ${done ? "done" : ""}`} onClick={copy} aria-label="Copy message">
+      <Icon name={done ? "check" : "copy"} size={13} /> {done ? "Copied" : "Copy"}
+    </button>
+  );
+}
+
 /** Team messages slot into the conversation by time; the log's own order is kept. */
 function interleave(items: ChatItem[], team: Message[]): (ChatItem | Message)[] {
   if (!team.length) return items;
@@ -418,18 +508,20 @@ export function ChatView({ s }: { s: Session }) {
               <p>Send a message below. The conversation shows up here as the agent works — switch to Terminal any time for the full screen.</p>
             </div>
           )}
-          {interleave(items, team).map((it) => {
-            if ("body" in it) return <TeamBubble m={it} me={s.id} />;
-            if (it.k === "user") return <UserBubble text={it.text} />;
+          {groupSteps(interleave(items, team), running && st.cls === "working" ? lastToolId : undefined).map((it) => {
+            if ("body" in it) return <TeamBubble key={`m${it.id}`} m={it} me={s.id} />;
+            if (it.k === "steps") return <StepGroup key={it.id} tools={it.tools} />;
+            if (it.k === "user") return <UserBubble key={it.id} text={it.text} />;
             if (it.k === "assistant")
               return (
-                <div class="msg agent">
+                <div class="msg agent" key={it.id}>
                   <Markdown text={it.text} />
+                  <CopyButton text={it.text} />
                 </div>
               );
-            if (it.k === "thinking") return <Thinking text={it.text} />;
-            if (it.k === "note") return <div class="chat-note">{it.text}</div>;
-            return <ToolRow t={it} live={running && st.cls === "working" && it.id === lastToolId} />;
+            if (it.k === "thinking") return <Thinking key={it.id} text={it.text} />;
+            if (it.k === "note") return <div class="chat-note" key={it.id}>{it.text}</div>;
+            return <ToolRow key={it.id} t={it} live={running && st.cls === "working" && it.id === lastToolId} />;
           })}
           {running && s.startup?.message && <StartupCard s={s} />}
           {running && st.cls === "attn" && !pendingQuestion && !s.startup?.message && <ApprovalCard s={s} />}
