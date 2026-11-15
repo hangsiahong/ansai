@@ -93,7 +93,7 @@ function TaskMeta({ task, showProject }: { task: Task; showProject?: boolean }) 
         </span>
       )}
       {!!task.blocked_by?.length && (
-        <span class="tchip blocked" title={`Waiting for: ${task.blocked_by.map((d) => d.title).join(", ")}`}>
+        <span class="tchip waiting-on" title={`Waiting for: ${task.blocked_by.map((d) => d.title).join(", ")}`}>
           Blocked by {task.blocked_by.length === 1 ? task.blocked_by[0]!.title : `${task.blocked_by.length} tasks`}
         </span>
       )}

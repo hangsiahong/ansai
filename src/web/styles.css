@@ -1081,7 +1081,7 @@ a.prow:active, button.prow:active { background: var(--press); }
 .side-row .folder-icon svg { filter: none; }
 .tchip { display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 8px; border-radius: 99px; font-size: 11.5px; font-weight: 600; }
 .tchip.queued { background: var(--info-soft); color: var(--info); }
-.tchip.blocked { background: var(--warn-soft); color: var(--warn); }
+.tchip.waiting-on { display: inline-block; line-height: 20px; white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; background: var(--warn-soft); color: var(--warn); }
 .dependency-row { display: flex; align-items: center; gap: 8px; }
 .dep-status { color: var(--muted); font-size: 12px; min-width: 52px; }
 .dependency-add { display: flex; gap: 8px; }
