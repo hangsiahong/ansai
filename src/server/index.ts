@@ -40,7 +40,7 @@ import { startBackgroundTails, subscribeChat, unsubscribeChat } from "./transcri
 import { mcpHttp } from "./mcp";
 import { deliverIdle, getPlaybook, listMessages, postMessage, setPlaybook, teamBoard } from "./team";
 import { digest, markSeen } from "./digest";
-import { endProjectShift, endShift, nudgeIdle, shiftView, startProjectShift, startShift } from "./shifts";
+import { endProjectShift, endShift, nudgeIdle, stopPressed, shiftView, startProjectShift, startShift } from "./shifts";
 import { getSettings, setProjectAutopilot, startAutopilot, updateSettings } from "./autopilot";
 import { STATUSES, createTask, deleteTask, getTask, listTasks, runTask, updateTask } from "./tasks";
 import { changesIn, taskDir } from "./changes";
@@ -563,6 +563,7 @@ const server = Bun.serve<WSData>({
           const s = getSession(req.params.id!);
           if (!s || s.agent_state !== "needs-input" || s.agent_state_at !== ifSince) throw conflict("the agent isn't waiting on that prompt any more");
         }
+        stopPressed(req.params.id!, keys); // Esc on an agent on shift that's mid-turn ends the shift
         await sendKeys(req.params.id!, keys);
         return json({ ok: true });
       }),

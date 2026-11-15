@@ -193,6 +193,21 @@ async function buildReport(s: SessionRow, from: number, to: number): Promise<Shi
 
 // ------------------------------------------------------------------ signals
 
+/**
+ * Esc while an agent on shift is mid-turn (the chat's Stop button, the key bar's esc)
+ * means "stop", so the shift ends too. Otherwise the next turn's end would hand the
+ * agent another prompt, and Stop could never stop it. Esc on an idle agent changes nothing.
+ */
+export function stopPressed(sessionId: string, keys: string[]) {
+  if (keys.length !== 1 || keys[0] !== "Escape") return;
+  const sh = active(sessionId);
+  const s = sh && getSession(sessionId);
+  if (!sh || !s) return;
+  // Codex has no "working" hook: a nudge typed after its last turn ended means it's on that turn now.
+  const midTurn = s.agent_state === "working" || (!!sh.last_nudge_at && sh.last_nudge_at > (s.agent_state_at ?? 0));
+  if (midTurn) endShift(sessionId, "you");
+}
+
 /** Claude ran a tool: the shift is producing work. */
 export function shiftWorked(sessionId: string) {
   db.query("UPDATE shifts SET worked = 1, idle = 0 WHERE session_id = ? AND ended_at IS NULL AND worked = 0").run(sessionId);

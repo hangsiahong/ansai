@@ -192,3 +192,27 @@ describe("ending", () => {
     expect(shift("a").report).toEqual({ commits: [], moreCommits: 0 }); // /tmp is no git repo
   });
 });
+
+describe("stopping", () => {
+  test("Esc while the agent is mid-turn ends its shift; Esc on an idle agent doesn't", () => {
+    agent("busy", { state: "working" });
+    agent("idle", { state: "waiting" });
+    shifts.startShift("busy", { until: now() + HOUR });
+    shifts.startShift("idle", { until: now() + HOUR });
+    shifts.stopPressed("busy", ["Down"]);
+    expect(shift("busy").active).toBe(true);
+    shifts.stopPressed("busy", ["Escape"]);
+    expect(shift("busy")).toMatchObject({ active: false, end_reason: "you" });
+    shifts.stopPressed("idle", ["Escape"]);
+    expect(shift("idle").active).toBe(true);
+  });
+
+  test("a Codex agent working on a typed nudge counts as mid-turn", () => {
+    agent("c", { tool: "codex", state: "waiting" });
+    shifts.startShift("c", { until: now() + HOUR });
+    db.query("UPDATE sessions SET agent_state_at = ? WHERE id = 'c'").run(now() - 60_000);
+    db.query("UPDATE shifts SET last_nudge_at = ? WHERE session_id = 'c'").run(now() - 30_000);
+    shifts.stopPressed("c", ["Escape"]);
+    expect(shift("c").end_reason).toBe("you");
+  });
+});
