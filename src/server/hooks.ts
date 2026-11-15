@@ -81,6 +81,9 @@ export function withHooks(tool: ToolId, argv: string[], sessionId: string): stri
       codexNotify(),
       "-c",
       `mcp_servers.ansai.url=${toml(mcpUrl(sessionId))}`,
+      // ansai's own tools (backlog, team messages) are safe; without this Codex stops to ask before each one.
+      "-c",
+      `mcp_servers.ansai.default_tools_approval_mode="approve"`,
       "-c",
       `developer_instructions=${toml(AGENT_NOTE)}`,
       ...argv.slice(1),
