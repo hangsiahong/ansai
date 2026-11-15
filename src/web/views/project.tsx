@@ -10,6 +10,15 @@ import { TeamPanel } from "../team";
 import { PlaybookCard } from "../playbook";
 import { canShift } from "../shift";
 
+const RUN_LIMITS: [number | null, string][] = [
+  [null, "None"],
+  [15, "15 min"],
+  [30, "30 min"],
+  [60, "1 hour"],
+  [120, "2 hours"],
+  [240, "4 hours"],
+];
+
 function AutopilotCard({ project, openTodo }: { project: Project; openTodo: string[] }) {
   const ap: Autopilot = project.autopilot ?? { on: false, tool: "claude", accountId: null, yolo: false };
   const set = (patch: Partial<Autopilot>) => api.setAutopilot(project.id, patch).catch(toastError);
@@ -49,6 +58,22 @@ function AutopilotCard({ project, openTodo }: { project: Project; openTodo: stri
                 <em>Off: approvals come to your phone</em>
               </span>
               <input type="checkbox" class="switch" checked={ap.yolo} onChange={(e) => set({ yolo: (e.target as HTMLInputElement).checked })} />
+            </label>
+            <label class="switch-row inner">
+              <span>
+                <b>Time limit per run</b>
+                <em>Then it stops and the task waits in Review</em>
+              </span>
+              <select
+                class="select"
+                style={{ width: "auto", flex: "none" }}
+                value={ap.maxMinutes ?? ""}
+                onChange={(e) => set({ maxMinutes: Number((e.target as HTMLSelectElement).value) || null })}
+              >
+                {RUN_LIMITS.map(([m, label]) => (
+                  <option value={m ?? ""}>{label}</option>
+                ))}
+              </select>
             </label>
             {openTodo.length > 0 && (
               <button class="btn sm" onClick={queueAll}>

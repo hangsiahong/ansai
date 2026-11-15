@@ -30,6 +30,7 @@ import {
 } from "./sessions";
 import { EFFORTS, TOOLS, isModelId, toolList, type ToolId } from "./tools";
 import { modelChoices, switchModel } from "./models";
+import { startRunWatch } from "./limits";
 import { HttpError, badRequest, conflict, errorCode, notFound, tooLarge } from "./errors";
 import { parseBody, v, type Check } from "./validate";
 import { onChange, emit, type Topic } from "./events";
@@ -356,7 +357,15 @@ const server = Bun.serve<WSData>({
     },
     "/api/projects/:id/autopilot": {
       PUT: guard(async (req) => {
-        const b = await parseBody(req, v.object({ on: optBool, tool: v.optional(v.oneOf(AGENT_TOOLS)), accountId: optRef, yolo: optBool, model: optModel, effort: optEffort }));
+        const b = await parseBody(req, v.object({
+            on: optBool,
+            tool: v.optional(v.oneOf(AGENT_TOOLS)),
+            accountId: optRef,
+            yolo: optBool,
+            model: optModel,
+            effort: optEffort,
+            maxMinutes: v.optional(v.nullable(v.number({ int: true, min: 5, max: 24 * 60 }))),
+          }));
         const ap = setProjectAutopilot(req.params.id!, b);
         emit("tasks");
         return json(ap);
@@ -723,6 +732,7 @@ startReconcileLoop();
 startUsageLoop();
 startBackgroundTails();
 startAutopilot();
+startRunWatch();
 // Idle agents get their direct messages typed in (busy Claude sessions get them through hooks).
 setInterval(() => deliverIdle().catch((e) => console.error("[ansai] team delivery:", e)), 2000);
 // Agents on shift get their next prompt instead of waiting for you (Claude mostly through its Stop hook).

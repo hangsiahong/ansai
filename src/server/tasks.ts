@@ -45,6 +45,8 @@ export type Autopilot = {
   /** null = the agent's own default. Saved before these existed → undefined, same meaning. */
   model?: string | null;
   effort?: string | null;
+  /** Time limit per run, in minutes (null = none). */
+  maxMinutes?: number | null;
 };
 
 const isStatus = (s: unknown): s is TaskStatus => typeof s === "string" && (STATUSES as readonly string[]).includes(s);
