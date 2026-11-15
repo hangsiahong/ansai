@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { api, type Message, type Session } from "./api";
 import { toastError, useStore } from "./store";
-import { Empty, Icon, Link, TOOL_SHORT, ToolBadge, ago, sessionState } from "./ui";
+import { Empty, haptic, Icon, Link, TOOL_SHORT, ToolBadge, ago, sessionState } from "./ui";
 
 /** Direct messages: has the agent been given it yet (between steps, typed in, or on its next turn)? */
 function Delivery({ m }: { m: Message }) {
@@ -228,6 +228,7 @@ export function TeamPanel({ projectId }: { projectId: string }) {
     setBusy(true);
     try {
       await api.postMessage({ body, to: to || null, projectId });
+      haptic();
       setText("");
     } catch (e) {
       toastError(e);
