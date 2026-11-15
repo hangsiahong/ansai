@@ -159,6 +159,41 @@ function AutopilotCard({ project, openTodo }: { project: Project; openTodo: stri
   );
 }
 
+/**
+ * Lean startup (server: lean.ts): what Claude agents here leave out of your own setup.
+ * On unless turned off; it applies to agents started or restarted after the change.
+ */
+function StartupCard({ project }: { project: Project }) {
+  const on = project.lean !== false;
+  const set = async (lean: boolean) => {
+    try {
+      await api.updateProject(project.id, { lean });
+      await refreshProjects();
+      toast(lean ? "Lean startup on for agents started from now on" : "Agents started from now on load your full setup");
+    } catch (e) {
+      toastError(e);
+    }
+  };
+  return (
+    <section class="sec">
+      <h2 class="sec-title">Agent startup</h2>
+      <div class="panel autopilot">
+        <label class="switch-row">
+          <span>
+            <b>Lean startup</b>
+            <em>
+              {on
+                ? "Claude agents here skip your claude.ai connectors (Gmail, Drive…) and chat plugins like Telegram, about 6k fewer tokens in every request. This project's own MCP servers still load."
+                : "Claude agents here load everything your Claude setup does, connectors and chat plugins included."}
+            </em>
+          </span>
+          <input type="checkbox" class="switch" checked={on} onChange={(e) => set((e.target as HTMLInputElement).checked)} />
+        </label>
+      </div>
+    </section>
+  );
+}
+
 export function ProjectPane({ id }: { id: string }) {
   useTick();
   const projects = useStore((s) => s.projects);
@@ -249,7 +284,7 @@ export function ProjectPane({ id }: { id: string }) {
             <details class="automation-group">
               <summary>
                 <span>Automation</span>
-                <em>Autopilot · Playbook · Schedules</em>
+                <em>Autopilot · Playbook · Schedules · Startup</em>
                 <Icon name="chevD" size={16} />
               </summary>
               <div class="automation-stack">
@@ -259,6 +294,10 @@ export function ProjectPane({ id }: { id: string }) {
                 </details>
                 <PlaybookCard projectId={id} />
                 <Schedules projectId={id} />
+                <details class="automation-item">
+                  <summary>Agent startup · {project.lean !== false ? "Lean" : "Full"} <Icon name="chevD" size={15} /></summary>
+                  <StartupCard project={project} />
+                </details>
               </div>
             </details>
           </div>

@@ -3,6 +3,7 @@ import { join, basename, relative, resolve } from "node:path";
 import { config } from "./config";
 import { db, now } from "./db";
 import { badRequest, notFound } from "./errors";
+import { isLean, setLean } from "./lean";
 
 export type Project = {
   id: string;
@@ -78,7 +79,7 @@ export function addProject(rawPath: string): Project {
   return getProject(id)!;
 }
 
-export function listProjects(includeHidden = false): (Project & { exists: boolean })[] {
+export function listProjects(includeHidden = false): (Project & { exists: boolean; lean: boolean })[] {
   const rows = db
     .query(
       `SELECT * FROM projects ${includeHidden ? "" : "WHERE hidden = 0"}
@@ -86,7 +87,7 @@ export function listProjects(includeHidden = false): (Project & { exists: boolea
     )
     .all() as Project[];
   return rows
-    .map((r) => ({ ...r, autopilot: r.autopilot ? JSON.parse(r.autopilot) : null, exists: existsSync(r.path) }))
+    .map((r) => ({ ...r, autopilot: r.autopilot ? JSON.parse(r.autopilot) : null, lean: isLean(r.id), exists: existsSync(r.path) }))
     .filter((r) => r.exists || r.pinned);
 }
 
@@ -94,11 +95,12 @@ export function getProject(id: string): Project | null {
   return db.query("SELECT * FROM projects WHERE id = ?").get(id) as Project | null;
 }
 
-export function updateProject(id: string, patch: { pinned?: boolean; hidden?: boolean }) {
+export function updateProject(id: string, patch: { pinned?: boolean; hidden?: boolean; lean?: boolean }) {
   if (!getProject(id)) throw notFound("no such project");
   if (patch.pinned !== undefined) db.query("UPDATE projects SET pinned = ? WHERE id = ?").run(patch.pinned ? 1 : 0, id);
   if (patch.hidden !== undefined) db.query("UPDATE projects SET hidden = ? WHERE id = ?").run(patch.hidden ? 1 : 0, id);
-  return getProject(id);
+  if (patch.lean !== undefined) setLean(id, patch.lean);
+  return { ...getProject(id)!, lean: isLean(id) };
 }
 
 export function touchProject(id: string) {

@@ -1,6 +1,7 @@
-import { writeFileSync } from "node:fs";
+import { renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { config } from "./config";
+import { leanSettings } from "./lean";
 import { db, now } from "./db";
 import { emit } from "./events";
 import { notify } from "./push";
@@ -20,9 +21,11 @@ import type { ToolId } from "./tools";
  */
 
 const hooksFile = join(config.dataDir, "claude-hooks.json");
+/** The hooks plus lean startup's settings (see lean.ts), rewritten at each lean launch. */
+const leanHooksFile = join(config.dataDir, "claude-hooks-lean.json");
 const base = () => `http://127.0.0.1:${config.port}/api/hooks`;
 
-export function writeHookFiles() {
+function hookSettings() {
   // `speaks`: Claude reads the hook's stdout, so ansai can hand over team messages as
   // additionalContext. ansai answers those with an empty body when it has nothing to say.
   const cmd = (event: string, speaks = false) =>
@@ -40,7 +43,26 @@ export function writeHookFiles() {
       Stop: entry("Stop", { speaks: true }),
     },
   };
-  writeFileSync(hooksFile, JSON.stringify(settings, null, 2));
+  return settings;
+}
+
+export function writeHookFiles() {
+  writeFileSync(hooksFile, JSON.stringify(hookSettings(), null, 2));
+}
+
+/**
+ * The file a Claude agent gets as --settings: the status hooks, plus lean startup's
+ * settings when it's on. Claude reads only the last --settings it's given, so both
+ * go in one file, written whole (a rename) so an agent starting meanwhile never
+ * reads half of it.
+ */
+function claudeSettingsFile(lean: boolean, configDir: string): string {
+  if (!lean) return hooksFile;
+  const settings = { ...hookSettings(), ...leanSettings(configDir) };
+  const tmp = `${leanHooksFile}.${process.pid}.tmp`;
+  writeFileSync(tmp, JSON.stringify(settings, null, 2));
+  renameSync(tmp, leanHooksFile);
+  return leanHooksFile;
 }
 
 const codexNotify = () =>
@@ -67,22 +89,32 @@ export function playbookNote(projectId: string | null | undefined): string {
   return text ? `The user's playbook for this project (standing instructions; follow them in all your work here):\n${text}` : "";
 }
 
+export type HookOpts = {
+  /** Lean startup (lean.ts): leave out claude.ai connectors and chat-channel plugins. */
+  lean?: boolean;
+  /** The agent's Claude config folder (CLAUDE_CONFIG_DIR of its account), for its installed plugins. */
+  configDir?: string;
+};
+
 /**
  * Add status hooks, the ansai MCP server and the backlog note to an agent's command line.
  * The project's playbook rides along with the note as system-level instructions
  * (Claude's --append-system-prompt, Codex's developer_instructions): agents follow
  * those reliably, and it never becomes a prompt of its own. (MCP server instructions
  * were tried first; neither agent acted on them.)
+ * Claude gets ansai's tools up front (`alwaysLoad`), not deferred behind tool search:
+ * almost every agent calls finish_task or a team tool, and each deferred one cost a
+ * ToolSearch round trip first.
  */
-export function withHooks(tool: ToolId, argv: string[], sessionId: string, playbook = "", instructions?: string): string[] {
+export function withHooks(tool: ToolId, argv: string[], sessionId: string, playbook = "", instructions?: string, o: HookOpts = {}): string[] {
   const note = instructions ?? (playbook ? `${AGENT_NOTE}\n\n${playbook}` : AGENT_NOTE);
   if (tool === "claude")
     return [
       argv[0]!,
       "--settings",
-      hooksFile,
+      claudeSettingsFile(!!o.lean, o.configDir ?? join(config.home, ".claude")),
       "--mcp-config",
-      JSON.stringify({ mcpServers: { ansai: { type: "http", url: mcpUrl(sessionId) } } }),
+      JSON.stringify({ mcpServers: { ansai: { type: "http", url: mcpUrl(sessionId), alwaysLoad: true } } }),
       "--append-system-prompt",
       note,
       ...argv.slice(1),

@@ -11,6 +11,7 @@ import { basename, join } from "node:path";
 import { config, cleanEnv } from "./config";
 import { authorize, deviceList, setAllowedDevices, tailscaleStatus } from "./auth";
 import { addProject, getProject, listProjects, scanProjects, updateProject } from "./projects";
+import { isLean } from "./lean";
 import {
   captureHistory,
   closeSession,
@@ -252,10 +253,10 @@ const server = Bun.serve<WSData>({
     "/api/projects/:id": {
       GET: guard((req) => {
         const p = getProject(req.params.id!);
-        return p ? json({ ...p, sessions: listSessions({ projectId: p.id }) }) : fail(404, "no such project");
+        return p ? json({ ...p, lean: isLean(p.id), sessions: listSessions({ projectId: p.id }) }) : fail(404, "no such project");
       }),
       PATCH: guard(async (req) => {
-        const p = updateProject(req.params.id!, await parseBody(req, v.object({ pinned: optBool, hidden: optBool })));
+        const p = updateProject(req.params.id!, await parseBody(req, v.object({ pinned: optBool, hidden: optBool, lean: optBool })));
         emit("projects");
         emit("tasks");
         return json(p);

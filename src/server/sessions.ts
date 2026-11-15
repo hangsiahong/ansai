@@ -10,7 +10,8 @@ import { getProject, touchProject } from "./projects";
 import { emit } from "./events";
 import { shiftView } from "./shifts";
 import { accountEnv, getAccount, refreshAccountsSoon, resolveAccount, type AccountRow } from "./accounts";
-import { codexScreen, onExited, playbookNote, startupScreen, withHooks } from "./hooks";
+import { codexScreen, onExited, playbookNote, startupScreen, withHooks, type HookOpts } from "./hooks";
+import { isLean } from "./lean";
 
 // ---------------------------------------------------------------- tmux plumbing
 
@@ -265,6 +266,12 @@ export type CreateOpts = {
   onCreated?: (id: string) => void;
 };
 
+/** Lean startup for the project, and the account's Claude config folder (whose plugins it checks). */
+const hookOpts = (projectId: string | null | undefined, account: AccountRow | null): HookOpts => ({
+  lean: isLean(projectId),
+  configDir: account?.tool === "claude" && account.dir ? account.dir : undefined,
+});
+
 function sessionEnv(id: string, account: AccountRow | null, cwd: string): string[] {
   const env: Record<string, string> = { ANSAI_SESSION_ID: id, ...accountEnv(account, cwd) };
   return Object.entries(env).flatMap(([k, v]) => ["-e", `${k}=${v}`]);
@@ -285,7 +292,7 @@ export async function createSession(o: CreateOpts) {
   // agy has no system-prompt flag, so its playbook goes in front of the first prompt (only when there is one).
   const playbook = o.tool === "shell" ? "" : playbookNote(project?.id);
   const prompt = o.tool === "agy" && playbook && o.prompt?.trim() ? `${playbook}\n\n${o.prompt.trim()}` : o.prompt?.trim();
-  const argv = o.argv ?? withHooks(o.tool, tool.argv({ ...launch, prompt: prompt || undefined }), id, o.instructions ? "" : playbook, o.instructions);
+  const argv = o.argv ?? withHooks(o.tool, tool.argv({ ...launch, prompt: prompt || undefined }), id, o.instructions ? "" : playbook, o.instructions, hookOpts(project?.id, account));
   const title =
     o.title?.trim() ||
     (o.prompt?.trim() ? o.prompt.trim().split("\n")[0]!.slice(0, 60) : `${tool.label}${project ? " · " + project.name : ""}`);
@@ -338,8 +345,8 @@ export async function restartSession(id: string) {
   const conv = resumableConversation(s);
   const fresh = tool.argv(keep);
   const launch = !conv ? fresh : s.tool === "claude" ? [...fresh, "--resume", conv] : [fresh[0]!, "resume", conv, ...fresh.slice(1)];
-  const base = s.tool === "shell" ? argv : withHooks(s.tool, launch, s.id, playbookNote(s.project_id));
   const account = s.account_id ? getAccount(s.account_id) : null;
+  const base = s.tool === "shell" ? argv : withHooks(s.tool, launch, s.id, playbookNote(s.project_id), undefined, hookOpts(s.project_id, account));
   const env = sessionEnv(s.id, account, s.cwd); // also prepares the profile, which a respawn needs too
   const alive = (await tmux(["has-session", "-t", s.tmux_name])).code === 0;
   if (alive) {
