@@ -111,33 +111,40 @@ export async function modelChoices(tool: AgentTool, accountId?: string | null): 
 
 // ------------------------------------------------------------ live switch
 
-// What Claude's /model and /effort save as your defaults (besides switching the session).
-const DEFAULT_KEYS = ["model", "effortLevel", "modelSettings"] as const;
-
-function claudeSettings(accountId: string | null) {
+/**
+ * Where an agent saves a typed /model or /effort as the default for every new
+ * session, and under which keys. agy folds the effort into the model name
+ * ("Gemini 3.8 Flash (Low)"), so it only writes "model".
+ */
+function savedDefaults(tool: string, accountId: string | null): { path: string; keys: string[] } | null {
   const a = accountId ? getAccount(accountId) : null;
-  return join(a?.dir ?? join(config.home, ".claude"), "settings.json");
+  if (tool === "claude") return { path: join(a?.dir ?? join(config.home, ".claude"), "settings.json"), keys: ["model", "effortLevel", "modelSettings"] };
+  // Extra agy accounts run with HOME set to their profile folder.
+  if (tool === "agy") return { path: join(a?.dir ?? config.home, ".gemini", "antigravity-cli", "settings.json"), keys: ["model"] };
+  return null;
 }
 
-function readDefaults(path: string): Record<string, unknown> | null {
+/** The saved-default keys as they are now; a missing file counts as none set. Null if unreadable. */
+function readDefaults(path: string, keys: string[]): Record<string, unknown> | null {
+  if (!existsSync(path)) return {};
   const j = readJson(path);
   if (!j || typeof j !== "object") return null;
-  return Object.fromEntries(DEFAULT_KEYS.map((k) => [k, j[k]]));
+  return Object.fromEntries(keys.map((k) => [k, j[k]]));
 }
 
 /**
- * Claude saves a typed /model or /effort as the default for every new session.
- * A switch from ansai is meant for this session only, so once Claude has written
- * the file, put those keys back as they were (a running session keeps its switch).
+ * A switch from ansai is meant for this session only, so once the agent has
+ * written its defaults file, put those keys back as they were (the running
+ * session keeps its switch; tested with Claude Code 2.1 and agy).
  */
-async function keepDefaults(path: string, before: Record<string, unknown>) {
+async function keepDefaults(path: string, keys: string[], before: Record<string, unknown>) {
   const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
   let stable = 0;
   let changed = false;
   for (let i = 0; i < 20 && stable < 3; i++) {
     await Bun.sleep(250);
-    const now = readDefaults(path);
-    const differs = !!now && DEFAULT_KEYS.some((k) => !same(now[k], before[k]));
+    const now = readDefaults(path, keys);
+    const differs = !!now && keys.some((k) => !same(now[k], before[k]));
     if (differs) changed = true;
     stable = changed ? stable + 1 : 0; // wait for both commands' writes to land
   }
@@ -149,7 +156,7 @@ async function keepDefaults(path: string, before: Record<string, unknown>) {
     return;
   }
   const j = JSON.parse(text);
-  for (const k of DEFAULT_KEYS) {
+  for (const k of keys) {
     if (before[k] === undefined) delete j[k];
     else j[k] = before[k];
   }
@@ -172,16 +179,16 @@ export async function switchModel(id: string, o: { model?: string; effort?: stri
     return { menu: true };
   }
   if (!o.model && !o.effort) throw badRequest("pick a model or an effort");
-  // Mid-reply, Claude holds a typed /model until the turn ends (/effort applies at once),
+  // Mid-reply, a typed /model waits for the turn to end (/effort applies at once),
   // and by then ansai could no longer tell its write to your defaults apart from yours.
-  if (s.tool === "claude" && o.model && s.agent_state === "working") throw conflict("Claude is mid-reply; switch the model once it's done");
-  const path = s.tool === "claude" ? claudeSettings(s.account_id) : null;
-  const before = path ? readDefaults(path) : null;
+  if (o.model && s.agent_state === "working") throw conflict("the agent is mid-reply; switch the model once it's done");
+  const saved = savedDefaults(s.tool, s.account_id);
+  const before = saved ? readDefaults(saved.path, saved.keys) : null;
   if (o.model) await sendText(id, `/model ${o.model}`);
   if (o.effort) {
     if (o.model) await Bun.sleep(400); // let the first command finish before typing the next
     await sendText(id, `/effort ${o.effort}`);
   }
-  if (path && before) await keepDefaults(path, before);
+  if (saved && before) await keepDefaults(saved.path, saved.keys, before);
   return { menu: false };
 }
