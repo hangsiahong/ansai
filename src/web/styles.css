@@ -1425,13 +1425,17 @@ i.del { color: var(--danger); }
 
 /* ------------------------------------------------------- while you were away */
 .digest .sec-head .sec-link { margin-left: auto; }
-.digest-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(72px, 1fr)); gap: 8px; margin-bottom: 14px; }
-.digest-stats div {
-  display: flex; flex-direction: column; align-items: center; gap: 1px; padding: 12px 6px 10px; border-radius: var(--r-group);
-  background: var(--surface);
+.digest-stats { display: grid; grid-template-columns: repeat(var(--n, 4), minmax(0, 1fr)); gap: 8px; margin-bottom: 12px; }
+.digest-stats button {
+  display: flex; flex-direction: column; align-items: center; gap: 1px; padding: 11px 4px 9px; border-radius: var(--r-group);
+  background: var(--surface); border: 0; color: var(--text); cursor: pointer; transition: background 0.15s, box-shadow 0.15s;
+  box-shadow: inset 0 0 0 1.5px transparent;
 }
-.digest-stats b { font-size: 24px; font-weight: 700; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
-.digest-stats span { font-size: 12px; color: var(--muted); }
+.digest-stats button.on { box-shadow: inset 0 0 0 1.5px var(--accent); }
+.digest-stats b { font-size: 22px; font-weight: 700; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.digest-stats span { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.digest-stats button.on span { color: var(--accent-text); }
+.digest-foot { margin: 8px 16px 0; font-size: 13px; color: var(--muted); }
 .digest-sub {
   display: flex; align-items: center; gap: 4px; margin: 14px 0 7px; padding: 0 16px; font-size: 13px; font-weight: 600;
   color: var(--muted); text-transform: uppercase; letter-spacing: 0.02em; background: none; border: 0;

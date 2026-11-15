@@ -44,9 +44,12 @@ const END: Record<string, string> = {
   cap: "hit the nudge limit",
 };
 
+type Tab = "review" | "done" | "code" | "shifts" | "filed";
+
 export function AwayDigest() {
   const tasks = useStore((s) => s.tasks);
   const [d, setD] = useState<Digest | null>(null);
+  const [tab, setTab] = useState<Tab | null | undefined>(undefined); // undefined = pick the first that has something
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const toggle = (k: string) => setOpen((o) => ({ ...o, [k]: !o[k] }));
 
@@ -66,10 +69,21 @@ export function AwayDigest() {
 
   if (!d) return null;
   const finished = d.finished.map((id) => tasks.find((t) => t.id === id)).filter((t) => !!t);
+  const review = finished.filter((t) => t.status === "review");
+  const done = finished.filter((t) => t.status === "done");
   const filed = d.filed.map((id) => tasks.find((t) => t.id === id)).filter((t) => !!t);
   const commits = d.projects.reduce((n, p) => n + p.count, 0);
-  const toReview = finished.filter((t) => t.status === "review").length;
-  if (!finished.length && !filed.length && !d.shifts.length && !d.projects.length) return null;
+  const tiles: { id: Tab; n: number; label: string }[] = (
+    [
+      { id: "review", n: review.length, label: "to review" },
+      { id: "done", n: done.length, label: "done" },
+      { id: "code", n: commits || d.projects.reduce((n, p) => n + p.unmerged, 0), label: commits === 1 ? "commit" : commits ? "commits" : "unmerged" },
+      { id: "shifts", n: d.shifts.length, label: d.shifts.length === 1 ? "shift" : "shifts" },
+      { id: "filed", n: filed.length, label: "filed" },
+    ] as { id: Tab; n: number; label: string }[]
+  ).filter((t) => t.n > 0);
+  if (!tiles.length) return null;
+  const current: Tab | null = tab === undefined ? tiles[0]!.id : tab && tiles.some((t) => t.id === tab) ? tab : null;
 
   const clear = async () => {
     try {
@@ -80,7 +94,22 @@ export function AwayDigest() {
     }
   };
 
-  const shownFinished = open.finished ? finished : finished.slice(0, 4);
+  const taskList = (list: typeof finished, key: string) => {
+    const shown = open[key] ? list : list.slice(0, 4);
+    return (
+      <div class="panel" style={{ "--sep": "48px" }}>
+        {shown.map((t) => (
+          <TaskRow task={t} showProject />
+        ))}
+        {list.length > shown.length && (
+          <button class="digest-more" onClick={() => toggle(key)}>
+            {plural(list.length - shown.length, "more task")}
+          </button>
+        )}
+      </div>
+    );
+  };
+
   return (
     <section class="sec digest">
       <div class="sec-head">
@@ -90,133 +119,76 @@ export function AwayDigest() {
           Clear
         </button>
       </div>
-      <div class="digest-stats">
-        {toReview > 0 && (
-          <div>
-            <b>{toReview}</b>
-            <span>to review</span>
-          </div>
-        )}
-        {finished.length - toReview > 0 && (
-          <div>
-            <b>{finished.length - toReview}</b>
-            <span>done</span>
-          </div>
-        )}
-        {commits > 0 && (
-          <div>
-            <b>{commits}</b>
-            <span>{commits === 1 ? "commit" : "commits"}</span>
-          </div>
-        )}
-        {filed.length > 0 && (
-          <div>
-            <b>{filed.length}</b>
-            <span>filed</span>
-          </div>
-        )}
-        {d.messages > 0 && (
-          <div>
-            <b>{d.messages}</b>
-            <span>{d.messages === 1 ? "message" : "messages"}</span>
-          </div>
-        )}
+      <div class="digest-stats" role="tablist" aria-label="While you were away" style={{ "--n": tiles.length }}>
+        {tiles.map((t) => (
+          <button role="tab" aria-selected={current === t.id} class={current === t.id ? "on" : ""} onClick={() => setTab(current === t.id ? null : t.id)}>
+            <b>{t.n}</b>
+            <span>{t.label}</span>
+          </button>
+        ))}
       </div>
 
-      {finished.length > 0 && (
-        <>
-          <h3 class="digest-sub">{toReview ? "Ready for you" : "Finished"}</h3>
-          <div class="panel" style={{ "--sep": "48px" }}>
-            {shownFinished.map((t) => (
-              <TaskRow task={t} showProject />
-            ))}
-            {finished.length > shownFinished.length && (
-              <button class="digest-more" onClick={() => toggle("finished")}>
-                {plural(finished.length - shownFinished.length, "more task")}
+      {current === "review" && taskList(review, "review")}
+      {current === "done" && taskList(done, "done")}
+      {current === "filed" && taskList(filed, "filed")}
+
+      {current === "code" && (
+        <div class="panel">
+          {d.projects.map((p) => (
+            <div class="digest-proj">
+              <button class="digest-row" onClick={() => toggle(`p:${p.projectId}`)} aria-expanded={!!open[`p:${p.projectId}`]}>
+                <Icon name="branch" size={17} />
+                <span class="digest-row-main">
+                  <b>{p.name}</b>
+                  <em>
+                    {p.count > 0 && `${plural(p.count, "commit")}${p.branch ? ` on ${p.branch}` : ""}`}
+                    {p.count > 0 && p.unmerged > 0 && " · "}
+                    {p.unmerged > 0 && `${p.unmerged} on task branches, not merged`}
+                  </em>
+                </span>
+                <Icon name={open[`p:${p.projectId}`] ? "chevD" : "chevR"} size={15} stroke={2.2} />
               </button>
-            )}
-          </div>
-        </>
-      )}
-
-      {d.projects.length > 0 && (
-        <>
-          <h3 class="digest-sub">Code</h3>
-          <div class="panel">
-            {d.projects.map((p) => (
-              <div class="digest-proj">
-                <button class="digest-row" onClick={() => toggle(`p:${p.projectId}`)} aria-expanded={!!open[`p:${p.projectId}`]}>
-                  <Icon name="branch" size={17} />
-                  <span class="digest-row-main">
-                    <b>{p.name}</b>
-                    <em>
-                      {p.count > 0 && `${plural(p.count, "commit")}${p.branch ? ` on ${p.branch}` : ""}`}
-                      {p.count > 0 && p.unmerged > 0 && " · "}
-                      {p.unmerged > 0 && `${p.unmerged} on task branches, not merged`}
-                    </em>
-                  </span>
-                  <Icon name={open[`p:${p.projectId}`] ? "chevD" : "chevR"} size={15} stroke={2.2} />
-                </button>
-                {open[`p:${p.projectId}`] && (
-                  <div class="digest-commits">
-                    {p.commits.map((c) => (
-                      <div class="shift-commit">
-                        <code>{c.sha}</code>
-                        <span>{c.subject}</span>
-                      </div>
-                    ))}
-                    {p.count > p.commits.length && <div class="shift-commit muted">and {p.count - p.commits.length} more</div>}
-                    <Link href={`/p/${p.projectId}`} class="digest-link">
-                      Open {p.name}
-                    </Link>
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        </>
-      )}
-
-      {d.shifts.length > 0 && (
-        <>
-          <h3 class="digest-sub">Shifts</h3>
-          <div class="panel">
-            {d.shifts.map((sh) => {
-              const n = (sh.report?.commits.length ?? 0) + (sh.report?.moreCommits ?? 0);
-              return (
-                <Link href={`/s/${sh.session_id}`} class="digest-row">
-                  <Icon name="moon" size={17} />
-                  <span class="digest-row-main">
-                    <b>{sh.title}</b>
-                    <em>
-                      Ended {clock(sh.ended_at!)} · {END[sh.end_reason ?? ""] ?? "ended"} · {plural(sh.nudges, "nudge")}
-                      {sh.report ? ` · ${plural(n, "commit")}` : ""}
-                    </em>
-                    {sh.summary && <span class="digest-summary">{sh.summary}</span>}
-                  </span>
-                  <Icon name="chevR" size={15} stroke={2.2} />
-                </Link>
-              );
-            })}
-          </div>
-        </>
-      )}
-
-      {filed.length > 0 && (
-        <>
-          <button class="digest-sub digest-toggle" onClick={() => toggle("filed")} aria-expanded={!!open.filed}>
-            Agents filed {plural(filed.length, "follow-up")}
-            <Icon name={open.filed ? "chevD" : "chevR"} size={13} stroke={2.4} />
-          </button>
-          {open.filed && (
-            <div class="panel" style={{ "--sep": "48px" }}>
-              {filed.map((t) => (
-                <TaskRow task={t} showProject />
-              ))}
+              {open[`p:${p.projectId}`] && (
+                <div class="digest-commits">
+                  {p.commits.map((c) => (
+                    <div class="shift-commit">
+                      <code>{c.sha}</code>
+                      <span>{c.subject}</span>
+                    </div>
+                  ))}
+                  {p.count > p.commits.length && <div class="shift-commit muted">and {p.count - p.commits.length} more</div>}
+                  <Link href={`/p/${p.projectId}`} class="digest-link">
+                    Open {p.name}
+                  </Link>
+                </div>
+              )}
             </div>
-          )}
-        </>
+          ))}
+        </div>
       )}
+
+      {current === "shifts" && (
+        <div class="panel">
+          {d.shifts.map((sh) => {
+            const n = (sh.report?.commits.length ?? 0) + (sh.report?.moreCommits ?? 0);
+            return (
+              <Link href={`/s/${sh.session_id}`} class="digest-row">
+                <Icon name="moon" size={17} />
+                <span class="digest-row-main">
+                  <b>{sh.title}</b>
+                  <em>
+                    Ended {clock(sh.ended_at!)} · {END[sh.end_reason ?? ""] ?? "ended"} · {plural(sh.nudges, "nudge")}
+                    {sh.report ? ` · ${plural(n, "commit")}` : ""}
+                  </em>
+                  {sh.summary && <span class="digest-summary">{sh.summary}</span>}
+                </span>
+                <Icon name="chevR" size={15} stroke={2.2} />
+              </Link>
+            );
+          })}
+        </div>
+      )}
+      {d.messages > 0 && <p class="digest-foot">{plural(d.messages, "team message")} between agents meanwhile. Each project's Team panel has them.</p>}
     </section>
   );
 }
