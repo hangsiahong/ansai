@@ -74,3 +74,14 @@ test("the sign-in screen marks the account signed out at once", () => {
   noteAgySignedOut("agy-test");
   expect(agySignedIn("agy-test")).toBe(false);
 });
+
+test("Accounts shows an agy account signed out, with what to do", async () => {
+  const { db, now } = await import("./db");
+  const { listAccounts, refreshAccountsSoon } = await import("./accounts");
+  db.query("INSERT OR IGNORE INTO accounts (id, tool, name, dir, is_default, created_at) VALUES ('agy-default', 'agy', 'Default login', NULL, 1, ?)").run(now());
+  noteAgySignedOut("agy-default");
+  refreshAccountsSoon();
+  const agy = listAccounts().find((a) => a.id === "agy-default")!;
+  expect(agy.logged_in).toBe(false);
+  expect(agy.usage.note).toContain("Run `agy` in a terminal");
+});

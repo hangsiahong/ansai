@@ -1,9 +1,10 @@
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { config, cleanEnv } from "./config";
+import { config } from "./config";
 import { accountEnv, getAccount, resolveAccount, type AccountRow, type AgentTool } from "./accounts";
 import { badRequest, conflict, notFound } from "./errors";
 import { db } from "./db";
+import { agyModels } from "./agyauth";
 import { captureHistory, getSession, sendText, sessionView, type SessionRow } from "./sessions";
 
 /**
@@ -114,28 +115,10 @@ function codexChoices(a: AccountRow | null): ModelChoices {
   };
 }
 
-const agyCache = new Map<string, { at: number; models: ModelOption[] }>();
-const AGY_TTL = 10 * 60_000;
-
 async function agyChoices(a: AccountRow | null): Promise<ModelChoices> {
-  const key = a?.id ?? "";
-  let hit = agyCache.get(key);
-  if (!hit || Date.now() - hit.at > AGY_TTL) {
-    const models: ModelOption[] = [];
-    if (Bun.which("agy")) {
-      const p = Bun.spawn(["agy", "models"], { stdout: "pipe", stderr: "ignore", stdin: "ignore", env: { ...cleanEnv(), ...accountEnv(a, config.home) } });
-      const timer = setTimeout(() => p.kill(), 20_000);
-      const out = await new Response(p.stdout).text();
-      clearTimeout(timer);
-      for (const line of out.split("\n")) {
-        const [id, label] = line.split("\t");
-        if (id && label && /^[\w.:-]+$/.test(id.trim())) models.push({ id: id.trim(), label: label.trim() });
-      }
-    }
-    hit = { at: models.length ? Date.now() : Date.now() - AGY_TTL + 30_000, models }; // retry a failed fetch sooner
-    agyCache.set(key, hit);
-  }
-  return { models: hit.models, efforts: CLAUDE_EFFORTS, default: { model: null, effort: null }, liveSwitch: true };
+  // The same `agy models` call (and cache) that tells Accounts whether agy is signed in.
+  const r = await agyModels(a?.id ?? "", () => accountEnv(a, config.home));
+  return { models: r.models, efforts: CLAUDE_EFFORTS, default: { model: null, effort: null }, liveSwitch: true };
 }
 
 export async function modelChoices(tool: AgentTool, accountId?: string | null): Promise<ModelChoices> {

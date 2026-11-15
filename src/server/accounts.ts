@@ -5,6 +5,7 @@ import { db, now } from "./db";
 import { emit } from "./events";
 import { badRequest, conflict, notFound } from "./errors";
 import { prune, scanClaude, scanCodex, storedLimits, tokenSummary, type TokenSummary } from "./usage";
+import { agyModels, agySignedIn } from "./agyauth";
 
 export type AgentTool = "claude" | "codex" | "agy";
 export const AGENT_TOOLS: AgentTool[] = ["claude", "codex", "agy"];
@@ -301,16 +302,26 @@ function codexInfo(a: AccountRow): Info {
 
 function agyInfo(a: AccountRow): Info {
   const home = a.dir ?? H;
+  // What `agy models` last said (checked in the usage loop); until then, whether agy was ever set up here.
+  const signedIn = agySignedIn(a.id) ?? existsSync(join(home, ".gemini", "antigravity-cli"));
   return {
     email: null,
     plan: null,
-    logged_in: existsSync(join(home, ".gemini", "antigravity-cli")),
+    logged_in: signedIn,
     limits: [],
     limits_at: null,
-    note: a.dir
-      ? "Experimental: agy keeps logins in the desktop keychain, so this profile signs in separately (paste-code flow)."
-      : "agy doesn't expose plan or limits locally.",
+    note: !signedIn
+      ? "Signed out. Run `agy` in a terminal on this laptop to sign in (Google sign-in)."
+      : a.dir
+        ? "Experimental: agy keeps logins in the desktop keychain, so this profile signs in separately (paste-code flow)."
+        : "agy doesn't expose plan or limits locally.",
   };
+}
+
+/** Is this agy account signed in? Asks `agy models` when the cached answer is stale (null: couldn't tell). */
+export async function checkAgySignIn(accountId: string | null): Promise<boolean | null> {
+  const a = resolveAccount("agy", accountId);
+  return (await agyModels(a?.id ?? "", () => accountEnv(a, H))).signedIn;
 }
 
 function readInfo(a: AccountRow): Info {
@@ -370,6 +381,7 @@ export async function scanUsage() {
     for (const a of rows) {
       if (a.tool === "claude") await scanClaude(a.id, a.dir ?? join(H, ".claude"));
       if (a.tool === "codex") await scanCodex(a.id, a.dir ?? join(H, ".codex"));
+      if (a.tool === "agy") await agyModels(a.id, () => accountEnv(a, H)); // sign-in state, at most once a minute
     }
     prune();
   } catch (e) {
