@@ -180,6 +180,8 @@ export function handleHook(tool: string, event: string, sessionId: string, paylo
       }
       case "PreToolUse":
         if (s.agent_state !== "working") setState(s, "working");
+        // Also counts as shift work here: agents started before PostToolUse was hooked only send PreToolUse.
+        shiftWorked(s.id);
         return;
       case "PostToolUse": {
         shiftWorked(s.id);

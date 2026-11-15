@@ -216,3 +216,15 @@ describe("stopping", () => {
     expect(shift("c").end_reason).toBe("you");
   });
 });
+
+describe("older hook files", () => {
+  test("PreToolUse alone counts as work (agents started before PostToolUse was hooked)", () => {
+    agent("old");
+    shifts.startShift("old", { until: now() + HOUR });
+    for (let i = 0; i < 4; i++) {
+      expect(handleHook("claude", "Stop", "old", {})?.decision).toBe("block");
+      handleHook("claude", "PreToolUse", "old", {});
+    }
+    expect(shift("old")).toMatchObject({ active: true, idle: 0 });
+  });
+});
