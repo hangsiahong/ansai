@@ -42,7 +42,10 @@ function Schedules({ projectId }: { projectId: string }) {
     catch (e) { toastError(e); } finally { setBusy(false); }
   };
   const act = async (f: () => Promise<unknown>, message: string) => { try { await f(); toast(message); await reload(); } catch (e) { toastError(e); } };
-  return <section class="sec">
+  const activeCount = rows.filter((s) => s.enabled).length;
+  return <details class="automation-item automation-schedules">
+    <summary>Schedules · {activeCount} active <Icon name="chevD" size={15} /></summary>
+    <section class="sec">
     <div class="sec-head"><h2 class="sec-title">Scheduled tasks</h2><button class="sec-link" onClick={() => { clear(); setShowForm(true); }}>＋ Add schedule</button></div>
     {rows.map((s) => <article class="panel schedule-card" key={s.id}>
       <div class="schedule-title"><b>{s.title}</b><span class="muted small">{s.enabled ? `Next · ${new Date(s.next_at).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit", timeZone: s.timezone })} (${s.timezone})` : "Paused"}</span></div>
@@ -62,12 +65,17 @@ function Schedules({ projectId }: { projectId: string }) {
       <label class="field"><span>Timezone</span><input required value={timezone} onInput={(e) => setTimezone((e.target as HTMLInputElement).value)} placeholder="America/New_York" /></label>
       <div class="schedule-actions"><button class="btn primary" disabled={busy}>{busy ? "Saving…" : "Save schedule"}</button><button type="button" class="btn" onClick={clear}>Cancel</button></div>
     </form>}
-  </section>;
+    </section>
+  </details>;
 }
 
 function AutopilotCard({ project, openTodo }: { project: Project; openTodo: string[] }) {
   const ap: Autopilot = project.autopilot ?? { on: false, tool: "claude", accountId: null, yolo: false };
   const set = (patch: Partial<Autopilot>) => api.setAutopilot(project.id, patch).catch(toastError);
+  // Signed out, agy can't take tasks: autopilot holds them in the queue (server), and says so here.
+  const agyAccount = useStore((st) =>
+    ap.tool !== "agy" ? null : (st.accounts.find((a) => a.id === ap.accountId) ?? st.accounts.find((a) => a.tool === "agy" && a.is_default) ?? null),
+  );
   const queueAll = async () => {
     try {
       await Promise.all(openTodo.map((tid) => api.updateTask(tid, { queued: true })));
@@ -96,6 +104,11 @@ function AutopilotCard({ project, openTodo }: { project: Project; openTodo: stri
                 </button>
               ))}
             </div>
+            {agyAccount && !agyAccount.logged_in && (
+              <p class="warn-text small">
+                agy isn't signed in, so autopilot keeps its tasks queued. Run <code>agy</code> in a terminal on the laptop to sign in; they start after that.
+              </p>
+            )}
             <AccountPicker tool={ap.tool} value={ap.accountId} onChange={(v) => set({ accountId: v })} />
             <ModelPicker tool={ap.tool} accountId={ap.accountId} value={{ model: ap.model ?? null, effort: ap.effort ?? null }} onChange={(v) => set(v)} />
             <label class="switch-row inner">
@@ -181,25 +194,23 @@ export function ProjectPane({ id }: { id: string }) {
         </button>
       </header>
       <div class="scroll">
-        <section class="sec">
-          <h2 class="sec-title">Start an agent here</h2>
-          <Launchers projectId={id} />
-        </section>
-
-        <div class="split">
-          <section class="sec">
-            <AutopilotCard project={project} openTodo={tasks.filter((t) => t.status === "todo" && !t.queued).map((t) => t.id)} />
-            <PlaybookCard projectId={id} />
-            <Schedules projectId={id} />
-            <div class="sec-head">
-              <h2 class="sec-title">Backlog</h2>
-              {tasks.filter((t) => t.status !== "done").length > 0 && <span class="sec-count">{tasks.filter((t) => t.status !== "done").length} open</span>}
-            </div>
-            <QuickAdd projectId={id} placeholder={`Add a task to ${project.name}`} autopilot={!!project.autopilot?.on} />
-            <TaskList tasks={tasks} emptyText="No open tasks. Add one, then start an agent on it." />
-          </section>
-          <div class={mine.length ? "first-narrow" : ""}>
-          <section class="sec">
+        <div class="split project-layout">
+          <div class="project-main-column">
+            <section class="sec project-start">
+              <h2 class="sec-title">Start an agent here</h2>
+              <Launchers projectId={id} />
+            </section>
+            <section class="sec project-backlog">
+              <div class="sec-head">
+                <h2 class="sec-title">Backlog</h2>
+                {tasks.filter((t) => t.status !== "done").length > 0 && <span class="sec-count">{tasks.filter((t) => t.status !== "done").length} open</span>}
+              </div>
+              <QuickAdd projectId={id} placeholder={`Add a task to ${project.name}`} autopilot={!!project.autopilot?.on} />
+              <TaskList tasks={tasks} emptyText="No open tasks. Add one, then start an agent on it." />
+            </section>
+          </div>
+          <div class="project-side-column">
+            <section class="sec project-sessions">
             <div class="sec-head">
               <h2 class="sec-title">Sessions</h2>
               {mine.some(canShift) && (
@@ -220,8 +231,23 @@ export function ProjectPane({ id }: { id: string }) {
                 Start one with the buttons above.
               </Empty>
             )}
-          </section>
-          <TeamPanel projectId={id} />
+            </section>
+            <div class="project-team"><TeamPanel projectId={id} /></div>
+            <details class="automation-group">
+              <summary>
+                <span>Automation</span>
+                <em>Autopilot · Playbook · Schedules</em>
+                <Icon name="chevD" size={16} />
+              </summary>
+              <div class="automation-stack">
+                <details class="automation-item">
+                  <summary>Autopilot · {project.autopilot?.on ? "On" : "Off"} <Icon name="chevD" size={15} /></summary>
+                  <AutopilotCard project={project} openTodo={tasks.filter((t) => t.status === "todo" && !t.queued).map((t) => t.id)} />
+                </details>
+                <PlaybookCard projectId={id} />
+                <Schedules projectId={id} />
+              </div>
+            </details>
           </div>
         </div>
       </div>

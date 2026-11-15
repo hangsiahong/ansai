@@ -44,8 +44,8 @@ export function PlaybookCard({ projectId }: { projectId: string }) {
       <div class="panel autopilot">
         <button class="switch-row" style={{ width: "100%", textAlign: "left", background: "none", border: 0 }} onClick={() => setOpen(!open)}>
           <span>
-            <b>{saved ? "Instructions for every agent here" : "Add instructions for every agent here"}</b>
-            <em>{saved ? saved.split("\n")[0]!.slice(0, 80) : "e.g. run the tests before finishing; never edit migrations"}</em>
+            <b>{saved ? `Playbook · ${saved.split("\n").filter(Boolean).length} lines` : "Playbook · Not set"}</b>
+            <em>{saved ? "Instructions every agent here follows" : "Tap to add instructions for every agent"}</em>
           </span>
         </button>
         {open && (
