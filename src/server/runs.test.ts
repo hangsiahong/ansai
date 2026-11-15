@@ -95,3 +95,17 @@ describe("enforceRunLimits", () => {
     setViewer(watched.sid, conn, false);
   });
 });
+
+const { sampleBusy } = await import("./limits");
+describe("sampleBusy", () => {
+  const screens = (...list: string[]) => {
+    let i = 0;
+    return async () => list[Math.min(i++, list.length - 1)]!;
+  };
+  test("busy when any look shows the footer, even if the first catches a gap between requests", async () => {
+    expect(await sampleBusy(screens("❯ ", "❯ ", "⏵⏵ auto mode on · esc to interrupt"), 5, 1)).toBe(true);
+  });
+  test("idle only when every look is quiet", async () => {
+    expect(await sampleBusy(screens("❯ "), 5, 1)).toBe(false);
+  });
+});

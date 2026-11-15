@@ -55,11 +55,15 @@ async function stopRun(s: Row, limit: number) {
   // End the turn first: typed mid-turn, /exit only joins the queue. Claude and Codex show
   // "esc to interrupt" exactly while a turn runs (an interrupt fires no Stop hook, so the
   // screen is the signal). Esc 2 s apart, so two presses never count as Claude's double-Esc.
-  const busy = async () => /esc to interrupt/i.test(await captureHistory(s.id, 0).catch(() => ""));
+  const busy = () => sampleBusy(() => captureHistory(s.id, 0).catch(() => ""));
   for (let i = 0; i < 15 && (await busy()); i++) {
     await sendKeys(s.id, ["Escape"]).catch(() => {});
     await Bun.sleep(2000);
   }
+  // Esc early in a turn makes Claude rewind the prompt into its input box, and /exit typed onto
+  // it would resubmit the task. Ctrl+C clears the box (on an empty one it only arms "again to exit").
+  await sendKeys(s.id, ["C-c"]).catch(() => {});
+  await Bun.sleep(500);
   await sendText(s.id, "/exit").catch(() => {});
   for (let i = 0; i < 20 && getSession(s.id)?.status === "running"; i++) {
     await Bun.sleep(500);
@@ -67,6 +71,20 @@ async function stopRun(s: Row, limit: number) {
   }
   if (getSession(s.id)?.status === "running") await closeSession(s.id); // it didn't quit: stop it anyway
   notify("exited", { title: `Time limit · ${s.title}`, body: `Autopilot stopped it after ${limit} min. It's in Review.`, url: `/s/${s.id}`, tag: `s-${s.id}` }).catch(() => {});
+}
+
+/**
+ * Is a turn running? Claude drops its "esc to interrupt" footer for a moment between
+ * API requests, so one look can catch an idle-looking screen mid-turn (then /exit only
+ * joins the queue and the run gets force-closed). Look a few times over ~2 s: busy if
+ * any look shows it.
+ */
+export async function sampleBusy(read: () => Promise<string>, looks = 5, gapMs = 400): Promise<boolean> {
+  for (let i = 0; i < looks; i++) {
+    if (i) await Bun.sleep(gapMs);
+    if (/esc to interrup[t]/i.test(await read())) return true;
+  }
+  return false;
 }
 
 /** Every few seconds: count running sessions' tokens, and stop runs past their time limit. */
