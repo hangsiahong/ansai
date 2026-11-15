@@ -3,7 +3,13 @@ import { emit } from "./events";
 import { notFound } from "./errors";
 import { getProject } from "./projects";
 import { AGENT_TOOLS } from "./accounts";
-import { getTask, projectAutopilot, runTask, type Autopilot, type Task } from "./tasks";
+import { getTask, projectAutopilot, runTask as startTask, type Autopilot, type Task } from "./tasks";
+
+/** How autopilot starts a task (tests swap in a fake that doesn't launch agents). */
+let runTask = startTask;
+export function setTaskStarter(fn: typeof startTask) {
+  runTask = fn;
+}
 
 /**
  * Autopilot: queued backlog tasks start on their own. Each task runs in its own

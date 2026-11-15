@@ -1,13 +1,6 @@
 // Team messaging: delivery cursor, who gets what, wake rules, rate limit, and
 // the hook/MCP surfaces. Runs against a throwaway ANSAI_HOME (no tmux needed).
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-
-const home = mkdtempSync(join(tmpdir(), "ansai-test-"));
-process.env.ANSAI_HOME = home;
-process.env.ANSAI_PORT = "1"; // nothing listens; hooks never call out in these tests
+import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 
 const { db, now } = await import("./db");
 const team = await import("./team");
@@ -15,16 +8,16 @@ const { handleHook } = await import("./hooks");
 const { mcpHttp } = await import("./mcp");
 const { getSession } = await import("./sessions");
 
-afterAll(() => rmSync(home, { recursive: true, force: true }));
 
 function project(id: string) {
   db.query("INSERT INTO projects (id, name, path, created_at) VALUES (?, ?, ?, ?)").run(id, id, `/tmp/${id}`, now());
 }
+// Agents default to "working": idle ("waiting") ones would get messages typed in via tmux.
 function agent(id: string, projectId: string | null, o: { tool?: string; state?: string | null; task?: string | null } = {}) {
   db.query(
     `INSERT INTO sessions (id, project_id, task_id, tool, title, cwd, argv, tmux_name, status, agent_state, created_at, msg_cursor)
      VALUES (?, ?, ?, ?, ?, '/tmp', '[]', ?, 'running', ?, ?, (SELECT COALESCE(MAX(id), 0) FROM messages))`,
-  ).run(id, projectId, o.task ?? null, o.tool ?? "claude", `Agent ${id}`, `ansai-${id}`, o.state ?? "waiting", now());
+  ).run(id, projectId, o.task ?? null, o.tool ?? "claude", `Agent ${id}`, `ansai-${id}`, o.state ?? "working", now());
   return getSession(id)!;
 }
 

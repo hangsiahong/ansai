@@ -1,0 +1,3 @@
+[test]
+# One throwaway ANSAI_HOME for the whole run, set before any module reads its config.
+preload = ["./src/server/test-setup.ts"]
