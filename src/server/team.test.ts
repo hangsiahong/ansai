@@ -12,11 +12,12 @@ const { getSession } = await import("./sessions");
 function project(id: string) {
   db.query("INSERT INTO projects (id, name, path, created_at) VALUES (?, ?, ?, ?)").run(id, id, `/tmp/${id}`, now());
 }
+// Agents default to "working": idle ("waiting") ones would get messages typed in via tmux.
 function agent(id: string, projectId: string | null, o: { tool?: string; state?: string | null; task?: string | null } = {}) {
   db.query(
     `INSERT INTO sessions (id, project_id, task_id, tool, title, cwd, argv, tmux_name, status, agent_state, created_at, msg_cursor)
      VALUES (?, ?, ?, ?, ?, '/tmp', '[]', ?, 'running', ?, ?, (SELECT COALESCE(MAX(id), 0) FROM messages))`,
-  ).run(id, projectId, o.task ?? null, o.tool ?? "claude", `Agent ${id}`, `ansai-${id}`, o.state ?? "waiting", now());
+  ).run(id, projectId, o.task ?? null, o.tool ?? "claude", `Agent ${id}`, `ansai-${id}`, o.state ?? "working", now());
   return getSession(id)!;
 }
 
