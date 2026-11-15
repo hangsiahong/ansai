@@ -6,6 +6,7 @@ import { AGENT_TOOLS, checkAgySignIn } from "./accounts";
 import { notify } from "./push";
 import { getTask, projectAutopilot, runTask as startTask, type Autopilot, type Task } from "./tasks";
 import { scheduleTick, updateOccurrence } from "./schedules";
+import { usesWorktrees } from "./worktrees";
 
 /** How autopilot starts a task (tests swap in a fake that doesn't launch agents). */
 let runTask = startTask;
@@ -85,8 +86,13 @@ export async function autopilotTick() {
       .all() as { project_id: string | null; auto: number; worktree_path: string | null }[];
     let running = active.filter((a) => a.auto).length;
     // Non-Git projects keep using the shared project directory, so serialize
-    // those tasks as before. Git worktrees have independent working folders.
-    const busySharedProjects = new Set(active.filter((a) => !a.worktree_path).map((a) => a.project_id));
+    // those tasks as before. In a Git project a queued task gets its own worktree,
+    // so a session in the project folder (e.g. one you're chatting with) doesn't hold it up.
+    const busySharedProjects = new Set<string | null>();
+    for (const pid of new Set(active.filter((a) => !a.worktree_path).map((a) => a.project_id))) {
+      const p = pid ? getProject(pid) : null;
+      if (!p || !(await usesWorktrees(p.path))) busySharedProjects.add(pid);
+    }
     if (running >= autopilotMax) return;
 
     const queued = db

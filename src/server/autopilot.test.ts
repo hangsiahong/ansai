@@ -67,6 +67,25 @@ describe("autopilot", () => {
     expect(started).toEqual(["a", "b"]);
   });
 
+  test("in a Git project, a session you're chatting with in the project folder doesn't hold queued tasks back", async () => {
+    // Queued tasks in a Git repo get their own worktree, so only non-Git folders are serialized (t0v255m4a6z).
+    const repo = (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "ansai-ap-git-"));
+    for (const args of [["init", "-q"], ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init"]])
+      Bun.spawnSync(["git", "-C", repo, ...args]);
+    db.query("INSERT INTO projects (id, name, path, created_at) VALUES ('pg', 'pg', ?, 0)").run(repo);
+    task("hand", "pg", { status: "doing", queued: false });
+    db.query(
+      `INSERT INTO sessions (id, project_id, task_id, tool, title, cwd, argv, tmux_name, status, agent_state, created_at, auto)
+       VALUES ('sh', 'pg', 'hand', 'claude', 'hand', ?, '[]', 'ansai-sh', 'running', 'working', 0, 0)`,
+    ).run(repo);
+    task("q", "pg");
+    await autopilotTick();
+    expect(started).toEqual(["q"]);
+    task("q2", "p1"); // a non-Git folder with nothing running still starts too
+    await autopilotTick();
+    expect(started).toEqual(["q", "q2"]);
+  });
+
   test("tasks with their own worktrees run side by side in one project", async () => {
     task("a", "p1", { worktree: true });
     task("b", "p1", { worktree: true });

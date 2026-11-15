@@ -145,6 +145,26 @@ async function provision(repoRoot: string, path: string): Promise<string[]> {
   return notes;
 }
 
+const worktreeProjects = new Map<string, { at: number; yes: boolean }>();
+
+/**
+ * Whether tasks in this project get their own worktree: a Git repo with at least one
+ * commit (the same test ensure() makes). Cached for a minute; autopilot asks every tick.
+ */
+export async function usesWorktrees(projectPath: string): Promise<boolean> {
+  const hit = worktreeProjects.get(projectPath);
+  if (hit && Date.now() - hit.at < 60_000) return hit.yes;
+  let yes = false;
+  if (Bun.which("git")) {
+    try {
+      const dir = realpathSync(projectPath);
+      yes = (await git(["-C", dir, "rev-parse", "--show-toplevel"])).code === 0 && (await git(["-C", dir, "rev-parse", "--verify", "-q", "HEAD"])).code === 0;
+    } catch {}
+  }
+  worktreeProjects.set(projectPath, { at: Date.now(), yes });
+  return yes;
+}
+
 /** Create or reuse the task's dedicated Git worktree. Non-Git projects return null. */
 export function ensureTaskWorktree(task: WorktreeTask, projectPath: string): Promise<Worktree | null> {
   const active = pending.get(task.id);
