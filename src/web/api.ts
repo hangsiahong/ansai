@@ -111,9 +111,10 @@ export type Task = {
   attempts: number;
   last_failure: string | null;
   source: "you" | "agent" | "session";
-  sessions: { id: string; tool: ToolId; status: string; agent_state: string | null; auto: number }[];
+  sessions: { id: string; tool: ToolId; title: string; status: string; agent_state: string | null; auto: number }[];
   dependencies?: { id: string; title: string; status: TaskStatus }[];
   blocked_by?: { id: string; title: string; status: TaskStatus }[];
+  review: null | { session_id: string | null; reviewer_tool: "claude" | "codex"; status: "running" | "complete" | "stopped"; summary: string | null; findings: { file: string; line: number; severity: "high" | "medium" | "low"; message: string }[] };
 };
 
 export type UsageLimit = { id: string; label: string; used_percent: number; resets_at: number | null; reset: boolean };
@@ -212,6 +213,7 @@ export const api = {
     call<Task>("PATCH", `/api/tasks/${id}`, patch),
   deleteTask: (id: string) => call<{ ok: true }>("DELETE", `/api/tasks/${id}`),
   taskChanges: (id: string) => call<Changes>("GET", `/api/tasks/${id}/changes`),
+  reviewTask: (id: string, tool?: "claude" | "codex") => call<Session>("POST", `/api/tasks/${id}/review`, { tool }),
   mergeTask: (id: string) => call<{ sha: string; into: string; files: number }>("POST", `/api/tasks/${id}/merge`),
   discardWorktree: (id: string) => call<{ ok: true }>("DELETE", `/api/tasks/${id}/worktree`),
   runTask: (id: string, o: { tool: ToolId; yolo?: boolean; accountId?: string | null } & Partial<ModelPick>) => call<Session>("POST", `/api/tasks/${id}/run`, o),

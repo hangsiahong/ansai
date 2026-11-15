@@ -268,6 +268,11 @@ function TaskSheet(p: { taskId: string; onClose: () => void }) {
   const [pickByTool, setPickByTool] = useState<Partial<Record<ToolId, ModelPick>>>({});
   const [agent, setAgent] = useState<ToolId>(() => getState().projects.find((x) => x.id === task?.project_id)?.autopilot?.tool ?? "claude");
   const [busy, setBusy] = useState(false);
+  const [reviewBusy, setReviewBusy] = useState(false);
+  const [reviewTool, setReviewTool] = useState<"claude" | "codex">(() => {
+    const implementer = (task?.sessions ?? []).find((s) => s.id !== task?.review?.session_id && !s.title.startsWith("Review · "));
+    return implementer?.tool === "claude" ? "codex" : "claude";
+  });
   const [dependencyPick, setDependencyPick] = useState("");
   const dirty = useRef(false);
 
@@ -324,8 +329,8 @@ function TaskSheet(p: { taskId: string; onClose: () => void }) {
 
   // A task that already has an agent should carry on in it: its conversation (and warm
   // prompt cache) is worth more than a fresh start that re-reads the code from scratch.
-  const live = sessions.find((s) => s.status === "running");
-  const last = live ? undefined : [...sessions].filter((s) => s.status === "exited").sort((a, b) => b.created_at - a.created_at)[0];
+  const live = sessions.find((s) => s.status === "running" && s.id !== task.review?.session_id && !s.title.startsWith("Review · "));
+  const last = live ? undefined : [...sessions].filter((s) => s.id !== task.review?.session_id && !s.title.startsWith("Review · ") && s.status === "exited").sort((a, b) => b.created_at - a.created_at)[0];
   const carryOn = async () => {
     try {
       if (live) {
@@ -352,6 +357,33 @@ function TaskSheet(p: { taskId: string; onClose: () => void }) {
     } catch (e) {
       toastError(e);
     }
+  };
+
+  const startReview = async () => {
+    setReviewBusy(true);
+    try {
+      const s = await api.reviewTask(task.id, reviewTool);
+      toast("Independent review started");
+      p.onClose();
+      nav(`/s/${s.id}`);
+    } catch (e) {
+      toastError(e);
+      setReviewBusy(false);
+    }
+  };
+  const review = task.review;
+  const implementer = sessions.find((s) => s.status === "running" && s.id !== review?.session_id && !s.title.startsWith("Review · ") && (s.tool === "claude" || s.tool === "codex"));
+  const sendFindings = async () => {
+    if (!implementer || !review?.findings.length) return;
+    const body = [
+      `Independent review findings (${review.findings.length}) for “${task.title}”:`,
+      ...review.findings.map((f, i) => `${i + 1}. [${f.severity.toUpperCase()}] ${f.file}:${f.line} — ${f.message}`),
+      "Please address these findings in the task worktree, then summarize what changed.",
+    ].join("\n\n");
+    try {
+      await api.postMessage({ body, to: implementer.id, projectId: task.project_id });
+      toast("Findings sent to the implementer");
+    } catch (e) { toastError(e); }
   };
 
   return (
@@ -445,6 +477,26 @@ function TaskSheet(p: { taskId: string; onClose: () => void }) {
               <Icon name="check" size={14} stroke={2.6} /> Agent's summary
             </div>
             <p>{task.summary}</p>
+          </div>
+        )}
+
+        {task.status === "review" && task.worktree_path && (
+          <div class="field reviewer-section">
+            <span>Independent review</span>
+            {review && <div class="review-summary">
+              <b>{review.status === "complete" ? `${TOOL_LABEL[review.reviewer_tool]} · Review complete` : review.status === "stopped" ? `${TOOL_LABEL[review.reviewer_tool]} · Review stopped early` : `${TOOL_LABEL[review.reviewer_tool]} · Reviewing`}</b>
+              {review.summary && <p>{review.summary}</p>}
+              {review.status === "complete" && review.findings.length === 0 && <p>No findings.</p>}
+              {review.findings.map((f) => <div class="review-finding"><b class={`severity ${f.severity}`}>{f.severity}</b><code>{f.file}:{f.line}</code><span>{f.message}</span></div>)}
+              {review.findings.length > 0 && <button class="btn primary" disabled={!implementer} title={implementer ? "" : "No running implementation session"} onClick={sendFindings}>Send findings to the implementer</button>}
+            </div>}
+            {!review || review.status !== "running" ? <>
+              <select class="select" value={reviewTool} onChange={(e) => setReviewTool((e.target as HTMLSelectElement).value as "claude" | "codex")}>
+                <option value="claude">Claude reviews</option><option value="codex">Codex reviews</option>
+              </select>
+              <button class="btn" disabled={reviewBusy} onClick={startReview}>{reviewBusy ? "Starting review…" : review?.status === "stopped" ? "Retry review" : review?.status === "complete" ? "Review again" : "Review with another agent"}</button>
+            </> : null}
+            <p class="muted small">The reviewer can read the task diff but cannot edit it. This task stays in Review until you move it.</p>
           </div>
         )}
 
