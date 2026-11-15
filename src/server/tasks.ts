@@ -4,6 +4,7 @@ import { emit } from "./events";
 import { getProject } from "./projects";
 import { createSession } from "./sessions";
 import { ensureTaskWorktree } from "./worktrees";
+import { changesIn } from "./changes";
 import type { ToolId } from "./tools";
 
 export const STATUSES = ["todo", "doing", "review", "done"] as const;
@@ -164,7 +165,30 @@ export function deleteTask(id: string) {
 }
 
 /** The first message an agent gets for a backlog task: the task, plus how to work it. */
-function taskPrompt(task: Task & { notes?: string[] }): string {
+/**
+ * A rerun shouldn't start from zero: tell the new agent what the last run said
+ * and what is already on the task's branch, so it carries on instead of
+ * rebuilding everything (and possibly redoing the work).
+ */
+export async function handoff(task: Task, dir: string | null): Promise<string> {
+  const lines: string[] = [];
+  if (task.summary?.trim()) lines.push(`The last run's summary: ${task.summary.trim()}`);
+  if (dir && task.worktree_path) {
+    try {
+      const c = await changesIn(dir);
+      if (c.commits.length)
+        lines.push(
+          `Already committed on ${c.branch ?? "this branch"} (newest first):`,
+          ...c.commits.slice(0, 15).map((k) => `- ${k.sha.slice(0, 7)} ${k.subject}`),
+        );
+      if (c.uncommitted) lines.push(`${c.uncommitted} file${c.uncommitted === 1 ? " has" : "s have"} uncommitted changes from that run; check them with git status / git diff.`);
+    } catch {}
+  }
+  if (!lines.length) return "";
+  return ["This task was worked on before, in this same worktree. Pick up from there rather than starting over:", ...lines].join("\n");
+}
+
+function taskPrompt(task: Task & { notes?: string[]; handoff?: string }): string {
   return [
     `Backlog task: ${task.title}`,
     task.worktree_path
@@ -172,6 +196,7 @@ function taskPrompt(task: Task & { notes?: string[] }): string {
       : "",
     task.notes?.length ? ["Set up in this worktree:", ...task.notes.map((n) => `- ${n}`)].join("\n") : "",
     task.body.trim(),
+    task.handoff ?? "",
     [
       "How to work this task:",
       "- First check it is clear. If it is ambiguous or needs a decision from me, ask me before changing anything, and wait for my answer.",
@@ -200,8 +225,12 @@ export async function runTask(
   try {
     const project = getProject(task.project_id);
     if (!project) throw conflict("this task's project no longer exists");
+    const rerun = !!task.worktree_path; // the worktree outlives a run, so it marks a task that ran before
     const worktree = await ensureTaskWorktree(task, project.path);
-    const launchTask = worktree ? { ...task, worktree_path: worktree.path, worktree_branch: worktree.branch, notes: worktree.notes } : task;
+    const launchTask = {
+      ...(worktree ? { ...task, worktree_path: worktree.path, worktree_branch: worktree.branch, notes: worktree.notes } : task),
+      handoff: rerun || task.summary ? await handoff(task, worktree?.cwd ?? null) : "",
+    };
     const session = await createSession({
       projectId: task.project_id,
       cwd: worktree?.cwd,
