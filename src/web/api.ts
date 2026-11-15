@@ -94,6 +94,9 @@ export type Task = {
   summary: string | null;
   worktree_path: string | null;
   worktree_branch: string | null;
+  /** Autopilot retries used, and why the last run stopped early (null if it didn't). */
+  attempts: number;
+  last_failure: string | null;
   source: "you" | "agent" | "session";
   sessions: { id: string; tool: ToolId; status: string; agent_state: string | null; auto: number }[];
 };

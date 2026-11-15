@@ -17,19 +17,28 @@ const STATUS: Record<FileChange["status"], { letter: string; label: string }> = 
   renamed: { letter: "R", label: "Renamed" },
 };
 
-function Hunks({ patch }: { patch: string }) {
+/** A line someone wants to comment on: the file, its line number (new side, or old for removed lines) and its text. */
+export type LineRef = { path: string; line: number; side: "new" | "old"; text: string };
+
+function Hunks({ patch, path, onLine, marked }: { patch: string; path: string; onLine?: (r: LineRef) => void; marked?: Set<string> }) {
+  let oldN = 0;
+  let newN = 0;
   return (
-    <pre class="diff">
+    <pre class={`diff ${onLine ? "tappable" : ""}`}>
       {patch.split("\n").map((l) => {
         if (l.startsWith("@@")) {
-          const where = l.match(/^@@ -\d+(?:,\d+)? \+(\d+)/)?.[1];
+          const m = l.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)/);
+          if (m) ((oldN = Number(m[1])), (newN = Number(m[2])));
           const ctx = l.replace(/^@@[^@]*@@ ?/, "");
-          return <div class="d-hunk">{where ? `Line ${where}${ctx ? " · " + ctx : ""}` : l}</div>;
+          return <div class="d-hunk">{m ? `Line ${m[2]}${ctx ? " · " + ctx : ""}` : l}</div>;
         }
         if (l.startsWith("\\")) return null; // "\ No newline at end of file"
         const t = l[0];
+        const ref: LineRef = t === "-" ? { path, line: oldN++, side: "old", text: l.slice(1) } : { path, line: newN++, side: "new", text: l.slice(1) };
+        if (t !== "-" && t !== "+") oldN++;
+        const key = `${path}:${ref.side}:${ref.line}`;
         return (
-          <div class={t === "+" ? "d-add" : t === "-" ? "d-del" : "d-ctx"}>
+          <div class={`${t === "+" ? "d-add" : t === "-" ? "d-del" : "d-ctx"} ${marked?.has(key) ? "marked" : ""}`} onClick={onLine ? () => onLine(ref) : undefined}>
             <span>{t === "+" || t === "-" ? t : " "}</span>
             {l.slice(1) || " "}
           </div>
@@ -39,7 +48,7 @@ function Hunks({ patch }: { patch: string }) {
   );
 }
 
-function FileRow({ f, open, onToggle }: { f: FileChange; open: boolean; onToggle: () => void }) {
+function FileRow({ f, open, onToggle, onLine, marked }: { f: FileChange; open: boolean; onToggle: () => void; onLine?: (r: LineRef) => void; marked?: Set<string> }) {
   const slash = f.path.lastIndexOf("/");
   const dir = slash >= 0 ? f.path.slice(0, slash + 1) : "";
   const name = f.path.slice(slash + 1);
@@ -66,7 +75,7 @@ function FileRow({ f, open, onToggle }: { f: FileChange; open: boolean; onToggle
           {f.binary ? (
             <div class="tool-none">Binary file — not shown.</div>
           ) : f.patch ? (
-            <Hunks patch={f.patch} />
+            <Hunks patch={f.patch} path={f.path} onLine={onLine} marked={marked} />
           ) : (
             <div class="tool-none">{f.truncated ? "Too large to show here." : "No text changes (mode or empty file)."}</div>
           )}
@@ -77,7 +86,17 @@ function FileRow({ f, open, onToggle }: { f: FileChange; open: boolean; onToggle
   );
 }
 
-export function ChangesView({ load, actions }: { load: () => Promise<Changes>; actions?: (c: Changes, reload: () => void) => preact.ComponentChildren }) {
+export function ChangesView({
+  load,
+  actions,
+  onLine,
+  marked,
+}: {
+  load: () => Promise<Changes>;
+  actions?: (c: Changes, reload: () => void) => preact.ComponentChildren;
+  onLine?: (r: LineRef) => void;
+  marked?: Set<string>;
+}) {
   const [c, setC] = useState<Changes | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [open, setOpen] = useState<Set<string>>(new Set());
@@ -150,6 +169,8 @@ export function ChangesView({ load, actions }: { load: () => Promise<Changes>; a
             {c.files.map((f) => (
               <FileRow
                 f={f}
+                onLine={onLine}
+                marked={marked}
                 open={open.has(f.path)}
                 onToggle={() =>
                   setOpen((prev) => {
@@ -179,6 +200,12 @@ export function ChangesSheet(p: { taskId?: string; sessionId?: string; onClose: 
   const agentOpen = useStore((s) => !!p.taskId && s.sessions.some((x) => x.task_id === p.taskId && x.status === "running"));
   const [busy, setBusy] = useState(false);
   const title = task ? `Changes · ${task.title}` : session ? `Changes · ${session.title}` : "Changes";
+  // Review comments go to the agent working on this (the task's running Claude/Codex, or this session).
+  const agentId = useStore((s) => {
+    const a = s.sessions.find((x) => (p.taskId ? x.task_id === p.taskId : x.id === p.sessionId) && x.status === "running" && (x.tool === "claude" || x.tool === "codex"));
+    return a?.id ?? null;
+  });
+  const review = useReview(agentId, task?.project_id ?? session?.project_id ?? null);
   const load = () => (p.taskId ? api.taskChanges(p.taskId) : api.sessionChanges(p.sessionId!));
 
   const merge = async (c: Changes) => {
@@ -239,7 +266,94 @@ export function ChangesSheet(p: { taskId?: string; sessionId?: string; onClose: 
 
   return (
     <Sheet title={title} full onClose={p.onClose}>
-      <ChangesView load={load} actions={actions} />
+      <ChangesView load={load} actions={actions} onLine={review.onLine} marked={review.marked} />
+      {review.panel}
     </Sheet>
   );
+}
+
+// ------------------------------------------------------------------ review
+
+type Comment = LineRef & { body: string };
+
+/** The message an agent gets for a review: each comment anchored by file, line and the line's text. */
+function reviewMessage(comments: Comment[]): string {
+  return [
+    `Review of your changes (${comments.length} comment${comments.length === 1 ? "" : "s"}, from the Changes view):`,
+    ...comments.map(
+      (c, i) => `${i + 1}. ${c.path}, line ${c.line}${c.side === "old" ? " (a removed line)" : ""}: \`${c.text.trim().slice(0, 160)}\`\n   ${c.body.trim().replace(/\n/g, "\n   ")}`,
+    ),
+    "Line numbers are from the diff you were reviewed on. If a line moved, find it by its text. Address each comment, then say what you changed.",
+  ].join("\n\n");
+}
+
+/** Comment on diff lines (tap a line), collect them, and send them to the task's agent as one message. */
+export function useReview(agentId: string | null, projectId: string | null) {
+  const [comments, setComments] = useState<Comment[]>([]);
+  const [draft, setDraft] = useState<{ ref: LineRef; body: string } | null>(null);
+  const [sending, setSending] = useState(false);
+  const marked = new Set(comments.map((c) => `${c.path}:${c.side}:${c.line}`));
+  const send = async () => {
+    if (!agentId || !comments.length) return;
+    setSending(true);
+    try {
+      await api.postMessage({ body: reviewMessage(comments), to: agentId, projectId });
+      toast(`Sent ${comments.length} comment${comments.length === 1 ? "" : "s"} to the agent`);
+      setComments([]);
+    } catch (e) {
+      toastError(e);
+    } finally {
+      setSending(false);
+    }
+  };
+  const panel = (
+    <>
+      {draft && (
+        <div class="rv-compose">
+          <div class="rv-anchor">
+            <Icon name="pencil" size={13} /> {draft.ref.path}:{draft.ref.line}
+            {draft.ref.side === "old" ? " (removed)" : ""}
+            <code>{draft.ref.text.trim().slice(0, 80) || " "}</code>
+          </div>
+          <textarea
+            class="input"
+            rows={3}
+            autoFocus
+            placeholder="What should change here?"
+            value={draft.body}
+            onInput={(e) => setDraft({ ...draft, body: (e.target as HTMLTextAreaElement).value })}
+          />
+          <div class="rv-actions">
+            <button class="btn ghost" onClick={() => setDraft(null)}>
+              Cancel
+            </button>
+            <button
+              class="btn primary"
+              disabled={!draft.body.trim()}
+              onClick={() => {
+                setComments([...comments, { ...draft.ref, body: draft.body }]);
+                setDraft(null);
+              }}
+            >
+              Add comment
+            </button>
+          </div>
+        </div>
+      )}
+      {comments.length > 0 && !draft && (
+        <div class="rv-bar">
+          <span>
+            {comments.length} comment{comments.length === 1 ? "" : "s"}
+          </span>
+          <button class="btn ghost sm" onClick={() => setComments([])}>
+            Discard
+          </button>
+          <button class="btn primary sm" disabled={!agentId || sending} onClick={send} title={agentId ? "" : "Start or continue the task's agent to send"}>
+            {agentId ? `Send review (${comments.length})` : "No agent running"}
+          </button>
+        </div>
+      )}
+    </>
+  );
+  return { onLine: (ref: LineRef) => setDraft({ ref, body: "" }), marked, panel };
 }

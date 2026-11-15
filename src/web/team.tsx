@@ -200,7 +200,6 @@ export function TeamPanel({ projectId }: { projectId: string }) {
     if (!a) return "";
     if (sessionState(a).cls === "attn") return "It's waiting for your approval; it reads this after.";
     if (!idle(a)) return "It's working, so it reads this between steps.";
-    if (finished(a)) return "Its task is finished, so this waits for its next turn.";
     return "It's idle, so this is typed in now and starts a turn.";
   })();
   useEffect(() => {
