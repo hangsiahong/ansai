@@ -1,7 +1,7 @@
 import { useEffect, useState } from "preact/hooks";
 import { api } from "./api";
 import { toast, toastError } from "./store";
-import { Sheet } from "./ui";
+import { Icon } from "./ui";
 
 const KINDS = [
   { id: "input", label: "An agent needs you", hint: "permission prompts and questions" },
@@ -18,7 +18,7 @@ const supported = () => "serviceWorker" in navigator && "PushManager" in window 
 const isIOS = () => /iPhone|iPad|iPod/.test(navigator.userAgent);
 const standalone = () => matchMedia("(display-mode: standalone)").matches || (navigator as { standalone?: boolean }).standalone === true;
 
-export function NotifySheet(p: { onClose: () => void }) {
+export function NotifyPanel() {
   const [sub, setSub] = useState<PushSubscription | null>(null);
   const [prefs, setPrefs] = useState<Record<string, boolean>>({ input: true, done: true, exited: true });
   const [busy, setBusy] = useState(false);
@@ -91,34 +91,39 @@ export function NotifySheet(p: { onClose: () => void }) {
     body = (
       <>
         <div class="notify-state">
-          <span class={`dot ${sub ? "on" : ""}`} />
+          <span class={`notify-icon ${sub ? "on" : ""}`}>
+            <Icon name="bell" size={16} />
+          </span>
           <div>
             <b>{sub ? "On for this device" : perm === "denied" ? "Blocked in browser settings" : "Off for this device"}</b>
             <div class="muted small">Pushes go out only when you're not already looking at that session.</div>
           </div>
         </div>
-        <div class="kinds">
-          {KINDS.map((k) => (
-            <label class="check">
-              <input type="checkbox" checked={prefs[k.id] !== false} onChange={(e) => toggle(k.id, (e.target as HTMLInputElement).checked)} />
-              <span>
-                {k.label} <em>— {k.hint}</em>
-              </span>
-            </label>
-          ))}
-        </div>
+        {sub && (
+          <div class="panel">
+            {KINDS.map((k) => (
+              <label class="switch-row in-panel">
+                <span>
+                  <b>{k.label}</b>
+                  <em>{k.hint}</em>
+                </span>
+                <input type="checkbox" class="switch" checked={prefs[k.id] !== false} onChange={(e) => toggle(k.id, (e.target as HTMLInputElement).checked)} />
+              </label>
+            ))}
+          </div>
+        )}
         <div class="row">
           {sub ? (
             <>
-              <button class="btn" disabled={busy} onClick={() => api.pushTest(sub.endpoint).then(() => toast("Test sent")).catch(toastError)}>
+              <button class="btn sm" disabled={busy} onClick={() => api.pushTest(sub.endpoint).then(() => toast("Test sent")).catch(toastError)}>
                 Send a test
               </button>
-              <button class="btn ghost" disabled={busy} onClick={disable}>
+              <button class="btn sm ghost" disabled={busy} onClick={disable}>
                 Turn off
               </button>
             </>
           ) : (
-            <button class="btn primary big" disabled={busy || perm === "denied"} onClick={enable}>
+            <button class="btn primary" disabled={busy || perm === "denied"} onClick={enable}>
               Turn on notifications
             </button>
           )}
@@ -127,9 +132,5 @@ export function NotifySheet(p: { onClose: () => void }) {
     );
   }
 
-  return (
-    <Sheet title="Notifications" onClose={p.onClose}>
-      <div class="form">{body}</div>
-    </Sheet>
-  );
+  return <div class="notify">{body}</div>;
 }

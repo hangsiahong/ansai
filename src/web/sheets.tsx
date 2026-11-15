@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "preact/hooks";
-import { api, STATUS_LABEL, TASK_STATUSES, type ToolId } from "./api";
-import { getState, openSheet, patchTaskLocal, refreshProjects, toast, toastError, useStore } from "./store";
-import { AGENTS, Icon, Sheet, TOOL_LABEL, ToolDot, ago, nav, sessionState, shortPath } from "./ui";
+import { api, STATUS_LABEL, TASK_STATUSES, type DeviceList, type ToolId } from "./api";
+import { confirmDialog, getState, openSheet, patchTaskLocal, refreshProjects, setTheme, toast, toastError, useStore, type ThemePref } from "./store";
+import { AGENTS, Icon, Sheet, StatusPill, TOOL_LABEL, TOOL_SHORT, ToolBadge, ago, nav, shortPath } from "./ui";
 import { AccountPicker } from "./accounts";
-import { NotifySheet } from "./notify";
+import { NotifyPanel } from "./notify";
 
 export function Sheets() {
   const sheet = useStore((s) => s.sheet);
@@ -13,38 +13,68 @@ export function Sheets() {
   if (sheet.kind === "history") return <HistorySheet sessionId={sheet.sessionId} onClose={close} />;
   if (sheet.kind === "add-project") return <AddProjectSheet onClose={close} />;
   if (sheet.kind === "task") return <TaskSheet key={sheet.taskId} taskId={sheet.taskId} onClose={close} />;
-  if (sheet.kind === "notify") return <NotifySheet onClose={close} />;
+  if (sheet.kind === "new-task") return <NewTaskSheet projectId={sheet.projectId ?? null} onClose={close} />;
+  if (sheet.kind === "settings") return <SettingsSheet onClose={close} />;
   return null;
 }
 
 function ProjectSelect(p: { value: string; onChange: (v: string) => void; emptyLabel: string }) {
   const projects = useStore((s) => s.projects);
   return (
-    <select value={p.value} onChange={(e) => p.onChange((e.target as HTMLSelectElement).value)}>
+    <select class="select" value={p.value} onChange={(e) => p.onChange((e.target as HTMLSelectElement).value)}>
       <option value="">{p.emptyLabel}</option>
-      {projects.map((pr) => (
-        <option value={pr.id}>
-          {pr.name} — {shortPath(pr.path)}
-        </option>
-      ))}
+      {projects.filter((x) => x.pinned).length > 0 && (
+        <optgroup label="Pinned">
+          {projects
+            .filter((x) => x.pinned)
+            .map((pr) => (
+              <option value={pr.id}>{pr.name}</option>
+            ))}
+        </optgroup>
+      )}
+      <optgroup label="All projects">
+        {projects.map((pr) => (
+          <option value={pr.id}>
+            {pr.name} — {shortPath(pr.path)}
+          </option>
+        ))}
+      </optgroup>
     </select>
   );
 }
 
-function YoloCheck(p: { value: boolean; onChange: (v: boolean) => void }) {
+function AgentPicker(p: { value: ToolId; onChange: (t: ToolId) => void; withShell?: boolean }) {
+  const tools = useStore((s) => s.tools);
+  const list: ToolId[] = p.withShell ? ["claude", "codex", "agy", "shell"] : AGENTS;
   return (
-    <label class="check">
-      <input type="checkbox" checked={p.value} onChange={(e) => p.onChange((e.target as HTMLInputElement).checked)} />
+    <div class={`agent-pick n${list.length}`} role="radiogroup" aria-label="Agent">
+      {list.map((t) => {
+        const installed = tools.find((x) => x.id === t)?.installed !== false;
+        return (
+          <button type="button" role="radio" aria-checked={p.value === t} class={`agent-opt ${p.value === t ? "on" : ""}`} disabled={!installed} onClick={() => p.onChange(t)}>
+            <ToolBadge tool={t} size={26} />
+            <span>{TOOL_SHORT[t]}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function YoloSwitch(p: { value: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <label class="switch-row">
       <span>
-        Auto-approve everything <em>— the agent won't ask before running commands or editing files</em>
+        <b>Auto-approve</b>
+        <em>Runs commands and edits files without asking</em>
       </span>
+      <input type="checkbox" class="switch" checked={p.value} onChange={(e) => p.onChange((e.target as HTMLInputElement).checked)} />
     </label>
   );
 }
 
 function NewSessionSheet(p: { projectId?: string; tool?: ToolId; accountId?: string; onClose: () => void }) {
-  const tools = useStore((s) => s.tools);
-  const [projectId, setProjectId] = useState(p.projectId ?? getState().projects[0]?.id ?? "");
+  const [projectId, setProjectId] = useState(p.projectId ?? getState().projects.find((x) => x.pinned)?.id ?? getState().projects[0]?.id ?? "");
   const [tool, setTool] = useState<ToolId>(p.tool ?? "claude");
   const [accountId, setAccountId] = useState<string | null>(p.accountId ?? null);
   const [prompt, setPrompt] = useState("");
@@ -66,27 +96,19 @@ function NewSessionSheet(p: { projectId?: string; tool?: ToolId; accountId?: str
   return (
     <Sheet title="New session" onClose={p.onClose}>
       <div class="form">
+        <AgentPicker value={tool} onChange={(t) => (setTool(t), setAccountId(null))} withShell />
         <label class="field">
           <span>Project</span>
-          <ProjectSelect value={projectId} onChange={setProjectId} emptyLabel="~ (home folder)" />
+          <ProjectSelect value={projectId} onChange={setProjectId} emptyLabel="Home folder (~)" />
         </label>
-        <div class="field">
-          <span>Agent</span>
-          <div class="seg">
-            {(tools.length ? tools : (["claude", "codex", "agy", "shell"] as ToolId[]).map((id) => ({ id, label: TOOL_LABEL[id], installed: true }))).map((t) => (
-              <button type="button" class={`seg-btn ${tool === t.id ? "on" : ""}`} disabled={!t.installed} onClick={() => (setTool(t.id), setAccountId(null))}>
-                <ToolDot tool={t.id} /> {t.label}
-              </button>
-            ))}
-          </div>
-        </div>
         {tool !== "shell" && <AccountPicker tool={tool} value={accountId} onChange={setAccountId} />}
         {tool !== "shell" && (
           <label class="field">
-            <span>First prompt (optional)</span>
+            <span>First message</span>
             <textarea
-              rows={4}
-              placeholder="What should it work on?"
+              class="input"
+              rows={3}
+              placeholder="Optional — what should it work on?"
               value={prompt}
               onInput={(e) => setPrompt((e.target as HTMLTextAreaElement).value)}
               onKeyDown={(e) => {
@@ -95,8 +117,8 @@ function NewSessionSheet(p: { projectId?: string; tool?: ToolId; accountId?: str
             />
           </label>
         )}
-        {tool !== "shell" && <YoloCheck value={yolo} onChange={setYolo} />}
-        <button class="btn primary big" disabled={busy} onClick={start}>
+        {tool !== "shell" && <YoloSwitch value={yolo} onChange={setYolo} />}
+        <button class="btn primary lg" disabled={busy} onClick={start}>
           <Icon name="play" size={16} /> {busy ? "Starting…" : `Start ${TOOL_LABEL[tool]}`}
         </button>
       </div>
@@ -125,7 +147,7 @@ function HistorySheet(p: { sessionId: string; onClose: () => void }) {
             <Icon name="refresh" />
           </button>
           <button
-            class="btn small"
+            class="btn sm"
             onClick={() =>
               navigator.clipboard
                 ?.writeText(text ?? "")
@@ -133,7 +155,7 @@ function HistorySheet(p: { sessionId: string; onClose: () => void }) {
                 .catch(() => toast("Clipboard blocked — select the text instead", "error"))
             }
           >
-            Copy
+            Copy all
           </button>
         </>
       }
@@ -158,26 +180,63 @@ function AddProjectSheet(p: { onClose: () => void }) {
     }
   };
   return (
-    <Sheet title="Add a folder" onClose={p.onClose}>
-      <div class="form">
+    <Sheet title="Add a folder" onClose={p.onClose} size="sm">
+      <form
+        class="form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          add();
+        }}
+      >
         <label class="field">
           <span>Path on this laptop</span>
-          <input value={path} onInput={(e) => setPath((e.target as HTMLInputElement).value)} onKeyDown={(e) => e.key === "Enter" && add()} autoFocus />
+          <input class="input mono" value={path} onInput={(e) => setPath((e.target as HTMLInputElement).value)} autoFocus />
         </label>
-        <button class="btn primary big" onClick={add}>
-          Add project
-        </button>
-      </div>
+        <button class="btn primary lg">Add project</button>
+      </form>
     </Sheet>
   );
 }
 
-const PRIORITIES = [
-  { v: 0, label: "None" },
-  { v: 1, label: "Low" },
-  { v: 2, label: "Medium" },
-  { v: 3, label: "High" },
-];
+function NewTaskSheet(p: { projectId: string | null; onClose: () => void }) {
+  const [title, setTitle] = useState("");
+  const [projectId, setProjectId] = useState(p.projectId ?? "");
+  const [busy, setBusy] = useState(false);
+  const add = async () => {
+    if (!title.trim()) return;
+    setBusy(true);
+    try {
+      await api.createTask({ title: title.trim(), projectId: projectId || null });
+      toast("Task added");
+      p.onClose();
+    } catch (e) {
+      toastError(e);
+      setBusy(false);
+    }
+  };
+  return (
+    <Sheet title="New task" onClose={p.onClose} size="sm">
+      <form
+        class="form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          add();
+        }}
+      >
+        <input class="input" placeholder="What needs doing?" value={title} onInput={(e) => setTitle((e.target as HTMLInputElement).value)} autoFocus />
+        <label class="field">
+          <span>Project</span>
+          <ProjectSelect value={projectId} onChange={setProjectId} emptyLabel="Inbox (decide later)" />
+        </label>
+        <button class="btn primary lg" disabled={busy || !title.trim()}>
+          Add task
+        </button>
+      </form>
+    </Sheet>
+  );
+}
+
+const PRIORITIES = ["None", "Low", "Medium", "High"];
 
 function TaskSheet(p: { taskId: string; onClose: () => void }) {
   const task = useStore((s) => s.tasks.find((t) => t.id === p.taskId));
@@ -191,7 +250,9 @@ function TaskSheet(p: { taskId: string; onClose: () => void }) {
   const dirty = useRef(false);
 
   const save = async (patch: Parameters<typeof api.updateTask>[1]) => {
-    patchTaskLocal(p.taskId, { ...patch, project_id: patch.projectId !== undefined ? patch.projectId : task?.project_id } as never);
+    const local: Record<string, unknown> = { ...patch };
+    if (patch.projectId !== undefined) local.project_id = patch.projectId;
+    patchTaskLocal(p.taskId, local);
     try {
       await api.updateTask(p.taskId, patch);
     } catch (e) {
@@ -199,7 +260,6 @@ function TaskSheet(p: { taskId: string; onClose: () => void }) {
     }
   };
 
-  // Text fields autosave shortly after typing stops.
   useEffect(() => {
     if (!task || !dirty.current) return;
     const h = setTimeout(() => {
@@ -218,7 +278,7 @@ function TaskSheet(p: { taskId: string; onClose: () => void }) {
 
   if (!task) {
     return (
-      <Sheet title="Task" onClose={p.onClose}>
+      <Sheet title="Task" onClose={p.onClose} size="sm">
         <div class="form">
           <p class="muted">This task no longer exists.</p>
         </div>
@@ -240,7 +300,7 @@ function TaskSheet(p: { taskId: string; onClose: () => void }) {
   };
 
   const remove = async () => {
-    if (!confirm(`Delete "${task.title}"?`)) return;
+    if (!(await confirmDialog({ title: "Delete this task?", body: task.title, confirm: "Delete", danger: true }))) return;
     try {
       await api.deleteTask(task.id);
       p.onClose();
@@ -251,7 +311,7 @@ function TaskSheet(p: { taskId: string; onClose: () => void }) {
 
   return (
     <Sheet
-      title={task.project_name ? `Task · ${task.project_name}` : "Task · Inbox"}
+      title={task.project_name ?? "Inbox"}
       onClose={close}
       actions={
         <button class="icon-btn" onClick={remove} title="Delete task" aria-label="Delete task">
@@ -260,66 +320,64 @@ function TaskSheet(p: { taskId: string; onClose: () => void }) {
       }
     >
       <div class="form">
-        <input
+        <textarea
           class="title-input"
+          rows={1}
           value={title}
           placeholder="Task title"
           onInput={(e) => {
             dirty.current = true;
-            setTitle((e.target as HTMLInputElement).value);
+            const t = e.target as HTMLTextAreaElement;
+            setTitle(t.value.replace(/\n/g, " "));
+            t.style.height = "auto";
+            t.style.height = t.scrollHeight + "px";
           }}
         />
-        <div class="chips" role="group" aria-label="Status">
+        <div class="segmented" role="radiogroup" aria-label="Status">
           {TASK_STATUSES.map((st) => (
-            <button class={`chip s-${st} ${task.status === st ? "on" : ""}`} onClick={() => save({ status: st })}>
+            <button role="radio" aria-checked={task.status === st} class={`seg s-${st} ${task.status === st ? "on" : ""}`} onClick={() => save({ status: st })}>
               {STATUS_LABEL[st]}
             </button>
           ))}
         </div>
+        <textarea
+          class="input notes"
+          rows={4}
+          value={body}
+          placeholder="Details — context, acceptance criteria, links. Sent to the agent with the title."
+          onInput={(e) => {
+            dirty.current = true;
+            setBody((e.target as HTMLTextAreaElement).value);
+          }}
+        />
         <div class="grid2">
           <label class="field">
             <span>Project</span>
-            <ProjectSelect value={task.project_id ?? ""} onChange={(v) => save({ projectId: v || null })} emptyLabel="Inbox (no project)" />
+            <ProjectSelect value={task.project_id ?? ""} onChange={(v) => save({ projectId: v || null })} emptyLabel="Inbox" />
           </label>
           <label class="field">
             <span>Priority</span>
-            <select value={task.priority} onChange={(e) => save({ priority: Number((e.target as HTMLSelectElement).value) })}>
-              {PRIORITIES.map((x) => (
-                <option value={x.v}>{x.label}</option>
+            <select class="select" value={task.priority} onChange={(e) => save({ priority: Number((e.target as HTMLSelectElement).value) })}>
+              {PRIORITIES.map((x, i) => (
+                <option value={i}>{x}</option>
               ))}
             </select>
           </label>
         </div>
-        <label class="field">
-          <span>Details — sent to the agent together with the title</span>
-          <textarea
-            rows={5}
-            value={body}
-            placeholder="Context, acceptance criteria, links…"
-            onInput={(e) => {
-              dirty.current = true;
-              setBody((e.target as HTMLTextAreaElement).value);
-            }}
-          />
-        </label>
 
         <div class="runbox">
-          <div class="runbox-head">Start an agent on this task</div>
+          <div class="runbox-head">
+            <Icon name="play" size={14} /> Hand it to an agent
+          </div>
           {!task.project_id ? (
-            <p class="muted small">Pick a project first — the agent runs inside it.</p>
+            <p class="muted small">Pick a project first — the agent works inside it.</p>
           ) : (
             <>
-              <div class="seg three">
-                {AGENTS.map((t) => (
-                  <button type="button" class={`seg-btn ${agent === t ? "on" : ""}`} onClick={() => setAgent(t)}>
-                    <ToolDot tool={t} /> {TOOL_LABEL[t]}
-                  </button>
-                ))}
-              </div>
+              <AgentPicker value={agent} onChange={setAgent} />
               <AccountPicker tool={agent} value={accountByTool[agent] ?? null} onChange={(v) => setAccountByTool({ ...accountByTool, [agent]: v })} />
-              <YoloCheck value={yolo} onChange={setYolo} />
-              <button class="btn primary big" disabled={busy} onClick={run}>
-                <Icon name="play" size={16} /> {busy ? "Starting…" : `Run with ${TOOL_LABEL[agent]}`}
+              <YoloSwitch value={yolo} onChange={setYolo} />
+              <button class="btn primary lg" disabled={busy} onClick={run}>
+                {busy ? "Starting…" : `Run with ${TOOL_LABEL[agent]}`}
               </button>
             </>
           )}
@@ -327,31 +385,131 @@ function TaskSheet(p: { taskId: string; onClose: () => void }) {
 
         {sessions.length > 0 && (
           <div class="field">
-            <span>Sessions for this task</span>
-            <div class="list">
-              {sessions.map((s) => {
-                const st = sessionState(s);
-                return (
-                  <button
-                    class="srow plain"
-                    onClick={() => {
-                      p.onClose();
-                      nav(`/s/${s.id}`);
-                    }}
-                  >
-                    <ToolDot tool={s.tool} />
-                    <div class="srow-main">
-                      <div class="srow-title">{TOOL_LABEL[s.tool]}</div>
-                      <div class="srow-sub">started {ago(s.created_at)} ago</div>
-                    </div>
-                    <span class={`badge ${st.cls}`}>{st.label}</span>
-                  </button>
-                );
-              })}
+            <span>Agent sessions</span>
+            <div class="panel">
+              {sessions.map((s) => (
+                <button
+                  class="prow"
+                  onClick={() => {
+                    p.onClose();
+                    nav(`/s/${s.id}`);
+                  }}
+                >
+                  <ToolBadge tool={s.tool} size={22} />
+                  <span class="prow-main">
+                    <span class="prow-name">{TOOL_LABEL[s.tool]}</span>
+                    <span class="prow-path">started {ago(s.created_at)} ago</span>
+                  </span>
+                  <StatusPill s={s} compact />
+                </button>
+              ))}
             </div>
           </div>
         )}
         <p class="muted small">Created {ago(task.created_at)} ago</p>
+      </div>
+    </Sheet>
+  );
+}
+
+// ------------------------------------------------------------------ settings
+
+function DevicesPanel() {
+  const me = useStore((s) => s.me);
+  const [list, setList] = useState<DeviceList | null>(null);
+  useEffect(() => {
+    api.devices().then(setList).catch(toastError);
+  }, []);
+  if (!list) return <p class="muted small">Loading devices…</p>;
+
+  const toggle = async (id: string, allow: boolean) => {
+    const current = list.devices.filter((d) => d.allowed && !d.self).map((d) => d.id);
+    const next = allow ? [...current, id] : current.filter((x) => x !== id);
+    if (!allow) {
+      const d = list.devices.find((x) => x.id === id)!;
+      const ok = await confirmDialog({ title: `Block ${d.name}?`, body: "It can't open ansai until you allow it again from an allowed device.", confirm: "Block", danger: true });
+      if (!ok) return;
+    }
+    try {
+      setList(await api.setDevices(next));
+    } catch (e) {
+      toastError(e);
+    }
+  };
+
+  const devices = [...list.devices].sort((a, b) => Number(b.self) - Number(a.self) || Number(b.allowed) - Number(a.allowed) || a.name.localeCompare(b.name));
+  return (
+    <div class="devices">
+      <p class="muted small">
+        Only allowed devices on your Tailscale network can open ansai. This laptop is always allowed.
+        {!list.configured && " Right now every device on your account is allowed."}
+      </p>
+      {list.blocked.length > 0 && (
+        <div class="blocked-note">
+          <Icon name="lock" size={14} /> Recently blocked: {list.blocked.map((b) => `${b.name} (${ago(b.at)} ago)`).join(", ")}
+        </div>
+      )}
+      <div class="panel">
+        {devices.map((d) => (
+          <div class="prow">
+            <span class={`prow-icon ${d.online ? "online" : ""}`}>
+              <Icon name={/ios|android/i.test(d.os) ? "phone" : "laptop"} size={16} />
+            </span>
+            <span class="prow-main">
+              <span class="prow-name">
+                {d.name}
+                {me?.device === d.name && <em class="you">this device</em>}
+              </span>
+              <span class="prow-path">
+                {d.self ? "the laptop running ansai" : `${d.os || "device"} · ${d.online ? "online" : d.lastSeen ? `seen ${ago(Date.parse(d.lastSeen))} ago` : "offline"}`}
+              </span>
+            </span>
+            {d.self ? (
+              <span class="mini-stat">always</span>
+            ) : (
+              <input type="checkbox" class="switch" checked={d.allowed} aria-label={`Allow ${d.name}`} onChange={(e) => toggle(d.id, (e.target as HTMLInputElement).checked)} />
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function SettingsSheet(p: { onClose: () => void }) {
+  const theme = useStore((s) => s.theme);
+  const me = useStore((s) => s.me);
+  const options: { v: ThemePref; icon: string; label: string }[] = [
+    { v: "system", icon: "monitor", label: "System" },
+    { v: "dark", icon: "moon", label: "Dark" },
+    { v: "light", icon: "sun", label: "Light" },
+  ];
+  return (
+    <Sheet title="Settings" onClose={p.onClose}>
+      <div class="form settings">
+        <section>
+          <h3 class="set-title">Appearance</h3>
+          <div class="segmented" role="radiogroup" aria-label="Theme">
+            {options.map((o) => (
+              <button role="radio" aria-checked={theme === o.v} class={`seg ${theme === o.v ? "on" : ""}`} onClick={() => setTheme(o.v)}>
+                <Icon name={o.icon} size={15} /> {o.label}
+              </button>
+            ))}
+          </div>
+        </section>
+        <section>
+          <h3 class="set-title">Notifications</h3>
+          <NotifyPanel />
+        </section>
+        <section>
+          <h3 class="set-title">Devices</h3>
+          <DevicesPanel />
+        </section>
+        {me && (
+          <p class="muted small fineprint">
+            {me.user === "local" ? "Opened on this laptop" : `Signed in as ${me.user} on ${me.device}`} · {me.tailscale.url ?? "local only"}
+          </p>
+        )}
       </div>
     </Sheet>
   );

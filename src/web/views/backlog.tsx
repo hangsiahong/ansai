@@ -56,7 +56,7 @@ export function BacklogPane() {
   return (
     <div class="pane">
       <header class="topbar">
-        <button class="icon-btn mobile-only" onClick={() => goBack()} aria-label="Back">
+        <button class="icon-btn phone-only" onClick={() => goBack()} aria-label="Back">
           <Icon name="back" />
         </button>
         <div class="topbar-title">
@@ -67,7 +67,7 @@ export function BacklogPane() {
         </div>
       </header>
       <div class="filters">
-        <select value={filter} onChange={(e) => setFilter((e.target as HTMLSelectElement).value)} aria-label="Project filter">
+        <select class="select" value={filter} onChange={(e) => setFilter((e.target as HTMLSelectElement).value)} aria-label="Project filter">
           <option value="all">All projects</option>
           <option value="inbox">Inbox (no project)</option>
           {withTasks.length > 0 && (
@@ -83,7 +83,7 @@ export function BacklogPane() {
             ))}
           </optgroup>
         </select>
-        <label class="search inline">
+        <label class="searchfield inline">
           <Icon name="search" size={15} />
           <input placeholder="Search tasks" value={q} onInput={(e) => setQ((e.target as HTMLInputElement).value)} />
         </label>
@@ -93,7 +93,7 @@ export function BacklogPane() {
           <Board tasks={shown} showProject={filter === "all"} addProjectId={addTo} />
         </div>
       ) : (
-        <div class="scroll">
+        <div class="scroll narrow">
           <QuickAdd projectId={addTo} placeholder={`Add to ${addLabel}…`} />
           <TaskList tasks={shown} showProject={filter === "all"} emptyText="No open tasks here." />
         </div>

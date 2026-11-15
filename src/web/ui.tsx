@@ -1,6 +1,7 @@
-import { useEffect, useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import type { ComponentChildren } from "preact";
 import type { Session, ToolId } from "./api";
+import { useStore } from "./store";
 
 // ------------------------------------------------------------------ routing
 
@@ -41,34 +42,62 @@ export function Link(p: { href: string; class?: string; children: ComponentChild
 
 export const goBack = (fallback = "/") => (history.length > 1 ? history.back() : nav(fallback));
 
+export function useMedia(query: string) {
+  const [m, setM] = useState(() => matchMedia(query).matches);
+  useEffect(() => {
+    const q = matchMedia(query);
+    const f = () => setM(q.matches);
+    q.addEventListener("change", f);
+    return () => q.removeEventListener("change", f);
+  }, [query]);
+  return m;
+}
+export const useIsPhone = () => useMedia("(max-width: 820px)");
+export const isTouch = () => matchMedia("(pointer: coarse)").matches;
+
 // -------------------------------------------------------------------- icons
 
 const PATHS: Record<string, string> = {
   back: "M15 18l-6-6 6-6",
+  chevR: "M9 6l6 6-6 6",
+  chevD: "M6 9l6 6 6-6",
   plus: "M12 5v14M5 12h14",
   history: "M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5M12 7v5l3 3",
   more: "M5 12h.01M12 12h.01M19 12h.01",
   refresh: "M21 12a9 9 0 1 1-2.6-6.4M21 3v6h-6",
   x: "M18 6L6 18M6 6l12 12",
   star: "M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1L3.2 9.5l6.1-.9z",
-  send: "M4 12l16-8-6 16-2.5-6.5z",
+  send: "M12 19V5M5 12l7-7 7 7",
   folder: "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z",
   search: "M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14zM21 21l-4.3-4.3",
-  play: "M7 4l13 8-13 8z",
+  play: "M7 4.5v15l12-7.5z",
   type: "M4 7V5h16v2M9 19h6M12 5v14",
   list: "M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01",
   check: "M5 12.5l4.5 4.5L19 7.5",
   trash: "M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3",
-  inbox: "M3 13h5l1.5 3h5L16 13h5M5 5h14l2 8v6H3v-6z",
   eyeoff: "M3 3l18 18M10.6 6.1A9.9 9.9 0 0 1 12 6c5 0 9 6 9 6a17 17 0 0 1-3 3.6M6.6 6.6C4.2 8.2 3 12 3 12s4 6 9 6a9 9 0 0 0 4-.9M9.9 9.9a3 3 0 0 0 4.2 4.2",
-  user: "M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM4 21a8 8 0 0 1 16 0",
+  eye: "M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12zM12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z",
   gauge: "M12 14l4-4M3.5 18a10 10 0 1 1 17 0z",
   bell: "M6 16V11a6 6 0 1 1 12 0v5l2 2H4zM10 21h4",
+  home: "M3 10.5L12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z",
+  layers: "M12 3L2 8l10 5 10-5-10-5zM2 16l10 5 10-5M2 12l10 5 10-5",
+  sliders: "M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1M15 4v4M9 10v4M17 16v4",
+  command: "M9 6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3z",
+  sun: "M12 17a5 5 0 1 0 0-10 5 5 0 0 0 0 10zM12 1v2M12 21v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M1 12h2M21 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4",
+  moon: "M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z",
+  monitor: "M3 4h18v12H3zM8 20h8M12 16v4",
+  lock: "M5 11h14v10H5zM8 11V7a4 4 0 0 1 8 0v4",
+  phone: "M7 2h10a1 1 0 0 1 1 1v18a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1zM11 18h2",
+  laptop: "M4 5h16v10H4zM2 19h20",
+  terminal: "M4 17l6-6-6-6M12 19h8",
+  keyboard: "M3 6h18v12H3zM7 10h.01M11 10h.01M15 10h.01M7 14h10",
+  out: "M7 17L17 7M8 7h9v9",
+  dot: "M12 12h.01",
 };
 
-export function Icon({ name, size = 18 }: { name: string; size?: number }) {
+export function Icon({ name, size = 18, stroke = 1.9 }: { name: string; size?: number; stroke?: number }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width={stroke} stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
       <path d={PATHS[name]} />
     </svg>
   );
@@ -77,7 +106,9 @@ export function Icon({ name, size = 18 }: { name: string; size?: number }) {
 // ------------------------------------------------------------------- helpers
 
 export const TOOL_LABEL: Record<ToolId, string> = { claude: "Claude Code", codex: "Codex", agy: "Antigravity", shell: "Shell" };
+export const TOOL_SHORT: Record<ToolId, string> = { claude: "Claude", codex: "Codex", agy: "agy", shell: "Shell" };
 export const AGENTS: ToolId[] = ["claude", "codex", "agy"];
+const TOOL_GLYPH: Record<ToolId, string> = { claude: "C", codex: "X", agy: "A", shell: "$" };
 
 export function ago(ts: number | null) {
   if (!ts) return "";
@@ -113,21 +144,23 @@ export function useTick(ms = 5000) {
   }, [ms]);
 }
 
-export function sessionState(s: Session): { label: string; cls: string } {
-  if (s.status === "exited") return { label: s.exit_code ? `exited ${s.exit_code}` : "exited", cls: "exited" };
+export type StateCls = "attn" | "working" | "turn" | "idle" | "exited";
+
+export function sessionState(s: Session): { label: string; cls: StateCls } {
+  if (s.status === "exited") return { label: s.exit_code ? `Exited ${s.exit_code}` : "Exited", cls: "exited" };
   const recent = !!s.activity_at && Date.now() - s.activity_at < 4000;
   const since = s.agent_state_at ?? 0;
-  if (s.agent_state === "needs-input") return { label: "needs you", cls: "attn" };
+  if (s.agent_state === "needs-input") return { label: "Needs you", cls: "attn" };
   // Claude's spinner keeps the screen moving while it works; silence means it was interrupted.
-  if (s.agent_state === "working") return s.activity_at && Date.now() - s.activity_at > 20000 ? { label: "your turn", cls: "turn" } : { label: "working", cls: "active" };
+  if (s.agent_state === "working")
+    return s.activity_at && Date.now() - s.activity_at > 20000 ? { label: "Your turn", cls: "turn" } : { label: "Working", cls: "working" };
   if (s.agent_state === "waiting") {
     // Codex/agy have no "started working" hook: fresh output after the last status means busy again.
-    if (recent && s.activity_at! > since + 3000) return { label: "active", cls: "active" };
-    return { label: "your turn", cls: "turn" };
+    if (recent && s.activity_at! > since + 3000) return { label: "Working", cls: "working" };
+    return { label: "Your turn", cls: "turn" };
   }
-  // Tools without hooks: output in the last few seconds.
-  if (recent) return { label: "active", cls: "active" };
-  return { label: "idle", cls: "idle" };
+  if (recent) return { label: "Active", cls: "working" };
+  return { label: "Idle", cls: "idle" };
 }
 
 /** Sessions that want you first, then most recent. */
@@ -136,36 +169,135 @@ export function sessionOrder(a: Session, b: Session) {
   return rank(a) - rank(b) || b.created_at - a.created_at;
 }
 
-export function ToolDot({ tool }: { tool: ToolId }) {
-  return <span class={`tooldot t-${tool}`} title={TOOL_LABEL[tool]} />;
+export function ToolBadge({ tool, size = 24 }: { tool: ToolId; size?: number }) {
+  return (
+    <span class={`toolbadge t-${tool}`} style={{ width: `${size}px`, height: `${size}px`, fontSize: `${Math.round(size * 0.46)}px` }} title={TOOL_LABEL[tool]} aria-label={TOOL_LABEL[tool]}>
+      {TOOL_GLYPH[tool]}
+    </span>
+  );
+}
+
+export function StatusPill({ s, compact: small }: { s: Session; compact?: boolean }) {
+  const st = sessionState(s);
+  return (
+    <span class={`pill ${st.cls} ${small ? "sm" : ""}`}>
+      <i />
+      {st.label}
+    </span>
+  );
 }
 
 export const shortPath = (p: string) => p.replace(/^\/home\/[^/]+/, "~");
 
-export const isTouch = () => matchMedia("(pointer: coarse)").matches;
+export function Empty(p: { icon: string; title: string; children?: ComponentChildren }) {
+  return (
+    <div class="empty-state">
+      <div class="empty-icon">
+        <Icon name={p.icon} size={20} />
+      </div>
+      <div class="empty-title">{p.title}</div>
+      {p.children && <div class="empty-body">{p.children}</div>}
+    </div>
+  );
+}
 
 // -------------------------------------------------------------------- sheet
 
-export function Sheet(p: { title: string; onClose: () => void; children: ComponentChildren; full?: boolean; actions?: ComponentChildren }) {
+/**
+ * Centered dialog on desktop, bottom sheet on phones. On phones it can be
+ * dragged down by its header to dismiss.
+ */
+export function Sheet(p: {
+  title: string;
+  onClose: () => void;
+  children: ComponentChildren;
+  full?: boolean;
+  size?: "sm" | "md" | "lg";
+  actions?: ComponentChildren;
+}) {
+  const panel = useRef<HTMLDivElement>(null);
+  const drag = useRef<{ y: number; dy: number } | null>(null);
   useEffect(() => {
     const k = (e: KeyboardEvent) => e.key === "Escape" && p.onClose();
     addEventListener("keydown", k);
     return () => removeEventListener("keydown", k);
   }, []);
+
+  const onTouchStart = (e: TouchEvent) => {
+    drag.current = { y: e.touches[0]!.clientY, dy: 0 };
+  };
+  const onTouchMove = (e: TouchEvent) => {
+    if (!drag.current || !panel.current) return;
+    const dy = Math.max(0, e.touches[0]!.clientY - drag.current.y);
+    drag.current.dy = dy;
+    panel.current.style.transition = "none";
+    panel.current.style.transform = `translateY(${dy}px)`;
+  };
+  const onTouchEnd = () => {
+    const el = panel.current;
+    if (!drag.current || !el) return;
+    const close = drag.current.dy > 90;
+    drag.current = null;
+    el.style.transition = "";
+    el.style.transform = close ? "translateY(100%)" : "";
+    if (close) setTimeout(p.onClose, 160);
+  };
+
   return (
     <div class="scrim" onClick={(e) => e.target === e.currentTarget && p.onClose()}>
-      <div class={`sheet ${p.full ? "full" : ""}`} role="dialog" aria-label={p.title}>
-        <header class="sheet-head">
+      <div ref={panel} class={`sheet ${p.full ? "full" : ""} ${p.size ?? "md"}`} role="dialog" aria-modal="true" aria-label={p.title}>
+        <header class="sheet-head" onTouchStart={onTouchStart} onTouchMove={onTouchMove} onTouchEnd={onTouchEnd}>
+          <span class="grabber" aria-hidden="true" />
           <h2>{p.title}</h2>
-          <div class="row">
+          <div class="row tight">
             {p.actions}
             <button class="icon-btn" onClick={p.onClose} aria-label="Close">
               <Icon name="x" />
             </button>
           </div>
         </header>
-        {p.children}
+        <div class="sheet-body">{p.children}</div>
       </div>
     </div>
+  );
+}
+
+/** In-app replacement for window.confirm / window.prompt. */
+export function DialogHost() {
+  const d = useStore((s) => s.dialog);
+  const [value, setValue] = useState("");
+  const input = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (d?.kind === "prompt") {
+      setValue(d.value);
+      setTimeout(() => input.current?.select(), 30);
+    }
+  }, [d]);
+  if (!d) return null;
+  const cancel = () => (d.kind === "confirm" ? d.resolve(false) : d.resolve(null));
+  const ok = () => (d.kind === "confirm" ? d.resolve(true) : value.trim() && d.resolve(value.trim()));
+  return (
+    <Sheet title={d.title} onClose={cancel} size="sm">
+      <form
+        class="form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          ok();
+        }}
+      >
+        {d.kind === "confirm" && d.body && <p class="dialog-body">{d.body}</p>}
+        {d.kind === "prompt" && (
+          <input ref={input} class="input" value={value} placeholder={d.placeholder} onInput={(e) => setValue((e.target as HTMLInputElement).value)} />
+        )}
+        <div class="dialog-actions">
+          <button type="button" class="btn" onClick={cancel}>
+            Cancel
+          </button>
+          <button type="submit" class={`btn ${d.kind === "confirm" && d.danger ? "danger" : "primary"}`} autoFocus={d.kind === "confirm"}>
+            {d.confirm}
+          </button>
+        </div>
+      </form>
+    </Sheet>
   );
 }

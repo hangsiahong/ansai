@@ -69,8 +69,11 @@ export type Account = {
   };
 };
 
+export type Device = { id: string; name: string; os: string; online: boolean; self: boolean; allowed: boolean; lastSeen: string | null };
+export type DeviceList = { configured: boolean; devices: Device[]; blocked: { id: string; name: string; at: number }[] };
+
 export type Tool = { id: ToolId; label: string; installed: boolean };
-export type Me = { user: string; tailscale: { dnsName: string | null; owner: string | null; url: string | null }; shell: string };
+export type Me = { user: string; device: string; tailscale: { dnsName: string | null; owner: string | null; url: string | null }; shell: string };
 
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(path, {
@@ -114,6 +117,10 @@ export const api = {
   pushUnsubscribe: (endpoint: string) => call<{ ok: true }>("POST", "/api/push/unsubscribe", { endpoint }),
   pushStatus: (endpoint: string) => call<{ prefs: Record<string, boolean> | null }>("POST", "/api/push/status", { endpoint }),
   pushTest: (endpoint: string) => call<{ ok: true }>("POST", "/api/push/test", { endpoint }),
+
+  allProjects: () => call<Project[]>("GET", "/api/projects?all"),
+  devices: () => call<DeviceList>("GET", "/api/devices"),
+  setDevices: (allowed: string[]) => call<DeviceList>("PUT", "/api/devices", { allowed }),
 
   sessions: () => call<Session[]>("GET", "/api/sessions"),
   session: (id: string) => call<Session>("GET", `/api/sessions/${id}`),

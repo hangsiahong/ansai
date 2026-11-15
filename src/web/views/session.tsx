@@ -1,26 +1,31 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { api, type Session } from "../api";
-import { openSheet, toast, toastError, useStore } from "../store";
+import { confirmDialog, openSheet, promptDialog, toast, toastError, useStore } from "../store";
 import { TerminalView, type TermHandle, type TermStatus } from "../Terminal";
-import { Icon, Link, TOOL_LABEL, ToolDot, goBack, isTouch, nav, sessionState, useTick } from "../ui";
+import { Icon, Link, StatusPill, TOOL_LABEL, ToolBadge, goBack, isTouch, nav, useTick } from "../ui";
 
-const KEYS: { label: string; seq?: string; act?: "ctrl" | "kbd" | "up" | "down"; title?: string }[] = [
+type Key = { label: string; seq?: string; act?: "ctrl" | "kbd" | "up" | "down" | "more"; title?: string; wide?: boolean };
+
+const MAIN: Key[] = [
   { label: "esc", seq: "\x1b" },
   { label: "tab", seq: "\t" },
   { label: "⇧tab", seq: "\x1b[Z", title: "Shift+Tab (Claude: cycle mode)" },
-  { label: "ctrl", act: "ctrl" },
-  { label: "^C", seq: "\x03" },
+  { label: "^C", seq: "\x03", title: "Interrupt" },
   { label: "↑", seq: "\x1b[A" },
   { label: "↓", seq: "\x1b[B" },
+  { label: "⏎", seq: "\r", title: "Enter" },
+  { label: "•••", act: "more", title: "More keys" },
+];
+const MORE: Key[] = [
+  { label: "ctrl", act: "ctrl", title: "Ctrl + next key" },
   { label: "←", seq: "\x1b[D" },
   { label: "→", seq: "\x1b[C" },
-  { label: "⏎", seq: "\r" },
   { label: "1", seq: "1" },
   { label: "2", seq: "2" },
   { label: "3", seq: "3" },
   { label: "/", seq: "/" },
-  { label: "⇞", act: "up", title: "Scroll up" },
-  { label: "⇟", act: "down", title: "Scroll down" },
+  { label: "⇞", act: "up", title: "Scroll back" },
+  { label: "⇟", act: "down", title: "Scroll forward" },
   { label: "⌨", act: "kbd", title: "Type directly in the terminal" },
 ];
 
@@ -36,10 +41,12 @@ export function SessionPane({ id }: { id: string }) {
   const [tstatus, setTstatus] = useState<TermStatus>("connecting");
   const [ctrl, setCtrl] = useState(false);
   const [kbd, setKbd] = useState(false);
+  const [more, setMore] = useState(false);
   const [compose, setCompose] = useState("");
-  const [showTools, setShowTools] = useState(isTouch());
+  const [showDock, setShowDock] = useState(isTouch());
   const [menu, setMenu] = useState(false);
   const touch = isTouch();
+  const ta = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     setMissing(false);
@@ -55,27 +62,27 @@ export function SessionPane({ id }: { id: string }) {
       <div class="pane center">
         <p class="muted">This session is gone.</p>
         <button class="btn" onClick={() => nav("/")}>
-          Back
+          Back to Now
         </button>
       </div>
     );
   }
   if (!s) return <div class="pane center muted">Loading…</div>;
 
-  const st = sessionState(s);
   const closed = s.status === "closed";
   const task = s.task_id ? tasks.find((t) => t.id === s.task_id) : null;
   const account = s.account_id ? accounts.find((a) => a.id === s.account_id) : null;
 
-  const key = (k: (typeof KEYS)[number]) => {
+  const key = (k: Key) => {
     const h = handle.current;
+    if (k.act === "more") return setMore(!more);
     if (!h) return;
     if (k.seq) h.send(k.seq);
     else if (k.act === "ctrl") {
       const on = !ctrl;
       setCtrl(on);
       h.armCtrl(on);
-      if (on && !kbd && touch) toast("Ctrl armed — type a letter in the terminal (⌨) or tap a key");
+      if (on && !kbd && touch) toast("Ctrl is armed — tap ⌨ and type a letter");
     } else if (k.act === "kbd") {
       const on = !kbd;
       setKbd(on);
@@ -88,6 +95,7 @@ export function SessionPane({ id }: { id: string }) {
   const sendCompose = async () => {
     const text = compose;
     setCompose("");
+    if (ta.current) ta.current.style.height = "";
     try {
       await api.send(id, text, true);
     } catch (e) {
@@ -99,14 +107,18 @@ export function SessionPane({ id }: { id: string }) {
   const act = async (what: "restart" | "close" | "rename") => {
     setMenu(false);
     try {
-      if (what === "restart") await api.restartSession(id);
+      if (what === "restart") {
+        await api.restartSession(id);
+        toast("Restarted");
+      }
       if (what === "close") {
-        if (!confirm(`Close "${s.title}"? This stops the agent.`)) return;
+        const ok = await confirmDialog({ title: `Close "${s.title}"?`, body: "The agent is stopped. Its history in this session is lost.", confirm: "Close session", danger: true });
+        if (!ok) return;
         await api.closeSession(id);
         nav("/", true);
       }
       if (what === "rename") {
-        const t = prompt("Session name", s.title);
+        const t = await promptDialog({ title: "Rename session", value: s.title });
         if (t) await api.renameSession(id, t);
       }
     } catch (e) {
@@ -114,115 +126,140 @@ export function SessionPane({ id }: { id: string }) {
     }
   };
 
+  const keyBtn = (k: Key) => (
+    <button
+      class={`key ${(k.act === "ctrl" && ctrl) || (k.act === "kbd" && kbd) || (k.act === "more" && more) ? "on" : ""}`}
+      title={k.title ?? k.label}
+      aria-label={k.title ?? k.label}
+      onPointerDown={(e) => e.preventDefault()}
+      onClick={() => key(k)}
+    >
+      {k.label}
+    </button>
+  );
+
   return (
     <div class="pane session">
-      <header class="topbar">
-        <button class="icon-btn mobile-only" onClick={() => goBack()} aria-label="Back">
+      <header class="topbar session-bar">
+        <button class="icon-btn" onClick={() => goBack()} aria-label="Back">
           <Icon name="back" />
         </button>
-        <ToolDot tool={s.tool} />
+        <ToolBadge tool={s.tool} size={26} />
         <div class="topbar-title">
-          <h1 onClick={() => act("rename")}>{s.title}</h1>
+          <h1>{s.title}</h1>
           <div class="sub">
             {s.project_id ? <Link href={`/p/${s.project_id}`}>{s.project_name}</Link> : "~"}
             {account && !account.is_default && <> · {account.name}</>}
-            {" · "}
-            <span class={`st ${st.cls}`}>{st.label}</span>
-            {tstatus !== "live" && !closed && <span class="st warn"> · {tstatus}</span>}
+            {tstatus !== "live" && !closed && <span class="warn-text"> · {tstatus}</span>}
           </div>
         </div>
+        <StatusPill s={s} />
         {task && (
-          <button class="btn small ghost task-chip" onClick={() => openSheet({ kind: "task", taskId: task.id })} title="Open the task">
-            <Icon name="list" size={14} /> Task
+          <button class="icon-btn" onClick={() => openSheet({ kind: "task", taskId: task.id })} title={`Task: ${task.title}`} aria-label="Open task">
+            <Icon name="list" />
           </button>
         )}
-        <button class="icon-btn" onClick={() => openSheet({ kind: "history", sessionId: id })} title="History (scrollback as text)" aria-label="History">
+        <button class="icon-btn" onClick={() => openSheet({ kind: "history", sessionId: id })} title="History as text" aria-label="History">
           <Icon name="history" />
         </button>
         {!touch && (
-          <button class={`icon-btn ${showTools ? "pinned" : ""}`} onClick={() => setShowTools(!showTools)} title="Compose box & keys" aria-label="Toggle compose">
-            <Icon name="type" />
+          <button class={`icon-btn ${showDock ? "on" : ""}`} onClick={() => setShowDock(!showDock)} title="Compose box and keys" aria-label="Compose box">
+            <Icon name="keyboard" />
           </button>
         )}
         <div class="menu-wrap">
-          <button class="icon-btn" onClick={() => setMenu(!menu)} aria-label="More">
+          <button class="icon-btn" onClick={() => setMenu(!menu)} aria-label="More" aria-expanded={menu}>
             <Icon name="more" />
           </button>
           {menu && (
-            <div class="menu" onMouseLeave={() => setMenu(false)}>
-              <button onClick={() => (handle.current?.bumpFont(1), setMenu(false))}>Bigger text</button>
-              <button onClick={() => (handle.current?.bumpFont(-1), setMenu(false))}>Smaller text</button>
-              <button onClick={() => act("rename")}>Rename</button>
-              <button onClick={() => act("restart")}>Restart agent</button>
-              <button class="danger" onClick={() => act("close")}>
-                Close session
-              </button>
-            </div>
+            <>
+              <div class="menu-scrim" onClick={() => setMenu(false)} />
+              <div class="menu">
+                <button onClick={() => act("rename")}>Rename</button>
+                <button onClick={() => act("restart")}>Restart {TOOL_LABEL[s.tool]}</button>
+                <div class="menu-row">
+                  <span>Text size</span>
+                  <button class="icon-btn sm" onClick={() => handle.current?.bumpFont(-1)} aria-label="Smaller text">
+                    −
+                  </button>
+                  <button class="icon-btn sm" onClick={() => handle.current?.bumpFont(1)} aria-label="Bigger text">
+                    +
+                  </button>
+                </div>
+                <hr />
+                <button class="danger" onClick={() => act("close")}>
+                  Close session
+                </button>
+              </div>
+            </>
           )}
         </div>
       </header>
 
       {s.status === "running" && s.agent_state === "needs-input" && (
         <div class="banner attn">
-          <span>
-            <b>Needs you:</b> {s.agent_message || "the agent is waiting for an answer"}
-          </span>
-          {[
-            ["1", "Yes"],
-            ["2", "Always"],
-            ["3", "No"],
-          ].map(([k, label]) => (
-            <button class="btn small" onClick={() => handle.current?.send(k!)} title={`Press ${k}`}>
-              {k} · {label}
-            </button>
-          ))}
+          <Icon name="bell" size={16} />
+          <span class="banner-text">{s.agent_message || "The agent is waiting for an answer"}</span>
+          <div class="banner-actions">
+            {[
+              ["1", "Yes"],
+              ["2", "Always"],
+              ["3", "No"],
+            ].map(([k, label]) => (
+              <button class="btn sm" onClick={() => handle.current?.send(k!)} title={`Press ${k}`}>
+                {label}
+              </button>
+            ))}
+          </div>
         </div>
       )}
 
       {s.status === "exited" && (
         <div class="banner">
-          <span>
+          <span class="banner-text">
             {TOOL_LABEL[s.tool]} exited{s.exit_code ? ` with code ${s.exit_code}` : ""}.
           </span>
-          <button class="btn small" onClick={() => act("restart")}>
-            Restart
-          </button>
-          <button class="btn small ghost" onClick={() => act("close")}>
-            Close
-          </button>
+          <div class="banner-actions">
+            <button class="btn sm primary" onClick={() => act("restart")}>
+              Restart
+            </button>
+            <button class="btn sm" onClick={() => act("close")}>
+              Close
+            </button>
+          </div>
         </div>
       )}
 
       {closed ? (
         <div class="pane center muted">Session closed.</div>
       ) : (
-        <TerminalView sessionId={id} handle={handle} onStatus={setTstatus} onCtrlUsed={() => setCtrl(false)} />
+        <div class="term-wrap">
+          <TerminalView sessionId={id} handle={handle} onStatus={setTstatus} onCtrlUsed={() => setCtrl(false)} />
+        </div>
       )}
 
-      {showTools && !closed && (
+      {showDock && !closed && (
         <div class="dock">
           <div class="keys" role="toolbar" aria-label="Terminal keys">
-            {KEYS.map((k) => (
-              <button
-                class={`key ${(k.act === "ctrl" && ctrl) || (k.act === "kbd" && kbd) ? "on" : ""}`}
-                title={k.title ?? k.label}
-                onPointerDown={(e) => e.preventDefault()}
-                onClick={() => key(k)}
-              >
-                {k.label}
-              </button>
-            ))}
+            {MAIN.map(keyBtn)}
           </div>
+          {more && (
+            <div class="keys more" role="toolbar" aria-label="More keys">
+              {MORE.map(keyBtn)}
+            </div>
+          )}
           <div class="compose">
             <textarea
+              ref={ta}
               rows={1}
-              placeholder={s.tool === "shell" ? "Command…" : "Message the agent…"}
+              placeholder={s.tool === "shell" ? "Run a command" : `Message ${TOOL_LABEL[s.tool]}`}
               value={compose}
+              enterkeyhint="send"
               onInput={(e) => {
                 const t = e.target as HTMLTextAreaElement;
                 setCompose(t.value);
                 t.style.height = "auto";
-                t.style.height = Math.min(t.scrollHeight, 140) + "px";
+                t.style.height = Math.min(t.scrollHeight, 160) + "px";
               }}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey && !touch) {
@@ -231,8 +268,8 @@ export function SessionPane({ id }: { id: string }) {
                 }
               }}
             />
-            <button class="btn primary send" onClick={sendCompose} aria-label="Send">
-              <Icon name="send" size={17} />
+            <button class={`send ${compose.trim() ? "ready" : ""}`} onClick={sendCompose} aria-label={compose.trim() ? "Send" : "Press Enter"} title={compose.trim() ? "Send" : "Press Enter"}>
+              <Icon name="send" size={18} stroke={2.4} />
             </button>
           </div>
         </div>

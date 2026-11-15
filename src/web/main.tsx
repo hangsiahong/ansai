@@ -1,19 +1,41 @@
 import { render } from "preact";
 import { useEffect } from "preact/hooks";
 import "./styles.css";
-import { boot, useStore } from "./store";
-import { nav, useRoute } from "./ui";
+import { boot, openPalette, useStore } from "./store";
+import { DialogHost, Icon, nav, useIsPhone, useRoute } from "./ui";
 import { Sheets } from "./sheets";
-import { Home } from "./views/home";
-import { Overview } from "./views/overview";
+import { Palette } from "./palette";
+import { Sidebar, TabBar } from "./views/nav";
+import { NowPane } from "./views/now";
 import { ProjectPane } from "./views/project";
+import { ProjectsPane } from "./views/projects";
 import { SessionPane } from "./views/session";
 import { BacklogPane } from "./views/backlog";
 import { AccountsPane } from "./accounts";
 
+function Blocked({ reason }: { reason: string }) {
+  return (
+    <div class="blocked">
+      <div class="blocked-card">
+        <div class="empty-icon big">
+          <Icon name="lock" size={24} />
+        </div>
+        <h1>This device isn't allowed</h1>
+        <p>{reason}</p>
+        <p class="muted small">On the laptop, open ansai → Settings → Devices and switch this device on.</p>
+        <button class="btn" onClick={() => location.reload()}>
+          Try again
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const route = useRoute();
+  const phone = useIsPhone();
   const toastS = useStore((s) => s.toast);
+  const blocked = useStore((s) => s.blocked);
   const waiting = useStore((s) => s.sessions.filter((x) => x.status === "running" && x.agent_state === "needs-input").length);
 
   useEffect(() => {
@@ -28,6 +50,19 @@ function App() {
     return () => navigator.serviceWorker.removeEventListener("message", f);
   }, []);
 
+  // ⌘K / Ctrl+K anywhere (the terminal gets every other key).
+  useEffect(() => {
+    const k = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        e.stopPropagation();
+        openPalette();
+      }
+    };
+    addEventListener("keydown", k, true);
+    return () => removeEventListener("keydown", k, true);
+  }, []);
+
   // Keep layout above the on-screen keyboard (iOS doesn't resize the layout viewport).
   useEffect(() => {
     const vv = window.visualViewport;
@@ -38,20 +73,27 @@ function App() {
     return () => vv.removeEventListener("resize", f);
   }, []);
 
+  if (blocked) return <Blocked reason={blocked} />;
+
   let main;
   if (route.startsWith("/s/")) main = <SessionPane id={route.slice(3)} />;
   else if (route.startsWith("/p/")) main = <ProjectPane id={route.slice(3)} />;
+  else if (route === "/projects") main = <ProjectsPane />;
   else if (route === "/backlog") main = <BacklogPane />;
   else if (route === "/accounts") main = <AccountsPane />;
-  else main = <Overview />;
+  else main = <NowPane />;
 
+  const inSession = route.startsWith("/s/");
   return (
-    <div class={`app ${route === "/" ? "at-home" : "at-detail"}`}>
-      <aside class="side">
-        <Home route={route} />
-      </aside>
-      <main class="main">{main}</main>
+    <div class={`app ${inSession ? "in-session" : ""}`}>
+      {!phone && <Sidebar route={route} />}
+      <main class="main" key={route}>
+        {main}
+      </main>
+      {phone && !inSession && <TabBar route={route} />}
       <Sheets />
+      <Palette />
+      <DialogHost />
       {toastS && (
         <div class={`toast ${toastS.kind}`} role="status">
           {toastS.msg}

@@ -1,7 +1,7 @@
 import { useMemo, useRef, useState } from "preact/hooks";
 import { api, STATUS_LABEL, TASK_STATUSES, type Task, type TaskStatus } from "../api";
 import { openSheet, patchTaskLocal, toastError } from "../store";
-import { Icon, Link, ToolDot } from "../ui";
+import { Icon, Link, ToolBadge } from "../ui";
 
 const byPos = (a: Task, b: Task) => a.position - b.position;
 
@@ -29,15 +29,15 @@ export function QuickAdd(p: { projectId: string | null; placeholder?: string; st
         add();
       }}
     >
-      <Icon name="plus" size={16} />
+      <Icon name="plus" size={17} />
       <input
         value={title}
         placeholder={p.placeholder ?? "Add a task…"}
-        enterKeyHint="done"
+        enterkeyhint="done"
         onInput={(e) => setTitle((e.target as HTMLInputElement).value)}
       />
       {title.trim() && (
-        <button class="btn small primary" type="submit" disabled={busy}>
+        <button class="btn sm primary" type="submit" disabled={busy}>
           Add
         </button>
       )}
@@ -65,18 +65,21 @@ function StatusDot({ task }: { task: Task }) {
 
 function Prio({ p }: { p: number }) {
   if (!p) return null;
-  return <span class={`prio p${p}`} title={["", "Low", "Medium", "High"][p] + " priority"}>{"!".repeat(p)}</span>;
+  return (
+    <span class={`prio p${p}`} title={["", "Low", "Medium", "High"][p] + " priority"}>
+      {"!".repeat(p)}
+    </span>
+  );
 }
 
 function TaskMeta({ task, showProject }: { task: Task; showProject?: boolean }) {
   const live = task.sessions.filter((s) => s.status === "running");
   return (
     <div class="tmeta">
-      <Prio p={task.priority} />
       {showProject && <span class="tproj">{task.project_name ?? "Inbox"}</span>}
       {live.map((s) => (
         <Link href={`/s/${s.id}`} class="tsess" title="Open the agent session">
-          <ToolDot tool={s.tool} /> live
+          <ToolBadge tool={s.tool} size={16} /> running
         </Link>
       ))}
       {task.body.trim() && <span class="tnote" title="Has details">≡</span>}
@@ -90,7 +93,10 @@ export function TaskRow({ task, showProject }: { task: Task; showProject?: boole
       onKeyDown={(e) => e.key === "Enter" && openSheet({ kind: "task", taskId: task.id })}>
       <StatusDot task={task} />
       <div class="trow-main">
-        <div class="trow-title">{task.title}</div>
+        <div class="trow-title">
+          <Prio p={task.priority} />
+          {task.title}
+        </div>
         <TaskMeta task={task} showProject={showProject} />
       </div>
     </div>
@@ -211,7 +217,10 @@ export function Board(p: { tasks: Task[]; showProject?: boolean; addProjectId: s
                 }}
                 onClick={() => openSheet({ kind: "task", taskId: t.id })}
               >
-                <div class="card-title">{t.title}</div>
+                <div class="card-title">
+                  <Prio p={t.priority} />
+                  {t.title}
+                </div>
                 <TaskMeta task={t} showProject={p.showProject} />
               </div>
             ))}

@@ -1,7 +1,7 @@
 import { useState } from "preact/hooks";
 import { api, type Account, type ToolId, type UsageLimit } from "./api";
-import { openSheet, setState, toast, toastError, useStore } from "./store";
-import { AGENTS, Icon, TOOL_LABEL, ToolDot, ago, compact, goBack, nav, until, useTick } from "./ui";
+import { confirmDialog, openSheet, promptDialog, setState, toast, toastError, useStore } from "./store";
+import { AGENTS, Icon, TOOL_LABEL, ToolBadge, ago, compact, goBack, nav, until, useTick } from "./ui";
 
 const level = (pct: number) => (pct >= 90 ? "hot" : pct >= 70 ? "warm" : "ok");
 
@@ -59,11 +59,17 @@ function AccountCard({ a }: { a: Account }) {
         toast(`${a.name} is now used for new ${TOOL_LABEL[a.tool]} sessions`);
       }
       if (what === "rename") {
-        const name = prompt("Account name", a.name);
+        const name = await promptDialog({ title: "Rename account", value: a.name });
         if (name) await api.updateAccount(a.id, { name });
       }
       if (what === "delete") {
-        if (!confirm(`Remove "${a.name}"? Its login and history on this laptop are deleted.`)) return;
+        const ok = await confirmDialog({
+          title: `Remove ${a.name}?`,
+          body: "Its login and history on this laptop are deleted. Your other accounts aren't affected.",
+          confirm: "Remove account",
+          danger: true,
+        });
+        if (!ok) return;
         await api.deleteAccount(a.id);
       }
     } catch (e) {
@@ -78,7 +84,6 @@ function AccountCard({ a }: { a: Account }) {
           <div class="acct-name">
             {a.name}
             {a.is_default ? <span class="tag pref" title="Used for new sessions">preferred</span> : null}
-            {!a.dir && <span class="tag">this laptop</span>}
           </div>
           <div class="acct-sub">
             {a.email ?? (a.logged_in ? "signed in" : "not signed in")}
@@ -91,7 +96,9 @@ function AccountCard({ a }: { a: Account }) {
             <Icon name="more" />
           </button>
           {menu && (
-            <div class="menu" onMouseLeave={() => setMenu(false)}>
+            <>
+            <div class="menu-scrim" onClick={() => setMenu(false)} />
+            <div class="menu">
               {!a.is_default && <button onClick={() => act("prefer")}>Use for new sessions</button>}
               <button onClick={() => (setMenu(false), signIn())}>{a.logged_in ? "Sign in again" : "Sign in"}</button>
               {a.dir && <button onClick={() => act("rename")}>Rename</button>}
@@ -101,6 +108,7 @@ function AccountCard({ a }: { a: Account }) {
                 </button>
               )}
             </div>
+            </>
           )}
         </div>
       </header>
@@ -140,16 +148,16 @@ function AccountCard({ a }: { a: Account }) {
 
       <div class="acct-actions">
         {a.logged_in ? (
-          <button class="btn small" onClick={startSession}>
+          <button class="btn sm" onClick={startSession}>
             <Icon name="play" size={14} /> Start session
           </button>
         ) : (
-          <button class="btn small primary" onClick={signIn}>
+          <button class="btn sm primary" onClick={signIn}>
             Sign in
           </button>
         )}
         {!a.is_default && a.logged_in && (
-          <button class="btn small ghost" onClick={() => act("prefer")}>
+          <button class="btn sm ghost" onClick={() => act("prefer")}>
             Use by default
           </button>
         )}
@@ -177,7 +185,7 @@ function AddAccount({ tool }: { tool: ToolId }) {
   };
   if (!open)
     return (
-      <button class="btn small ghost" onClick={() => setOpen(true)}>
+      <button class="btn sm ghost" onClick={() => setOpen(true)}>
         <Icon name="plus" size={14} /> Add account
       </button>
     );
@@ -190,10 +198,10 @@ function AddAccount({ tool }: { tool: ToolId }) {
       }}
     >
       <input autoFocus placeholder="Name, e.g. Work or Personal 2" value={name} onInput={(e) => setName((e.target as HTMLInputElement).value)} />
-      <button class="btn small primary" disabled={busy || !name.trim()}>
+      <button class="btn sm primary" disabled={busy || !name.trim()}>
         {busy ? "Creating…" : "Create & sign in"}
       </button>
-      <button type="button" class="btn small ghost" onClick={() => setOpen(false)}>
+      <button type="button" class="btn sm ghost" onClick={() => setOpen(false)}>
         Cancel
       </button>
     </form>
@@ -219,26 +227,26 @@ export function AccountsPane() {
   return (
     <div class="pane">
       <header class="topbar">
-        <button class="icon-btn mobile-only" onClick={() => goBack()} aria-label="Back">
+        <button class="icon-btn phone-only" onClick={() => goBack()} aria-label="Back">
           <Icon name="back" />
         </button>
         <div class="topbar-title">
           <h1>Accounts &amp; usage</h1>
-          <div class="sub">Each account has its own login folder; pick one when you start a session.</div>
+          <div class="sub">Logins, plans and limits</div>
         </div>
         <button class="icon-btn" onClick={refresh} disabled={busy} title="Rescan usage now" aria-label="Rescan usage">
           <Icon name="refresh" />
         </button>
       </header>
-      <div class="scroll">
+      <div class="scroll wide">
         {AGENTS.filter((t) => tools.find((x) => x.id === t)?.installed !== false).map((tool) => {
           const list = accounts.filter((a) => a.tool === tool);
           return (
-            <section class="block acct-section">
+            <section class="sec acct-section">
               <div class="acct-section-head">
-                <h3>
-                  <ToolDot tool={tool} /> {TOOL_LABEL[tool]}
-                </h3>
+                <h2 class="sec-title with-badge">
+                  <ToolBadge tool={tool} size={22} /> {TOOL_LABEL[tool]}
+                </h2>
                 <AddAccount tool={tool} />
               </div>
               <div class="acct-grid">

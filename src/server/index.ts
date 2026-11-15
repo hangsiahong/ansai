@@ -121,6 +121,7 @@ const server = Bun.serve<WSData>({
     "/": index,
     "/p/*": index,
     "/backlog": index,
+    "/projects": index,
     "/accounts": index,
     "/s/*": index,
     "/sw.js": asset(swPath, "text/javascript", "no-cache"),
