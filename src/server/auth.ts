@@ -27,13 +27,22 @@ export type Device = {
 type TsInfo = { dnsName: string | null; owner: string | null; devices: Device[]; at: number };
 let ts: TsInfo = { dnsName: null, owner: null, devices: [], at: 0 };
 
+/** `tailscale status --json`, parsed. Tests swap in a fake tailnet with setTailscaleSource. */
+let readStatus = async (): Promise<any> => {
+  const p = Bun.spawn(["tailscale", "status", "--json"], { stdout: "pipe", stderr: "ignore" });
+  const out = await new Response(p.stdout).text();
+  await p.exited;
+  return JSON.parse(out);
+};
+export function setTailscaleSource(fn: () => Promise<any>) {
+  readStatus = fn;
+  ts = { dnsName: null, owner: null, devices: [], at: 0 };
+}
+
 async function tailscaleInfo(force = false): Promise<TsInfo> {
   if (!force && Date.now() - ts.at < 30_000) return ts;
   try {
-    const p = Bun.spawn(["tailscale", "status", "--json"], { stdout: "pipe", stderr: "ignore" });
-    const out = await new Response(p.stdout).text();
-    await p.exited;
-    const j = JSON.parse(out);
+    const j = await readStatus();
     const self = j.Self ?? {};
     const user = j.User?.[String(self.UserID)] ?? {};
     const toDevice = (n: any, isSelf: boolean): Device => ({
