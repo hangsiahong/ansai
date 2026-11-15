@@ -73,9 +73,9 @@ function AutopilotCard({ project, openTodo }: { project: Project; openTodo: stri
   const ap: Autopilot = project.autopilot ?? { on: false, tool: "claude", accountId: null, yolo: false };
   const set = (patch: Partial<Autopilot>) => api.setAutopilot(project.id, patch).catch(toastError);
   // Signed out, agy can't take tasks: autopilot holds them in the queue (server), and says so here.
-  const agyAccount = useStore((st) =>
-    ap.tool !== "agy" ? null : (st.accounts.find((a) => a.id === ap.accountId) ?? st.accounts.find((a) => a.tool === "agy" && a.is_default) ?? null),
-  );
+  // (useStore keeps its first selector, so the selector mustn't read props.)
+  const accounts = useStore((st) => st.accounts);
+  const agyAccount = ap.tool !== "agy" ? null : (accounts.find((a) => a.id === ap.accountId) ?? accounts.find((a) => a.tool === "agy" && a.is_default) ?? null);
   const queueAll = async () => {
     try {
       await Promise.all(openTodo.map((tid) => api.updateTask(tid, { queued: true })));

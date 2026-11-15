@@ -135,6 +135,20 @@ export function NowPane() {
 
       <div class="now-body">
         <div class="now-main">
+          {!sessions.length && !projects.length && (
+            <section class="welcome-card">
+              <span class="welcome-mark"><Icon name="terminal" size={19} /></span>
+              <div class="welcome-copy">
+                <h2>Your workspace is ready</h2>
+                <p>Start an agent for a quick task, or add a project to keep related sessions and work together.</p>
+              </div>
+              <div class="welcome-actions">
+                <button class="btn primary" onClick={() => openSheet({ kind: "new", tool: "claude" })}>Start an agent</button>
+                <button class="btn" onClick={() => openSheet({ kind: "add-project" })}>Add a project</button>
+              </div>
+            </section>
+          )}
+
           {attn.length > 0 && (
             <section class="sec">
               <h2 class="sec-title attn">Needs you</h2>

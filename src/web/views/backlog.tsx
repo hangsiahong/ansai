@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "preact/hooks";
-import { useStore } from "../store";
+import { openSheet, useStore } from "../store";
 import { Icon, goBack } from "../ui";
 import { Board, QuickAdd, TaskList } from "./tasks";
 
@@ -95,7 +95,19 @@ export function BacklogPane() {
       ) : (
         <div class="scroll narrow">
           <QuickAdd projectId={addTo} placeholder={`Add to ${addLabel}…`} autopilot={!!projects.find((x) => x.id === addTo)?.autopilot?.on} />
-          <TaskList tasks={shown} showProject={filter === "all"} emptyText="No open tasks here." />
+          {!tasks.length && !projects.length && (
+            <div class="first-run backlog-first-run">
+              <span class="welcome-mark"><Icon name="list" size={19} /></span>
+              <div class="welcome-copy">
+                <h2>Nothing on the list yet</h2>
+                <p>Capture a task above, or add a project to give your work a home.</p>
+              </div>
+              <div class="welcome-actions">
+                <button class="btn" onClick={() => openSheet({ kind: "add-project" })}>Add a project</button>
+              </div>
+            </div>
+          )}
+          {tasks.length || projects.length ? <TaskList tasks={shown} showProject={filter === "all"} emptyText="No open tasks here." /> : null}
         </div>
       )}
     </div>
