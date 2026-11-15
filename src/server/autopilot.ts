@@ -4,6 +4,7 @@ import { notFound } from "./errors";
 import { getProject } from "./projects";
 import { AGENT_TOOLS } from "./accounts";
 import { getTask, projectAutopilot, runTask as startTask, type Autopilot, type Task } from "./tasks";
+import { scheduleTick, updateOccurrence } from "./schedules";
 
 /** How autopilot starts a task (tests swap in a fake that doesn't launch agents). */
 let runTask = startTask;
@@ -73,19 +74,46 @@ export async function autopilotTick() {
     if (running >= autopilotMax) return;
 
     const queued = db
-      .query(`SELECT * FROM tasks WHERE queued = 1 AND status = 'todo' AND project_id IS NOT NULL ORDER BY priority DESC, created_at ASC`)
+      .query(`SELECT t.*, so.tool AS schedule_tool, so.account_id AS schedule_account, so.model AS schedule_model, so.effort AS schedule_effort
+        FROM tasks t LEFT JOIN schedule_occurrences so ON so.task_id=t.id
+        WHERE t.queued = 1 AND t.status = 'todo' AND t.project_id IS NOT NULL ORDER BY t.priority DESC, t.created_at ASC`)
       .all() as Task[];
     for (const t of queued) {
       if (running >= autopilotMax) break;
       if (busySharedProjects.has(t.project_id)) continue;
       const ap = projectAutopilot(t.project_id) ?? { on: false, tool: "claude", accountId: null, yolo: false };
+      const scheduled = t as Task & { schedule_tool?: string | null; schedule_account?: string | null; schedule_model?: string | null; schedule_effort?: string | null };
+      if (scheduled.schedule_tool && !ap.on) {
+        db.query("UPDATE tasks SET queued=0 WHERE id=?").run(t.id);
+        updateOccurrence(t.id, "needs_attention", "Project autopilot was turned off before this scheduled task could start.");
+        emit("tasks");
+        continue;
+      }
       try {
-        await runTask(t.id, { tool: ap.tool, yolo: ap.yolo, accountId: ap.accountId, model: ap.model, effort: ap.effort, auto: true });
+        await runTask(t.id, {
+          tool: (scheduled.schedule_tool as Autopilot["tool"] | null) ?? ap.tool,
+          yolo: ap.yolo,
+          accountId: scheduled.schedule_tool ? scheduled.schedule_account : ap.accountId,
+          model: scheduled.schedule_tool ? scheduled.schedule_model : ap.model,
+          effort: scheduled.schedule_tool ? scheduled.schedule_effort : ap.effort,
+          auto: true,
+        });
+        updateOccurrence(t.id, "running", null);
         running++;
         if (!getTask(t.id)?.worktree_path) busySharedProjects.add(t.project_id);
       } catch (e) {
+        if (db.query("SELECT 1 FROM sessions WHERE task_id=? AND status='running'").get(t.id)) {
+          // Recover the narrow restart window after createSession committed but before runTask moved the task to Doing.
+          db.query("UPDATE tasks SET status='doing',queued=0 WHERE id=?").run(t.id);
+          updateOccurrence(t.id, "running", null);
+          running++;
+          if (!getTask(t.id)?.worktree_path) busySharedProjects.add(t.project_id);
+          emit("tasks");
+          continue;
+        }
         console.error(`[ansai] autopilot couldn't start "${t.title}":`, e instanceof Error ? e.message : e);
         db.query("UPDATE tasks SET queued = 0 WHERE id = ?").run(t.id); // don't retry forever
+        updateOccurrence(t.id, "needs_attention", e instanceof Error ? e.message : String(e));
         emit("tasks");
       }
     }
@@ -95,6 +123,9 @@ export async function autopilotTick() {
 }
 
 export function startAutopilot(ms = 4000) {
-  const tick = () => autopilotTick().catch((e) => console.error("[ansai] autopilot:", e)).finally(() => setTimeout(tick, ms));
+  const tick = () => {
+    try { scheduleTick(); } catch (e) { console.error("[ansai] schedules:", e); }
+    autopilotTick().catch((e) => console.error("[ansai] autopilot:", e)).finally(() => setTimeout(tick, ms));
+  };
   setTimeout(tick, 3000);
 }

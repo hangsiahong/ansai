@@ -247,6 +247,7 @@ export async function runTask(
       taskId: task.id,
       auto: o.auto,
     });
+    db.query("UPDATE schedule_occurrences SET status = 'running', outcome = NULL WHERE task_id = ?").run(task.id);
     // A run you start yourself resets autopilot's retry count.
     db.query("UPDATE tasks SET queued = 0, summary = NULL, plan = NULL, attempts = CASE WHEN ? THEN attempts ELSE 0 END WHERE id = ?").run(o.auto ? 1 : 0, id);
     if (task.status === "todo" || task.status === "done") updateTask(id, { status: "doing" });
@@ -263,6 +264,7 @@ export function finishTask(id: string, summary: string) {
   if (!task) throw notFound("no such task");
   // A finished task starts its retry count over.
   db.query("UPDATE tasks SET summary = ?, attempts = 0, last_failure = NULL, updated_at = ? WHERE id = ?").run(summary.slice(0, 4000), now(), id);
+  db.query("UPDATE schedule_occurrences SET status = 'completed', outcome = ? WHERE task_id = ?").run(summary.slice(0, 1000), id);
   if (task.status !== "done") updateTask(id, { status: "review" });
   else emit("tasks");
 }
