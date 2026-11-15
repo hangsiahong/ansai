@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, realpathSync } from "node:fs";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, symlinkSync } from "node:fs";
+import { dirname } from "node:path";
 import { join, relative, resolve } from "node:path";
 import { config, cleanEnv } from "./config";
 import { db } from "./db";
@@ -6,7 +7,7 @@ import { emit } from "./events";
 import { conflict } from "./errors";
 
 type WorktreeTask = { id: string; title: string; worktree_path: string | null; worktree_branch: string | null };
-type Worktree = { path: string; branch: string; cwd: string };
+type Worktree = { path: string; branch: string; cwd: string; /** What a fresh worktree was given, for the agent's first prompt. */ notes: string[] };
 
 const pending = new Map<string, Promise<Worktree | null>>();
 
@@ -37,6 +38,7 @@ async function ensure(task: WorktreeTask, projectPath: string): Promise<Worktree
 
   let path = task.worktree_path;
   let branch = task.worktree_branch;
+  let notes: string[] = [];
   if (path && branch && !existsSync(path)) {
     // The folder was removed (git worktree remove, rm -rf). Check the task's branch out
     // again so committed work carries on, or start over if the branch is gone too.
@@ -63,9 +65,84 @@ async function ensure(task: WorktreeTask, projectPath: string): Promise<Worktree
 
     db.query("UPDATE tasks SET worktree_path = ?, worktree_branch = ? WHERE id = ?").run(path, branch, task.id);
     emit("tasks");
+    notes = await provision(repoRoot, path);
   }
 
-  return { path, branch, cwd: projectSubdir ? join(path, projectSubdir) : path };
+  return { path, branch, cwd: projectSubdir ? join(path, projectSubdir) : path, notes };
+}
+
+const ENV_FILE = /(^|\/)(\.env(\.[\w.-]+)?|\.dev\.vars)$/;
+const MAX_ENV_FILES = 40;
+const MAX_LINKS = 20;
+
+/**
+ * A `node_modules/` rule (trailing slash) ignores folders only, not a symlink with
+ * that name, which would then show up as a new file (and get committed on merge).
+ * Exclude such links in the repo's info/exclude; the anchored rule matches what the
+ * main checkout already ignores, so nothing changes there.
+ */
+async function keepIgnored(path: string, rels: string[]) {
+  const visible = [];
+  for (const rel of rels) if ((await git(["-C", path, "check-ignore", "-q", "--no-index", rel])).code !== 0) visible.push(rel);
+  if (!visible.length) return;
+  const common = await git(["-C", path, "rev-parse", "--path-format=absolute", "--git-common-dir"]);
+  if (common.code !== 0) return;
+  const file = join(common.stdout, "info", "exclude");
+  try {
+    mkdirSync(dirname(file), { recursive: true });
+    const have = existsSync(file) ? readFileSync(file, "utf8") : "";
+    const add = visible.map((r) => `/${r}`).filter((l) => !have.split("\n").includes(l));
+    if (add.length) appendFileSync(file, `${have && !have.endsWith("\n") ? "\n" : ""}# ansai: task worktrees link these\n${add.join("\n")}\n`);
+  } catch {}
+}
+
+/**
+ * A new worktree only has committed files. Give it what the project folder has
+ * that Git ignores but the code needs to run: local env files are copied, and
+ * installed dependencies (node_modules) are linked rather than reinstalled.
+ * Returns notes for the agent (what was set up, and uncommitted work it lacks).
+ */
+async function provision(repoRoot: string, path: string): Promise<string[]> {
+  const notes: string[] = [];
+  // --directory lists an ignored folder once ("node_modules/") instead of every file inside it.
+  const ls = await git(["-C", repoRoot, "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"]);
+  if (ls.code === 0) {
+    const entries = ls.stdout.split("\0").filter(Boolean);
+    const envs = entries.filter((e) => !e.endsWith("/") && ENV_FILE.test(e)).slice(0, MAX_ENV_FILES);
+    const mods = entries.filter((e) => e.endsWith("/") && /(^|\/)node_modules\/$/.test(e)).slice(0, MAX_LINKS);
+    const copied: string[] = [];
+    for (const e of envs) {
+      try {
+        mkdirSync(dirname(join(path, e)), { recursive: true });
+        copyFileSync(join(repoRoot, e), join(path, e));
+        copied.push(e);
+      } catch {}
+    }
+    const linked: string[] = [];
+    for (const e of mods) {
+      const rel = e.slice(0, -1);
+      const target = join(path, rel);
+      if (existsSync(target)) continue;
+      try {
+        mkdirSync(dirname(target), { recursive: true });
+        symlinkSync(join(repoRoot, rel), target, "dir");
+        linked.push(rel);
+      } catch {}
+    }
+    await keepIgnored(path, linked);
+    if (copied.length) notes.push(`Copied from the project folder (Git ignores them): ${copied.join(", ")}.`);
+    if (linked.length)
+      notes.push(
+        `${linked.join(", ")} ${linked.length === 1 ? "is a link" : "are links"} to the project folder's installed dependencies, so you can build and test right away. They are shared: don't reinstall or upgrade packages there unless the task needs it.`,
+      );
+  }
+  const dirty = await git(["-C", repoRoot, "status", "--porcelain", "--untracked-files=normal"]);
+  const n = dirty.code === 0 && dirty.stdout ? dirty.stdout.split("\n").length : 0;
+  if (n)
+    notes.push(
+      `The project folder had ${n} uncommitted change${n === 1 ? "" : "s"} when this worktree was made; ${n === 1 ? "it isn't" : "they aren't"} in your worktree, which starts from the last commit.`,
+    );
+  return notes;
 }
 
 /** Create or reuse the task's dedicated Git worktree. Non-Git projects return null. */
