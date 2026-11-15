@@ -42,7 +42,7 @@ export function PlaybookCard({ projectId }: { projectId: string }) {
     <section class="sec">
       <h2 class="sec-title">Playbook</h2>
       <div class="panel autopilot">
-        <button class="switch-row" style={{ width: "100%", textAlign: "left", background: "none", border: 0 }} onClick={() => setOpen(!open)}>
+        <button class="switch-row playbook-toggle" onClick={() => setOpen(!open)}>
           <span>
             <b>{saved ? `Playbook · ${saved.split("\n").filter(Boolean).length} lines` : "Playbook · Not set"}</b>
             <em>{saved ? "Instructions every agent here follows" : "Tap to add instructions for every agent"}</em>
