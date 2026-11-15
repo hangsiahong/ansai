@@ -7,7 +7,7 @@ import icon192Path from "../web/public/icon-192.png" with { type: "file" };
 import icon512Path from "../web/public/icon-512.png" with { type: "file" };
 
 import { config, cleanEnv } from "./config";
-import { authorize, tailscaleStatus } from "./auth";
+import { authorize, deviceList, setAllowedDevices, tailscaleStatus } from "./auth";
 import { addProject, getProject, listProjects, scanProjects, updateProject } from "./projects";
 import {
   captureHistory,
@@ -53,15 +53,20 @@ const json = (data: unknown, status = 200) =>
   new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
 const fail = (status: number, error: string) => json({ error }, status);
 
-type Handler = (req: Request & { params: Record<string, string> }, server: Server<WSData>, user: string) => Response | Promise<Response | undefined> | undefined;
+type Handler = (
+  req: Request & { params: Record<string, string> },
+  server: Server<WSData>,
+  user: string,
+  device: string,
+) => Response | Promise<Response | undefined> | undefined;
 
 /** Every API/WS route goes through this: auth first, errors become JSON. */
 function guard(h: Handler) {
   return async (req: Request & { params: Record<string, string> }, server: Server<WSData>) => {
     const a = await authorize(req);
-    if (!a.ok) return fail(a.status, a.reason);
+    if (!a.ok) return json({ error: a.reason, code: a.code ?? "auth" }, a.status);
     try {
-      return await h(req, server, a.user);
+      return await h(req, server, a.user, a.device);
     } catch (e) {
       return fail(400, e instanceof Error ? e.message : String(e));
     }
@@ -124,7 +129,21 @@ const server = Bun.serve<WSData>({
     "/icon-192.png": asset(icon192Path, "image/png"),
     "/icon-512.png": asset(icon512Path, "image/png"),
 
-    "/api/me": guard(async (_r, _s, user) => json({ user, tailscale: await tailscaleStatus(), shell: config.shell })),
+    "/api/me": guard(async (_r, _s, user, device) => json({ user, device, tailscale: await tailscaleStatus(), shell: config.shell })),
+    "/api/devices": {
+      GET: guard(async () => json(await deviceList())),
+      PUT: guard(async (req, _s, _u, device) => {
+        const b = await body<{ allowed?: string[] }>(req);
+        if (!Array.isArray(b.allowed)) return fail(400, "allowed must be a list of device ids");
+        const list = await deviceList();
+        const ids = new Set(b.allowed.map(String));
+        // Never lock out the device making the change.
+        const me = list.devices.find((d) => d.name === device);
+        if (me && !me.self) ids.add(me.id);
+        setAllowedDevices([...ids].filter((id) => list.devices.some((d) => d.id === id)));
+        return json(await deviceList());
+      }),
+    },
     "/api/tools": guard(() => json(toolList())),
 
     "/api/projects": {

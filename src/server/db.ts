@@ -113,7 +113,19 @@ const migrations: string[] = [
     last_ok_at INTEGER
   );
   `,
+  // v5: key/value settings (device allow-list, …).
+  `
+  CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+  `,
 ];
+
+export function getSetting<T>(key: string, fallback: T): T {
+  const r = db.query("SELECT value FROM settings WHERE key = ?").get(key) as { value: string } | null;
+  return r ? (JSON.parse(r.value) as T) : fallback;
+}
+export function setSetting(key: string, value: unknown) {
+  db.query("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(key, JSON.stringify(value));
+}
 
 {
   const current = (db.query("PRAGMA user_version").get() as { user_version: number }).user_version;
