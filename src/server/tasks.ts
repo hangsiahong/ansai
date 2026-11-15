@@ -7,6 +7,7 @@ import { ensureTaskWorktree } from "./worktrees";
 import { changesIn, taskDir } from "./changes";
 import type { ToolId } from "./tools";
 import { checkAgySignIn } from "./accounts";
+import { agySignInHint } from "./agyauth";
 
 export const STATUSES = ["todo", "doing", "review", "done"] as const;
 export type TaskStatus = (typeof STATUSES)[number];
@@ -304,7 +305,7 @@ function taskPrompt(task: Task & { notes?: string[]; handoff?: string }): string
     .join("\n\n");
 }
 
-export const AGY_SIGNED_OUT = "agy isn't signed in on this laptop. Run `agy` in a terminal to sign in, then run the task again.";
+export const AGY_SIGNED_OUT = "agy isn't signed in on this laptop.";
 
 /** Start an agent on a task: the task becomes its first prompt, and the task moves to "doing". */
 export async function runTask(
@@ -316,7 +317,7 @@ export async function runTask(
   if (!task.project_id) throw conflict("pick a project for this task first");
   if (o.tool === "shell") throw badRequest("pick an agent, not a shell");
   // Signed out, agy would sit on its sign-in menu instead of working.
-  if (o.tool === "agy" && (await checkAgySignIn(o.accountId ?? null)) === false) throw conflict(AGY_SIGNED_OUT);
+  if (o.tool === "agy" && (await checkAgySignIn(o.accountId ?? null)) === false) throw conflict(`${AGY_SIGNED_OUT} ${agySignInHint()} Then run the task again.`);
   if (startingTasks.has(id)) throw conflict("this task is already starting");
   if (db.query(`SELECT 1 FROM sessions s WHERE s.task_id = ? AND s.status = 'running'
     AND NOT EXISTS (SELECT 1 FROM task_reviews r WHERE r.session_id = s.id AND r.status = 'complete')`).get(id)) {

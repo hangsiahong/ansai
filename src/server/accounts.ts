@@ -5,7 +5,7 @@ import { db, now } from "./db";
 import { emit } from "./events";
 import { badRequest, conflict, notFound } from "./errors";
 import { prune, scanClaude, scanCodex, storedLimits, tokenSummary, type TokenSummary } from "./usage";
-import { agyModels, agySignedIn } from "./agyauth";
+import { agyModels, agySignedIn, agySignInHint } from "./agyauth";
 
 export type AgentTool = "claude" | "codex" | "agy";
 export const AGENT_TOOLS: AgentTool[] = ["claude", "codex", "agy"];
@@ -311,7 +311,7 @@ function agyInfo(a: AccountRow): Info {
     limits: [],
     limits_at: null,
     note: !signedIn
-      ? "Signed out. Run `agy` in a terminal on this laptop to sign in (Google sign-in)."
+      ? `Signed out. ${agySignInHint()}`
       : a.dir
         ? "Experimental: agy keeps logins in the desktop keychain, so this profile signs in separately (paste-code flow)."
         : "agy doesn't expose plan or limits locally.",

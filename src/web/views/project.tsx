@@ -118,7 +118,9 @@ function AutopilotCard({ project, openTodo }: { project: Project; openTodo: stri
             </div>
             {agyAccount && !agyAccount.logged_in && (
               <p class="warn-text small">
-                agy isn't signed in, so autopilot keeps its tasks queued. Run <code>agy</code> in a terminal on the laptop to sign in; they start after that.
+                agy isn't signed in, so autopilot keeps its tasks queued; they start once it is.{" "}
+                {/* The server's advice: sign in, or unlock the desktop keyring when that's what's wrong. */}
+                {agyAccount.usage?.note?.replace(/^Signed out\.\s*/, "") || "Run `agy` in a terminal on the laptop to sign in."}
               </p>
             )}
             <AccountPicker tool={ap.tool} value={ap.accountId} onChange={(v) => set({ accountId: v })} />

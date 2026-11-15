@@ -3,6 +3,7 @@ import { emit } from "./events";
 import { notFound } from "./errors";
 import { getProject } from "./projects";
 import { AGENT_TOOLS, checkAgySignIn } from "./accounts";
+import { agySignInHint } from "./agyauth";
 import { notify } from "./push";
 import { getTask, projectAutopilot, runTask as startTask, type Autopilot, type Task } from "./tasks";
 import { scheduleTick, updateOccurrence } from "./schedules";
@@ -64,7 +65,7 @@ function holdForSignIn(t: Task) {
   console.warn(`[ansai] autopilot is holding "${t.title}": agy isn't signed in`);
   notify("input", {
     title: `Autopilot is waiting · ${t.title}`,
-    body: "agy isn't signed in, so this task stays queued. Run `agy` in a terminal on the laptop to sign in; it starts after that.",
+    body: `agy isn't signed in, so this task stays queued until it is. ${agySignInHint()}`,
     url: t.project_id ? `/p/${t.project_id}` : "/",
     tag: `agy-signin-${t.id}`,
   }).catch(() => {});

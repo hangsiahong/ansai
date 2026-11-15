@@ -5,7 +5,7 @@ import { db, newId, now } from "./db";
 import { badRequest, conflict, notFound } from "./errors";
 import { TOOLS, relaunchChoice, type ToolId } from "./tools";
 import { runDeadline, sessionTokens } from "./runs";
-import { noteAgySignedOut } from "./agyauth";
+import { agySignInHint, checkKeyring, noteAgySignedOut } from "./agyauth";
 import { getProject, touchProject } from "./projects";
 import { emit } from "./events";
 import { shiftView } from "./shifts";
@@ -476,11 +476,13 @@ async function watchStartupScreens() {
   for (const r of rows) {
     const cap = await tmux(["capture-pane", "-p", "-J", "-t", r.tmux_name]);
     if (cap.code !== 0) continue;
-    const d = startupDialog(r.tool, cap.out);
+    let d = startupDialog(r.tool, cap.out);
     const prev = startup.get(r.id);
     if (d?.kind === "login" && r.tool === "agy" && prev?.kind !== "login") {
       noteAgySignedOut(r.account_id ?? ""); // Accounts and autopilot see it right away
       refreshAccountsSoon();
+      // A locked keyring looks the same as signed out; say which it is.
+      if (await checkKeyring()) d = { ...d, message: `agy can't read its sign-in. ${agySignInHint()} Then restart this session.` };
     }
     if (r.agent_state === "needs-input" && !prev) {
       // Either a real approval (from hooks; leave it alone), or a startup screen this ansai

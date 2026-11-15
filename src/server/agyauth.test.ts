@@ -4,7 +4,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-const { parseAgyModels, agySignedIn, noteAgySignedOut } = await import("./agyauth");
+const { parseAgyModels, agySignedIn, noteAgySignedOut, parseLocked, noteKeyring, agySignInHint } = await import("./agyauth");
 const { startupDialog } = await import("./sessions");
 
 // agy 2026-11 when signed out (captured from a real session).
@@ -84,4 +84,30 @@ test("Accounts shows an agy account signed out, with what to do", async () => {
   const agy = listAccounts().find((a) => a.id === "agy-default")!;
   expect(agy.logged_in).toBe(false);
   expect(agy.usage.note).toContain("Run `agy` in a terminal");
+});
+
+describe("a locked desktop keyring", () => {
+  // 2026-11-16: the keyring service restarted at 01:48, its "login" collection came back
+  // locked, and every agy start looked signed out until it was unlocked; nothing had expired.
+  test("busctl's answer for the collection's Locked property", () => {
+    expect(parseLocked("b true\n")).toBe(true);
+    expect(parseLocked("b false")).toBe(false);
+    expect(parseLocked("")).toBeNull();
+  });
+
+  test("turns 'sign in again' into 'unlock the keyring', in Accounts too", async () => {
+    const { listAccounts, refreshAccountsSoon } = await import("./accounts");
+    try {
+      noteKeyring(true);
+      expect(agySignInHint()).toContain("keyring is locked");
+      expect(agySignInHint()).toContain("no new Google sign-in");
+      noteAgySignedOut("agy-default");
+      refreshAccountsSoon();
+      expect(listAccounts().find((a) => a.id === "agy-default")?.usage.note).toContain("keyring is locked");
+      noteKeyring(false);
+      expect(agySignInHint()).toContain("Run `agy` in a terminal");
+    } finally {
+      noteKeyring(null);
+    }
+  });
 });

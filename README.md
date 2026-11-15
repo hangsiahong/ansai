@@ -71,7 +71,7 @@ Install the Tailscale app on your phone with the same account, open that URL, th
 - **Chat view** (Claude Code and Codex): the agent's own conversation log, rendered as chat while it runs in tmux. You see messages, collapsible tool calls with output, edit diffs and the agent's plan. Live cards let you approve or deny actions, answer the agent's questions, or stop it. Chat and Terminal are two views of the same running agent; phones default to Chat.
 - **Status and notifications:** Claude Code gets status hooks via `--settings`, and your own settings file is never touched. Codex gets a `notify` override via `-c`. Sessions show *working*, *needs you* or *your turn*. Web Push reaches your phone or desktop for "needs you", "finished" and crashes, unless you're already looking at that session.
 
-Token counts include cache reads and come from local logs (Claude transcripts, Codex rollouts), which are read incrementally. Login tokens never leave the laptop and are never shown in the UI. agy accounts are experimental: agy keeps its login in the desktop keychain, so a profile signs in separately with a paste-code flow.
+Token counts include cache reads and come from local logs (Claude transcripts, Codex rollouts), which are read incrementally. Login tokens never leave the laptop and are never shown in the UI. agy accounts are experimental: agy keeps its login in the desktop keychain, so a profile signs in separately with a paste-code flow. If that keyring is locked (it comes back locked when the keyring service restarts), agy can't read its login and looks signed out; ansai checks for this and tells you to unlock the keyring instead of signing in again.
 
 ## Roadmap
 

@@ -47,10 +47,57 @@ async function probe(key: string, env: () => Record<string, string>, prev: AgyMo
   const code = await p.exited;
   clearTimeout(timer);
   const r = parseAgyModels(code, out, err);
+  if (r.signedIn === false) await checkKeyring();
+  else if (r.signedIn) keyringLocked = false; // it read its sign-in
   // A failed check (offline) keeps the last list, and says nothing new about the sign-in.
   const next = r.signedIn === null && prev ? { ...prev, at: Date.now(), signedIn: prev.signedIn === true ? null : prev.signedIn } : { at: Date.now(), ...r };
   cache.set(key, next);
   return next;
+}
+
+// ------------------------------------------------------------ keyring
+
+let keyringLocked: boolean | null = null;
+
+/** busctl's answer for a boolean property: "b true" / "b false". */
+export const parseLocked = (out: string): boolean | null => (out.trim() === "b true" ? true : out.trim() === "b false" ? false : null);
+
+/**
+ * agy saves its sign-in in the desktop keyring's "login" collection (Secret Service).
+ * If the keyring service restarts, that collection comes back locked, and agy, unable
+ * to read its sign-in, says it's signed out though nothing expired. (2026-11-16: the
+ * daemon restarted at 01:48 and every agy start failed from then until it was unlocked.)
+ * Checked when agy says it's signed out. Null when it can't be checked (no busctl,
+ * no Secret Service).
+ */
+export async function checkKeyring(): Promise<boolean | null> {
+  if (!Bun.which("busctl")) return (keyringLocked = null);
+  try {
+    const p = Bun.spawn(
+      ["busctl", "--user", "get-property", "org.freedesktop.secrets", "/org/freedesktop/secrets/collection/login", "org.freedesktop.Secret.Collection", "Locked"],
+      { stdout: "pipe", stderr: "ignore", stdin: "ignore", env: cleanEnv() },
+    );
+    const timer = setTimeout(() => p.kill(), 5000);
+    const out = await new Response(p.stdout).text();
+    const code = await p.exited;
+    clearTimeout(timer);
+    keyringLocked = code === 0 ? parseLocked(out) : null;
+  } catch {
+    keyringLocked = null;
+  }
+  return keyringLocked;
+}
+
+/** Record the keyring's state (tests; checkKeyring sets it for real). */
+export function noteKeyring(locked: boolean | null) {
+  keyringLocked = locked;
+}
+
+/** What to do about a signed-out agy: unlock the keyring if that's what's wrong, else sign in. */
+export function agySignInHint(): string {
+  return keyringLocked
+    ? "Your desktop keyring is locked, so agy can't read the sign-in it saved there. Unlock it with your login password (running `agy` in a terminal on this laptop asks for it); no new Google sign-in is needed."
+    : "Run `agy` in a terminal on this laptop to sign in (Google sign-in).";
 }
 
 /** The last known answer: true, false (signed out), or null (not checked yet / couldn't tell). */
