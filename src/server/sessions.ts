@@ -1,4 +1,5 @@
-import { writeFileSync, existsSync } from "node:fs";
+import { writeFileSync, existsSync, statSync } from "node:fs";
+import { basename } from "node:path";
 import { config, cleanEnv } from "./config";
 import { db, newId, now } from "./db";
 import { badRequest, conflict, notFound } from "./errors";
@@ -253,6 +254,26 @@ export async function createSession(o: CreateOpts) {
   return sessionView(getSession(id)!);
 }
 
+// Within this, the agent's prompt cache is still warm: resuming its conversation is cheap.
+// Past it, resuming re-writes the whole context at full price, so a fresh start is better.
+const WARM_MS = 55 * 60_000;
+
+/**
+ * The agent's own conversation id, if resuming it is worth it: taken from its log's
+ * file name (Claude: <id>.jsonl; Codex: rollout-<time>-<id>.jsonl), and only while
+ * the log was written to recently enough for the cache to be warm.
+ */
+export function resumableConversation(s: Pick<SessionRow, "tool" | "transcript">, now = Date.now()): string | null {
+  if ((s.tool !== "claude" && s.tool !== "codex") || !s.transcript) return null;
+  const id = basename(s.transcript).match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i)?.[1];
+  if (!id) return null;
+  try {
+    return now - statSync(s.transcript).mtimeMs < WARM_MS ? id : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Re-run the same command in the same pane (after the agent exited, or to force a restart). */
 export async function restartSession(id: string) {
   const s = getSession(id);
@@ -261,7 +282,11 @@ export async function restartSession(id: string) {
   // A restarted agent shouldn't replay the original prompt (or a login flow), but keeps its model and effort.
   const tool = TOOLS[s.tool];
   const keep = { yolo: argv.some((a) => a.startsWith("--dangerously")), ...launchChoice(argv) };
-  const base = s.tool === "shell" ? argv : withHooks(s.tool, tool.argv(keep), s.id);
+  // Pick the conversation back up while its cache is warm (claude --resume <id>, codex resume <id>).
+  const conv = resumableConversation(s);
+  const fresh = tool.argv(keep);
+  const launch = !conv ? fresh : s.tool === "claude" ? [...fresh, "--resume", conv] : [fresh[0]!, "resume", conv, ...fresh.slice(1)];
+  const base = s.tool === "shell" ? argv : withHooks(s.tool, launch, s.id);
   const account = s.account_id ? getAccount(s.account_id) : null;
   const env = sessionEnv(s.id, account, s.cwd); // also prepares the profile, which a respawn needs too
   const alive = (await tmux(["has-session", "-t", s.tmux_name])).code === 0;
