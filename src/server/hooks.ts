@@ -5,7 +5,7 @@ import { db, now } from "./db";
 import { emit } from "./events";
 import { notify } from "./push";
 import { isWatched } from "./viewers";
-import { dropClaims, editWarning, takePending } from "./team";
+import { dropClaims, editWarning, takePending, wakes } from "./team";
 import { getSession } from "./sessions";
 
 const EDITS = new Set(["Edit", "MultiEdit", "Write", "NotebookEdit"]);
@@ -166,8 +166,10 @@ export function handleHook(tool: string, event: string, sessionId: string, paylo
         return;
       }
       case "Stop": {
-        // Messages that arrived during the turn: Claude reads them and keeps going instead of stopping.
-        const msgs = takePending(s.id);
+        // Messages that arrived during the turn and are worth another turn (direct ones, or yours):
+        // Claude reads them and keeps going. Other agents' broadcasts wait for its next turn.
+        const full = getSession(s.id);
+        const msgs = full && wakes(full) ? takePending(s.id) : null;
         if (msgs) {
           if (s.agent_state !== "working") setState(s, "working");
           return context(event, msgs);

@@ -128,6 +128,16 @@ function resolveTarget(to: string, from: SessionRow | null): SessionRow {
   return s;
 }
 
+/** What happens to a direct message right now: delivered mid-turn, typed in, or held (and why). */
+export function deliveryNote(target: SessionRow): string {
+  if (target.agent_state === "working") return "It's working, so it reads this between steps.";
+  if (target.agent_state === "needs-input") return "It's waiting for the user's approval; it reads this once it continues.";
+  const at = sessionView(target).activity_at;
+  const why = holdReason(target, at ? Date.now() - at : null);
+  if (why) return `It won't be woken for this (${why}); it reads it on its next turn.`;
+  return "It's idle, so ansai types it in now.";
+}
+
 export function postMessage(o: { from: SessionRow | null; to?: string | null; projectId?: string | null; body: string }): Message {
   const body = o.body.trim();
   if (!body) throw badRequest("a message needs some text");
@@ -183,6 +193,22 @@ export function isIdle(s: Pick<SessionRow, "tool" | "agent_state">, quietMs: num
   return false;
 }
 
+// Past this, the agent's prompt cache has gone cold: waking it re-reads its whole context at full price.
+const COLD_MS = 55 * 60_000;
+
+/**
+ * Why a direct message shouldn't wake this idle agent (null = fine to wake).
+ * It still gets the message, on its next turn.
+ */
+export function holdReason(s: Pick<SessionRow, "task_id">, idleMs: number | null): string | null {
+  if (s.task_id) {
+    const t = db.query("SELECT status, summary FROM tasks WHERE id = ?").get(s.task_id) as { status: string; summary: string | null } | null;
+    if (t && (t.status === "done" || (t.status === "review" && t.summary))) return "its task is finished";
+  }
+  if (idleMs !== null && idleMs > COLD_MS) return "it has been idle for over 55 minutes";
+  return null;
+}
+
 export async function deliverIdle() {
   const rows = db
     .query(
@@ -193,7 +219,8 @@ export async function deliverIdle() {
   for (const s of rows) {
     if (delivering.has(s.id)) continue;
     const at = sessionView(s).activity_at;
-    if (!isIdle(s, at ? Date.now() - at : null) || !wakes(s)) continue;
+    const quiet = at ? Date.now() - at : null;
+    if (!isIdle(s, quiet) || !wakes(s) || holdReason(s, quiet)) continue;
     delivering.add(s.id);
     try {
       const text = takePending(s.id);

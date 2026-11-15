@@ -167,14 +167,42 @@ export function TeamPanel({ projectId }: { projectId: string }) {
   const sessions = useStore((s) => s.sessions);
   const msgs = all.filter((m) => m.project_id === projectId).slice(-60);
   const agents = sessions.filter((s) => s.project_id === projectId && s.status === "running" && (s.tool === "claude" || s.tool === "codex"));
-  const [to, setTo] = useState<string>("");
+  const tasks = useStore((s) => s.tasks);
+  // null = not chosen yet: default to one agent, so a stray message doesn't wake everyone.
+  const [picked, setPicked] = useState<string | null>(null);
+  const to = picked ?? agents[0]?.id ?? "";
+  const setTo = (v: string) => setPicked(v);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const feed = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (to && !agents.some((a) => a.id === to)) setTo("");
+    if (picked && !agents.some((a) => a.id === picked)) setPicked(null);
   }, [agents.map((a) => a.id).join()]);
+
+  // Same rules as the server (team.ts): finished agents aren't woken; busy ones read between steps.
+  const finished = (a: Session) => {
+    const t = a.task_id ? tasks.find((x) => x.id === a.task_id) : null;
+    return !!t && (t.status === "done" || (t.status === "review" && !!t.summary));
+  };
+  const idle = (a: Session) => ["turn", "idle"].includes(sessionState(a).cls);
+  const note = (() => {
+    if (!agents.length) return "";
+    if (!to) {
+      const wake = agents.filter((a) => idle(a) && !finished(a)).length;
+      const busy = agents.filter((a) => !idle(a)).length;
+      return [wake ? `Wakes ${wake} idle agent${wake === 1 ? "" : "s"}` : "", busy ? `${busy} busy one${busy === 1 ? "" : "s"} read it between steps` : ""]
+        .filter(Boolean)
+        .join("; ")
+        .concat(wake || busy ? "." : "Every agent here is finished; they read it on their next turn.");
+    }
+    const a = agents.find((x) => x.id === to);
+    if (!a) return "";
+    if (sessionState(a).cls === "attn") return "It's waiting for your approval; it reads this after.";
+    if (!idle(a)) return "It's working, so it reads this between steps.";
+    if (finished(a)) return "Its task is finished, so this waits for its next turn.";
+    return "It's idle, so this is typed in now and starts a turn.";
+  })();
   useEffect(() => {
     const el = feed.current;
     if (el) el.scrollTop = el.scrollHeight;
@@ -261,7 +289,7 @@ export function TeamPanel({ projectId }: { projectId: string }) {
               <Icon name="send" size={18} stroke={2.4} />
             </button>
           </div>
-          <p class="team-hint">Idle agents get it typed in right away; busy ones read it between steps.</p>
+          {note && <p class="team-hint">{note}</p>}
         </form>
       </div>
     </section>

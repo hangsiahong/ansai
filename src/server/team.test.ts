@@ -104,6 +104,29 @@ describe("when typing in is safe", () => {
   });
 });
 
+describe("not waking for nothing", () => {
+  test("Stop only keeps an agent going for direct messages or yours, not agents' broadcasts", () => {
+    const a = agent("a", "p1");
+    agent("b", "p1", { state: "working" });
+    team.postMessage({ from: a, to: "all", body: "fyi: renamed util.ts" });
+    expect(handleHook("claude", "Stop", "b", {})).toBeUndefined(); // it stops; the broadcast waits
+    expect(getSession("b")!.agent_state).toBe("waiting");
+    // ...and arrives with its next turn.
+    expect(handleHook("claude", "UserPromptSubmit", "b", {})?.hookSpecificOutput.additionalContext).toContain("renamed util.ts");
+  });
+
+  test("finished or long-idle agents aren't woken; the sender is told", () => {
+    db.query("INSERT INTO tasks (id, project_id, title, status, summary, created_at, updated_at) VALUES ('done1', 'p1', 'T', 'review', 'all done', 0, 0)").run();
+    const a = agent("a", "p1");
+    const b = agent("b", "p1", { state: "waiting", task: "done1" });
+    expect(team.holdReason(b, 5000)).toBe("its task is finished");
+    expect(team.holdReason(a, 56 * 60_000)).toBe("it has been idle for over 55 minutes");
+    expect(team.holdReason(a, 60_000)).toBeNull();
+    expect(team.deliveryNote(b)).toContain("won't be woken");
+    expect(team.deliveryNote(agent("w", "p1", { state: "working" }))).toContain("between steps");
+  });
+});
+
 describe("rate limit", () => {
   test("an agent can send 12 messages per 10 minutes", () => {
     const a = agent("a", "p1");
