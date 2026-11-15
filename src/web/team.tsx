@@ -67,20 +67,142 @@ export function useSessionMessages(s: Session): Message[] {
   );
 }
 
+type Board = {
+  agents: { id: string; tool: Session["tool"]; title: string; state: string | null; task: string | null; branch: string | null; files: string[]; claims: string[] }[];
+  overlaps: { path: string; agents: string[] }[];
+};
+
+/** Who's on what: each running agent here, the files it edited or claimed, and files two of them touch. Polled while open. */
+function WhoBoard({ projectId }: { projectId: string }) {
+  const sessions = useStore((s) => s.sessions);
+  const [b, setB] = useState<Board | null>(null);
+  const [showAll, setShowAll] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    let alive = true;
+    const load = () =>
+      fetch(`/api/projects/${projectId}/team`)
+        .then((r) => (r.ok ? r.json() : null))
+        .then((x) => alive && x && setB(x))
+        .catch(() => {});
+    load();
+    const t = setInterval(() => document.visibilityState === "visible" && load(), 5000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, [projectId]);
+  if (!b?.agents.length) return null;
+  const hot = new Set(b.overlaps.map((o) => o.path));
+  const name = (id: string) => {
+    const s = sessions.find((x) => x.id === id);
+    return s ? `${TOOL_SHORT[s.tool]} · ${s.title.slice(0, 28)}` : id;
+  };
+  return (
+    <div class="who">
+      {b.overlaps.length > 0 && (
+        <div class="who-warn">
+          <Icon name="bell" size={14} />
+          <span>
+            {b.overlaps.slice(0, 3).map((o) => (
+              <span class="who-clash">
+                <code>{o.path}</code> — {o.agents.map(name).join(" & ")}
+              </span>
+            ))}
+            {b.overlaps.length > 3 && <span class="muted"> and {b.overlaps.length - 3} more files</span>}
+          </span>
+        </div>
+      )}
+      {b.agents.map((a) => {
+        const s = sessions.find((x) => x.id === a.id);
+        const files = [...new Set([...a.claims, ...a.files])];
+        const all = showAll.has(a.id);
+        return (
+          <div class="who-row">
+            <ToolBadge tool={a.tool} size={26} />
+            <div class="who-main">
+              <div class="who-head">
+                <Link href={`/s/${a.id}`} class="who-title">
+                  {a.title}
+                </Link>
+                {s && <span class={`who-state ${sessionState(s).cls}`}>{sessionState(s).label}</span>}
+              </div>
+              {(a.task || a.branch) && (
+                <div class="who-sub">
+                  {a.task && <span>{a.task}</span>}
+                  {a.branch && (
+                    <span class="mono">
+                      <Icon name="branch" size={11} /> {a.branch}
+                    </span>
+                  )}
+                </div>
+              )}
+              {files.length > 0 ? (
+                <div class="who-files">
+                  {(all ? files : files.slice(0, 6)).map((f) => (
+                    <code class={`${hot.has(f) ? "hot" : ""} ${a.claims.includes(f) ? "claimed" : ""}`} title={a.claims.includes(f) ? "Claimed" : "Edited"}>
+                      {a.claims.includes(f) && <Icon name="lock" size={10} />}
+                      {f.split("/").pop()}
+                    </code>
+                  ))}
+                  {files.length > 6 && !all && (
+                    <button class="who-more" onClick={() => setShowAll(new Set([...showAll, a.id]))}>
+                      +{files.length - 6}
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <div class="who-sub muted">No files edited yet</div>
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 /** The project's team room: every agent-to-agent message, and a box to talk to them. */
 export function TeamPanel({ projectId }: { projectId: string }) {
   const all = useStore((s) => s.messages);
   const sessions = useStore((s) => s.sessions);
   const msgs = all.filter((m) => m.project_id === projectId).slice(-60);
   const agents = sessions.filter((s) => s.project_id === projectId && s.status === "running" && (s.tool === "claude" || s.tool === "codex"));
-  const [to, setTo] = useState<string>("");
+  const tasks = useStore((s) => s.tasks);
+  // null = not chosen yet: default to one agent, so a stray message doesn't wake everyone.
+  const [picked, setPicked] = useState<string | null>(null);
+  const to = picked ?? agents[0]?.id ?? "";
+  const setTo = (v: string) => setPicked(v);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const feed = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (to && !agents.some((a) => a.id === to)) setTo("");
+    if (picked && !agents.some((a) => a.id === picked)) setPicked(null);
   }, [agents.map((a) => a.id).join()]);
+
+  // Same rules as the server (team.ts): finished agents aren't woken; busy ones read between steps.
+  const finished = (a: Session) => {
+    const t = a.task_id ? tasks.find((x) => x.id === a.task_id) : null;
+    return !!t && (t.status === "done" || (t.status === "review" && !!t.summary));
+  };
+  const idle = (a: Session) => ["turn", "idle"].includes(sessionState(a).cls);
+  const note = (() => {
+    if (!agents.length) return "";
+    if (!to) {
+      const wake = agents.filter((a) => idle(a) && !finished(a)).length;
+      const busy = agents.filter((a) => !idle(a)).length;
+      return [wake ? `Wakes ${wake} idle agent${wake === 1 ? "" : "s"}` : "", busy ? `${busy} busy one${busy === 1 ? "" : "s"} read it between steps` : ""]
+        .filter(Boolean)
+        .join("; ")
+        .concat(wake || busy ? "." : "Every agent here is finished; they read it on their next turn.");
+    }
+    const a = agents.find((x) => x.id === to);
+    if (!a) return "";
+    if (sessionState(a).cls === "attn") return "It's waiting for your approval; it reads this after.";
+    if (!idle(a)) return "It's working, so it reads this between steps.";
+    if (finished(a)) return "Its task is finished, so this waits for its next turn.";
+    return "It's idle, so this is typed in now and starts a turn.";
+  })();
   useEffect(() => {
     const el = feed.current;
     if (el) el.scrollTop = el.scrollHeight;
@@ -111,6 +233,7 @@ export function TeamPanel({ projectId }: { projectId: string }) {
         )}
       </div>
       <div class="panel team-panel">
+        <WhoBoard projectId={projectId} />
         {msgs.length ? (
           <div class="team-feed" ref={feed}>
             {msgs.map((m) => (
@@ -166,7 +289,7 @@ export function TeamPanel({ projectId }: { projectId: string }) {
               <Icon name="send" size={18} stroke={2.4} />
             </button>
           </div>
-          <p class="team-hint">Idle agents get it typed in right away; busy ones read it between steps.</p>
+          {note && <p class="team-hint">{note}</p>}
         </form>
       </div>
     </section>

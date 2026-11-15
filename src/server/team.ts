@@ -128,6 +128,16 @@ function resolveTarget(to: string, from: SessionRow | null): SessionRow {
   return s;
 }
 
+/** What happens to a direct message right now: delivered mid-turn, typed in, or held (and why). */
+export function deliveryNote(target: SessionRow): string {
+  if (target.agent_state === "working") return "It's working, so it reads this between steps.";
+  if (target.agent_state === "needs-input") return "It's waiting for the user's approval; it reads this once it continues.";
+  const at = sessionView(target).activity_at;
+  const why = holdReason(target, at ? Date.now() - at : null);
+  if (why) return `It won't be woken for this (${why}); it reads it on its next turn.`;
+  return "It's idle, so ansai types it in now.";
+}
+
 export function postMessage(o: { from: SessionRow | null; to?: string | null; projectId?: string | null; body: string }): Message {
   const body = o.body.trim();
   if (!body) throw badRequest("a message needs some text");
@@ -170,14 +180,47 @@ export function wakes(s: SessionRow): boolean {
  * Only when the agent is truly idle: its turn ended (not at a permission prompt
  * or a startup dialog) and its screen has been still for a few seconds.
  */
+/**
+ * Is this agent sitting at its prompt, so typing a message in is safe? Its turn
+ * ended and the screen has been still. Codex reports only when a turn ends, so
+ * one that hasn't finished a turn yet (no state) counts once its screen has been
+ * still for 10 s — a working Codex keeps redrawing its spinner and timer.
+ */
+export function isIdle(s: Pick<SessionRow, "tool" | "agent_state">, quietMs: number | null): boolean {
+  if (quietMs === null) return false; // ansai hasn't seen the screen yet
+  if (s.agent_state === "waiting") return quietMs >= 3000;
+  if (s.tool === "codex" && s.agent_state === null) return quietMs >= 10_000;
+  return false;
+}
+
+// Past this, the agent's prompt cache has gone cold: waking it re-reads its whole context at full price.
+const COLD_MS = 55 * 60_000;
+
+/**
+ * Why a direct message shouldn't wake this idle agent (null = fine to wake).
+ * It still gets the message, on its next turn.
+ */
+export function holdReason(s: Pick<SessionRow, "task_id">, idleMs: number | null): string | null {
+  if (s.task_id) {
+    const t = db.query("SELECT status, summary FROM tasks WHERE id = ?").get(s.task_id) as { status: string; summary: string | null } | null;
+    if (t && (t.status === "done" || (t.status === "review" && t.summary))) return "its task is finished";
+  }
+  if (idleMs !== null && idleMs > COLD_MS) return "it has been idle for over 55 minutes";
+  return null;
+}
+
 export async function deliverIdle() {
   const rows = db
-    .query(`SELECT * FROM sessions WHERE status = 'running' AND tool IN ('claude', 'codex') AND agent_state = 'waiting'`)
+    .query(
+      `SELECT * FROM sessions WHERE status = 'running' AND tool IN ('claude', 'codex')
+         AND (agent_state = 'waiting' OR (tool = 'codex' AND agent_state IS NULL))`,
+    )
     .all() as SessionRow[];
   for (const s of rows) {
     if (delivering.has(s.id)) continue;
-    const quietFor = Date.now() - (sessionView(s).activity_at ?? 0);
-    if (quietFor < 3000 || !wakes(s)) continue;
+    const at = sessionView(s).activity_at;
+    const quiet = at ? Date.now() - at : null;
+    if (!isIdle(s, quiet) || !wakes(s) || holdReason(s, quiet)) continue;
     delivering.add(s.id);
     try {
       const text = takePending(s.id);
@@ -345,4 +388,42 @@ export function editWarning(me: SessionRow, file: string): string | null {
 /** Forget a finished session's claims (called when it exits or closes). */
 export function dropClaims(sessionId: string) {
   claims.delete(sessionId);
+}
+
+// --------------------------------------------------------------------- board
+
+export type BoardAgent = {
+  id: string;
+  tool: string;
+  title: string;
+  state: string | null;
+  task: string | null;
+  branch: string | null;
+  files: string[];
+  claims: string[];
+};
+export type Board = { agents: BoardAgent[]; overlaps: { path: string; agents: string[] }[] };
+
+/** Who's on what in a project: each running agent's files and claims, and files two of them touch. */
+export function teamBoard(projectId: string): Board {
+  const rows = db
+    .query(
+      `SELECT s.*, t.title AS task_title, t.worktree_branch AS branch FROM sessions s LEFT JOIN tasks t ON t.id = s.task_id
+        WHERE s.status = 'running' AND s.tool IN ('claude', 'codex') AND s.project_id = ? ORDER BY s.created_at`,
+    )
+    .all(projectId) as (SessionRow & { task_title: string | null; branch: string | null })[];
+  const agents = rows.map((r) => ({
+    id: r.id,
+    tool: r.tool,
+    title: r.title,
+    state: r.agent_state,
+    task: r.task_title && r.task_title !== r.title ? r.task_title : null,
+    branch: r.branch,
+    files: touchedFiles(r, 30),
+    claims: [...liveClaims(r).keys()],
+  }));
+  const by = new Map<string, Set<string>>();
+  for (const a of agents) for (const f of new Set([...a.files, ...a.claims])) by.set(f, (by.get(f) ?? new Set()).add(a.id));
+  const overlaps = [...by.entries()].filter(([, ids]) => ids.size > 1).map(([path, ids]) => ({ path, agents: [...ids] }));
+  return { agents, overlaps };
 }

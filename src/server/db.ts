@@ -158,7 +158,17 @@ const migrations: string[] = [
   CREATE INDEX messages_to ON messages(to_session, id);
   ALTER TABLE sessions ADD COLUMN msg_cursor INTEGER NOT NULL DEFAULT 0;
   `,
-  // v11: shifts keep an agent working until a set time (src/server/shifts.ts). One row per session; the last shift's report stays.
+  // v11: token usage split into its parts. Cache reads are most of the total but cost a
+  // fraction of fresh input, so one sum overstated real use 5-7x. The last 8 days of logs
+  // are rescanned to fill the new columns (that's all the Accounts page shows).
+  `
+  ALTER TABLE usage_events ADD COLUMN input INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE usage_events ADD COLUMN cache_write INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE usage_events ADD COLUMN cache_read INTEGER NOT NULL DEFAULT 0;
+  DELETE FROM usage_events;
+  DELETE FROM usage_files;
+  `,
+  // v12: shifts keep an agent working until a set time (src/server/shifts.ts). One row per session; the last shift's report stays.
   `
   CREATE TABLE shifts (
     session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,

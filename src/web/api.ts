@@ -1,6 +1,7 @@
 export type ToolId = "claude" | "codex" | "agy" | "shell";
 
-export type Autopilot = { on: boolean; tool: ToolId; accountId: string | null; yolo: boolean };
+/** model/effort null (or missing, on older saves) = the agent's own default. */
+export type Autopilot = { on: boolean; tool: ToolId; accountId: string | null; yolo: boolean; model?: string | null; effort?: string | null };
 export type Project = {
   id: string;
   name: string;
@@ -111,7 +112,8 @@ export type Account = {
   usage: null | {
     limits: UsageLimit[];
     limits_at: number | null;
-    tokens: { five_hour: number; today: number; week: number; daily: number[] };
+    /** Fresh tokens (input + cache writes + output); cache reads counted separately. */
+    tokens: { five_hour: number; today: number; week: number; daily: number[]; cache_read_week: number; total_week: number };
     note?: string | null;
   };
 };
@@ -150,6 +152,18 @@ export type Changes = {
 };
 
 export type Tool = { id: ToolId; label: string; installed: boolean };
+
+export type ModelOption = { id: string; label: string; efforts?: string[] };
+export type ModelChoices = {
+  models: ModelOption[];
+  efforts: string[];
+  /** What the agent runs on when nothing is picked, from its own config (if known). */
+  default: { model: string | null; effort: string | null };
+  /** The agent takes `/model <id>` and `/effort <level>` mid-conversation (Codex only opens its own menu). */
+  liveSwitch: boolean;
+};
+/** A launch choice: null = the agent's own default. */
+export type ModelPick = { model: string | null; effort: string | null };
 export type Me = { user: string; device: string; tailscale: { dnsName: string | null; owner: string | null; url: string | null }; shell: string };
 
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -182,7 +196,7 @@ export const api = {
   taskChanges: (id: string) => call<Changes>("GET", `/api/tasks/${id}/changes`),
   mergeTask: (id: string) => call<{ sha: string; into: string; files: number }>("POST", `/api/tasks/${id}/merge`),
   discardWorktree: (id: string) => call<{ ok: true }>("DELETE", `/api/tasks/${id}/worktree`),
-  runTask: (id: string, o: { tool: ToolId; yolo?: boolean; accountId?: string | null }) => call<Session>("POST", `/api/tasks/${id}/run`, o),
+  runTask: (id: string, o: { tool: ToolId; yolo?: boolean; accountId?: string | null } & Partial<ModelPick>) => call<Session>("POST", `/api/tasks/${id}/run`, o),
 
   accounts: () => call<Account[]>("GET", "/api/accounts"),
   createAccount: (tool: ToolId, name: string) => call<Account>("POST", "/api/accounts", { tool, name }),
@@ -217,7 +231,7 @@ export const api = {
 
   sessions: () => call<Session[]>("GET", "/api/sessions"),
   session: (id: string) => call<Session>("GET", `/api/sessions/${id}`),
-  createSession: (o: { tool: ToolId; projectId?: string; prompt?: string; title?: string; yolo?: boolean; accountId?: string | null }) =>
+  createSession: (o: { tool: ToolId; projectId?: string; prompt?: string; title?: string; yolo?: boolean; accountId?: string | null } & Partial<ModelPick>) =>
     call<Session>("POST", "/api/sessions", o),
   renameSession: (id: string, title: string) => call<Session>("PATCH", `/api/sessions/${id}`, { title }),
   sessionChanges: (id: string) => call<Changes>("GET", `/api/sessions/${id}/changes`),
@@ -226,6 +240,9 @@ export const api = {
   history: (id: string) => call<string>("GET", `/api/sessions/${id}/history`),
   scroll: (id: string, dir: "up" | "down" | "exit") => call<{ ok: true }>("POST", `/api/sessions/${id}/scroll`, { dir }),
   keys: (id: string, keys: string[]) => call<{ ok: true }>("POST", `/api/sessions/${id}/keys`, { keys }),
+  models: (tool: ToolId, accountId?: string | null) =>
+    call<ModelChoices>("GET", `/api/models?${new URLSearchParams({ tool, ...(accountId ? { account: accountId } : {}) })}`),
+  switchModel: (id: string, o: { model?: string; effort?: string }) => call<{ menu: boolean }>("POST", `/api/sessions/${id}/model`, o),
   send: (id: string, text: string, enter = true) => call<{ ok: true }>("POST", `/api/sessions/${id}/send`, { text, enter }),
   uploadAttachments: async (id: string, files: File[]) => {
     const form = new FormData();

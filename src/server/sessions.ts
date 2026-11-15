@@ -2,7 +2,7 @@ import { writeFileSync, existsSync } from "node:fs";
 import { config, cleanEnv } from "./config";
 import { db, newId, now } from "./db";
 import { badRequest, conflict, notFound } from "./errors";
-import { TOOLS, type ToolId } from "./tools";
+import { TOOLS, launchChoice, type ToolId } from "./tools";
 import { getProject, touchProject } from "./projects";
 import { emit } from "./events";
 import { shiftView } from "./shifts";
@@ -208,6 +208,9 @@ export type CreateOpts = {
   title?: string;
   prompt?: string;
   yolo?: boolean;
+  /** Model and reasoning effort to start with; unset = the agent's own default. */
+  model?: string | null;
+  effort?: string | null;
   accountId?: string | null;
   taskId?: string | null;
   /** Internal: run this exact command instead of the tool's normal one (e.g. a login flow). */
@@ -232,7 +235,8 @@ export async function createSession(o: CreateOpts) {
   const account = o.tool === "shell" ? null : resolveAccount(o.tool, o.accountId);
   const id = newId("s");
   const tmuxName = `ansai-${id}`;
-  const argv = o.argv ?? withHooks(o.tool, tool.argv({ prompt: o.prompt?.trim() || undefined, yolo: o.yolo }), id);
+  const launch = { yolo: o.yolo, model: o.model || undefined, effort: o.effort || undefined };
+  const argv = o.argv ?? withHooks(o.tool, tool.argv({ ...launch, prompt: o.prompt?.trim() || undefined }), id);
   const title =
     o.title?.trim() ||
     (o.prompt?.trim() ? o.prompt.trim().split("\n")[0]!.slice(0, 60) : `${tool.label}${project ? " · " + project.name : ""}`);
@@ -256,9 +260,10 @@ export async function restartSession(id: string) {
   const s = getSession(id);
   if (!s) throw notFound("no such session");
   const argv = JSON.parse(s.argv) as string[];
-  // A restarted agent shouldn't replay the original prompt (or a login flow).
+  // A restarted agent shouldn't replay the original prompt (or a login flow), but keeps its model and effort.
   const tool = TOOLS[s.tool];
-  const base = s.tool === "shell" ? argv : withHooks(s.tool, tool.argv({ yolo: argv.some((a) => a.startsWith("--dangerously")) }), s.id);
+  const keep = { yolo: argv.some((a) => a.startsWith("--dangerously")), ...launchChoice(argv) };
+  const base = s.tool === "shell" ? argv : withHooks(s.tool, tool.argv(keep), s.id);
   const account = s.account_id ? getAccount(s.account_id) : null;
   const env = sessionEnv(s.id, account, s.cwd); // also prepares the profile, which a respawn needs too
   const alive = (await tmux(["has-session", "-t", s.tmux_name])).code === 0;

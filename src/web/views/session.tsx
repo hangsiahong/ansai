@@ -142,6 +142,8 @@ export function SessionPane({ id }: { id: string }) {
     }
   };
 
+  const openModel = () => openSheet({ kind: "model", sessionId: id, showTerminal: () => chooseView("terminal") });
+
   const act = async (what: "restart" | "close" | "rename") => {
     setMenu(false);
     try {
@@ -189,10 +191,17 @@ export function SessionPane({ id }: { id: string }) {
             {s.project_id ? <Link href={`/p/${s.project_id}`}>{s.project_name}</Link> : "~"}
             {account && !account.is_default && <> · {account.name}</>}
             {s.model && (
-              <span class="model" title={`Model ${s.model}${s.effort ? ` · effort ${s.effort}` : " · effort shows after the first reply"}`}>
+              <>
                 {" · "}
-                {modelLabel(s)}
-              </span>
+                <button
+                  class="model"
+                  onClick={openModel}
+                  disabled={s.tool === "shell"}
+                  title={`Model ${s.model}${s.effort ? ` · effort ${s.effort}` : " · effort shows after the first reply"} — tap to change`}
+                >
+                  {modelLabel(s)}
+                </button>
+              </>
             )}
             {view === "terminal" && tstatus !== "live" && !closed && <span class="warn-text"> · {tstatus}</span>}
           </div>
@@ -235,6 +244,7 @@ export function SessionPane({ id }: { id: string }) {
                   <button onClick={() => (setMenu(false), openSheet({ kind: "shift", sessionId: id }))}>{s.shift?.active ? "Shift…" : "Keep working until…"}</button>
                 )}
                 <button onClick={() => act("rename")}>Rename</button>
+                {s.tool !== "shell" && s.status === "running" && <button onClick={() => (setMenu(false), openModel())}>Change model</button>}
                 <button onClick={() => act("restart")}>Restart {TOOL_LABEL[s.tool]}</button>
                 <div class="menu-row">
                   <span>Text size</span>

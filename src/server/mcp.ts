@@ -3,7 +3,7 @@ import { HttpError } from "./errors";
 import { getSession } from "./sessions";
 import { JSON_LIMIT, readJson } from "./validate";
 import { createTask, finishTask, getTask } from "./tasks";
-import { claimFiles, describeAgents, describeHistory, postMessage, releaseFiles, takePending } from "./team";
+import { claimFiles, deliveryNote, describeAgents, describeHistory, postMessage, releaseFiles, takePending } from "./team";
 import { endShift, shiftView } from "./shifts";
 
 /**
@@ -145,7 +145,12 @@ function runTool(sessionId: string, name: string, args: any) {
     const to = String(args?.to ?? "").trim();
     if (!to) return text('Say who it is for: an agent id from list_agents, or "all".', true);
     const m = postMessage({ from: s, to, body: String(args?.message ?? "") });
-    return text(m.to_session ? `Sent to ${m.to_label}.` : "Sent to everyone in this project.");
+    const target = m.to_session ? getSession(m.to_session) : null;
+    return text(
+      target
+        ? `Sent to ${m.to_label}. ${deliveryNote(target)}`
+        : "Sent to everyone in this project. Busy agents read it between steps; idle ones on their next turn (broadcasts don't wake anyone).",
+    );
   }
 
   if (name === "claim_files") {

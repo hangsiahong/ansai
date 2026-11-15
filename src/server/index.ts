@@ -28,16 +28,17 @@ import {
   tmuxBase,
   writeTmuxConf,
 } from "./sessions";
-import { TOOLS, toolList, type ToolId } from "./tools";
+import { EFFORTS, TOOLS, isModelId, toolList, type ToolId } from "./tools";
+import { modelChoices, switchModel } from "./models";
 import { HttpError, badRequest, conflict, errorCode, notFound, tooLarge } from "./errors";
-import { parseBody, v } from "./validate";
+import { parseBody, v, type Check } from "./validate";
 import { onChange, emit, type Topic } from "./events";
 import { handleHook, writeHookFiles } from "./hooks";
 import { getPrefs, publicKey, subscribe, testPush, unsubscribe } from "./push";
 import { setViewer } from "./viewers";
 import { startBackgroundTails, subscribeChat, unsubscribeChat } from "./transcripts";
 import { mcpHttp } from "./mcp";
-import { deliverIdle, listMessages, postMessage } from "./team";
+import { deliverIdle, listMessages, postMessage, teamBoard } from "./team";
 import { endProjectShift, endShift, nudgeIdle, shiftView, startProjectShift, startShift } from "./shifts";
 import { getSettings, setProjectAutopilot, startAutopilot, updateSettings } from "./autopilot";
 import { STATUSES, createTask, deleteTask, getTask, listTasks, runTask, updateTask } from "./tasks";
@@ -50,6 +51,7 @@ import {
   deleteAccount,
   ensureDefaultAccounts,
   getAccount,
+  isAgentTool,
   listAccounts,
   loginArgv,
   scanUsage,
@@ -108,6 +110,14 @@ const PROMPT_MAX = 30_000;
 const TOOL_IDS = Object.keys(TOOLS) as ToolId[];
 const optRef = v.optional(v.nullable(v.string({ max: 200 })));
 const optBool = v.optional(v.boolean());
+const modelId: Check<string> = (x, path) => {
+  const m = v.string({ min: 1, max: 100, trim: true })(x, path);
+  if (!isModelId(m)) throw badRequest(`${path} must be a model name like opus or gpt-6-luna`);
+  return m;
+};
+// null or missing = the agent's own default
+const optModel = v.optional(v.nullable(modelId));
+const optEffort = v.optional(v.nullable(v.oneOf(EFFORTS)));
 const priority = v.number({ int: true, min: 0, max: 3 });
 const endpointBody = v.object({ endpoint: v.string({ min: 1, max: 2048 }) });
 
@@ -201,6 +211,14 @@ const server = Bun.serve<WSData>({
       }),
     },
     "/api/tools": guard(() => json(toolList())),
+    "/api/models": {
+      GET: guard(async (req) => {
+        const q = new URL(req.url).searchParams;
+        const tool = q.get("tool");
+        if (!isAgentTool(tool)) throw badRequest(`tool must be one of ${AGENT_TOOLS.join(", ")}`);
+        return json(await modelChoices(tool, q.get("account") || null));
+      }),
+    },
 
     "/api/projects": {
       GET: guard((req) => json(listProjects(new URL(req.url).searchParams.has("all")))),
@@ -301,8 +319,10 @@ const server = Bun.serve<WSData>({
     },
     "/api/tasks/:id/run": {
       POST: guard(async (req) => {
-        const b = await parseBody(req, v.object({ tool: v.oneOf(TOOL_IDS), yolo: optBool, accountId: optRef }));
-        return json(await runTask(req.params.id!, { tool: b.tool, yolo: b.yolo === true, accountId: b.accountId || null }));
+        const b = await parseBody(req, v.object({ tool: v.oneOf(TOOL_IDS), yolo: optBool, accountId: optRef, model: optModel, effort: optEffort }));
+        return json(
+          await runTask(req.params.id!, { tool: b.tool, yolo: b.yolo === true, accountId: b.accountId || null, model: b.model ?? null, effort: b.effort ?? null }),
+        );
       }),
     },
 
@@ -324,7 +344,7 @@ const server = Bun.serve<WSData>({
     },
     "/api/projects/:id/autopilot": {
       PUT: guard(async (req) => {
-        const b = await parseBody(req, v.object({ on: optBool, tool: v.optional(v.oneOf(AGENT_TOOLS)), accountId: optRef, yolo: optBool }));
+        const b = await parseBody(req, v.object({ on: optBool, tool: v.optional(v.oneOf(AGENT_TOOLS)), accountId: optRef, yolo: optBool, model: optModel, effort: optEffort }));
         const ap = setProjectAutopilot(req.params.id!, b);
         emit("tasks");
         return json(ap);
@@ -336,6 +356,12 @@ const server = Bun.serve<WSData>({
         const sid = new URL(req.url).searchParams.get("s");
         const out = sid ? handleHook(req.params.tool!, req.params.event!, sid, await parseBody(req, v.anyObject(), HOOK_LIMIT)) : undefined;
         return out ? json(out) : new Response(null, { status: 204 });
+      }),
+    },
+    "/api/projects/:id/team": {
+      GET: guard((req) => {
+        if (!getProject(req.params.id!)) throw notFound("no such project");
+        return json(teamBoard(req.params.id!));
       }),
     },
     "/api/messages": {
@@ -432,6 +458,8 @@ const server = Bun.serve<WSData>({
             prompt: v.optional(v.string({ max: PROMPT_MAX })),
             yolo: optBool,
             accountId: optRef,
+            model: optModel,
+            effort: optEffort,
           }),
         );
         return json(
@@ -442,6 +470,8 @@ const server = Bun.serve<WSData>({
             prompt: b.prompt || undefined,
             yolo: b.yolo === true,
             accountId: b.accountId || null,
+            model: b.model ?? null,
+            effort: b.effort ?? null,
           }),
         );
       }),
@@ -503,6 +533,12 @@ const server = Bun.serve<WSData>({
         const { keys } = await parseBody(req, v.object({ keys: v.array(v.string({ min: 1, max: 16 }), { max: 20 }) }));
         await sendKeys(req.params.id!, keys);
         return json({ ok: true });
+      }),
+    },
+    "/api/sessions/:id/model": {
+      POST: guard(async (req) => {
+        const b = await parseBody(req, v.object({ model: v.optional(modelId), effort: v.optional(v.oneOf(EFFORTS)) }));
+        return json(await switchModel(req.params.id!, b));
       }),
     },
     "/api/sessions/:id/send": {

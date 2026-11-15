@@ -138,6 +138,12 @@ function AccountCard({ a }: { a: Account }) {
           <Spark daily={t.daily} />
         </div>
       )}
+      {t && t.cache_read_week > 0 && (
+        <p class="acct-note">
+          Fresh tokens: input, cache writes and output. Re-reading cached context added {compact(t.cache_read_week)} more this week (
+          {Math.round((t.cache_read_week / Math.max(1, t.total_week)) * 100)}% of all tokens), billed at a small fraction of the price.
+        </p>
+      )}
 
       {(a.usage?.note || a.usage?.limits_at) && (
         <p class="acct-note">

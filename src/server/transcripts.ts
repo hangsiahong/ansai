@@ -211,7 +211,7 @@ function cleanClaudeUser(text: string): { kind: "user" | "note"; text: string } 
   const shift = shiftNote(t);
   if (shift) return { kind: "note", text: shift };
   if (t.startsWith("[Request interrupted")) return { kind: "note", text: "Interrupted" };
-  const cmd = t.match(/<command-name>([\s\S]*?)<\/command-name>[\s\S]*?(?:<command-args>([\s\S]*?)<\/command-args>)?/);
+  const cmd = t.match(/<command-name>([\s\S]*?)<\/command-name>(?:[\s\S]*?<command-args>([\s\S]*?)<\/command-args>)?/);
   if (cmd) return { kind: "user", text: `${cmd[1]!.trim()} ${cmd[2]?.trim() ?? ""}`.trim() };
   if (/^<(local-command-|bash-stdout|bash-stderr|command-message)/.test(t)) return null;
   const bash = t.match(/^<bash-input>([\s\S]*?)<\/bash-input>/);
@@ -236,9 +236,16 @@ function parseClaude(line: string, st: ParseState, out: ChatItem[]) {
     const blocks = typeof c === "string" ? [{ type: "text", text: c }] : Array.isArray(c) ? c : [];
     blocks.forEach((b: any, i: number) => {
       if (b.type === "text") {
-        const u = cleanClaudeUser(String(b.text ?? ""));
+        const raw = String(b.text ?? "");
+        // /model and /effort answer in the log right away; the next reply then names the exact model id.
+        const setModel = raw.match(/^<local-command-stdout>Set model to `?([^`\n<]+?)`?(?: and saved| \(|<|$)/);
+        if (setModel) (st.model = setModel[1]!.trim()), (st.effort = null);
+        const setEffort = raw.match(/^<local-command-stdout>Set effort level to ([a-z]+)\b/);
+        if (setEffort) st.effort = setEffort[1]!;
+        const u = cleanClaudeUser(raw);
         if (!u) return;
-        if (u.kind === "user" && !st.firstUser) st.firstUser = u.text;
+        // A slash command (/model, /effort, /login…) isn't what you asked for; it mustn't name the session or its task.
+        if (u.kind === "user" && !st.firstUser && !raw.includes("<command-name>")) st.firstUser = u.text;
         out.push({ id: `${j.uuid}:${i}`, k: u.kind, text: u.text, ts } as ChatItem);
       } else if (b.type === "image") {
         out.push({ id: `${j.uuid}:${i}`, k: "user", text: "🖼 image", ts });
