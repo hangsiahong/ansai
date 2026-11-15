@@ -1381,3 +1381,5 @@ i.del { color: var(--danger); }
   .shift-tag svg, .shift-bar:not(.done) > svg:first-child { animation: shift-glow 3s ease-in-out infinite; }
 }
 @keyframes shift-glow { 50% { opacity: 0.45; } }
+
+.tchip.fail { color: var(--danger); background: var(--danger-soft); }

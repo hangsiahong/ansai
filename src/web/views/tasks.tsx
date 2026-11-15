@@ -87,6 +87,11 @@ function TaskMeta({ task, showProject }: { task: Task; showProject?: boolean }) 
           <Icon name="history" size={11} stroke={2.6} /> Queued
         </span>
       ) : null}
+      {task.last_failure && task.status !== "done" && task.status !== "doing" && (
+        <span class="tchip fail" title={`The last run stopped early: ${task.last_failure}`}>
+          <Icon name="x" size={11} stroke={2.8} /> {task.queued && task.status === "todo" ? `Retrying (${task.attempts})` : "Stopped early"}
+        </span>
+      )}
       {plan && (
         <span class="tplan" title={plan.current ?? "Agent's plan"}>
           <span class="tplan-bar">
