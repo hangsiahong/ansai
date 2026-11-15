@@ -133,7 +133,8 @@ export function ShiftSheet(p: { sessionId?: string; projectId?: string; onClose:
         await api.startShift(p.sessionId, body);
         toast(cur ? `Shift now ends at ${clock(at)}` : `On shift until ${clock(at)}`);
       } else if (p.projectId) {
-        const r = await api.startProjectShift(p.projectId, body);
+        // An empty focus leaves each agent's own focus as it is (it isn't cleared for everyone).
+        const r = await api.startProjectShift(p.projectId, focus.trim() ? body : { until: at });
         toast(`${r.started} agent${r.started === 1 ? "" : "s"} on shift until ${clock(at)}`);
       }
       p.onClose();
@@ -231,7 +232,7 @@ export function ShiftSheet(p: { sessionId?: string; projectId?: string; onClose:
               <textarea
                 class="input"
                 rows={2}
-                placeholder={s ? `Default: ${s.title}` : "Default: whatever each agent is working on"}
+                placeholder={s ? `Default: ${s.title}` : onShift.length ? "Empty keeps each agent's own focus" : "Default: whatever each agent is working on"}
                 value={focus}
                 onInput={(e) => setFocus((e.target as HTMLTextAreaElement).value)}
               />
