@@ -115,7 +115,7 @@ export function TabBar({ route }: { route: string }) {
     return (
       <Link href={href} class={`tab ${on ? "on" : ""}`}>
         <span class="tab-icon">
-          <Icon name={icon} size={22} stroke={on ? 2.2 : 1.8} />
+          <Icon name={icon} size={23} stroke={on ? 2.3 : 1.9} />
           {badge ? <b class="tab-badge">{badge}</b> : null}
         </span>
         <span class="tab-label">{label}</span>
@@ -123,14 +123,16 @@ export function TabBar({ route }: { route: string }) {
     );
   };
   return (
-    <nav class="tabbar" aria-label="Main">
-      {tab("/", "home", "Now", attn)}
-      {tab("/backlog", "list", "Backlog", open)}
+    <>
+      <nav class="tabbar" aria-label="Main">
+        {tab("/", "home", "Now", attn)}
+        {tab("/backlog", "list", "Backlog", open)}
+        {tab("/projects", "layers", "Projects")}
+        {tab("/accounts", "gauge", "Usage")}
+      </nav>
       <button class="tab-new" onClick={() => openSheet({ kind: "new" })} aria-label="New session">
-        <Icon name="plus" size={24} stroke={2.4} />
+        <Icon name="plus" size={26} stroke={2.4} />
       </button>
-      {tab("/projects", "layers", "Projects")}
-      {tab("/accounts", "gauge", "Usage")}
-    </nav>
+    </>
   );
 }

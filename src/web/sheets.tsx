@@ -452,7 +452,7 @@ function DevicesPanel() {
       <div class="panel">
         {devices.map((d) => (
           <div class="prow">
-            <span class={`prow-icon ${d.online ? "online" : ""}`}>
+            <span class={`prow-icon ${d.online ? "online" : "muted-tile"}`}>
               <Icon name={/ios|android/i.test(d.os) ? "phone" : "laptop"} size={16} />
             </span>
             <span class="prow-main">

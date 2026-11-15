@@ -190,7 +190,7 @@ export function SessionPane({ id }: { id: string }) {
             <Icon name="list" />
           </button>
         )}
-        <button class="icon-btn" onClick={() => openSheet({ kind: "history", sessionId: id })} title="History as text" aria-label="History">
+        <button class="icon-btn hide-phone" onClick={() => openSheet({ kind: "history", sessionId: id })} title="History as text" aria-label="History">
           <Icon name="history" />
         </button>
         {!touch && view === "terminal" && (
@@ -206,6 +206,7 @@ export function SessionPane({ id }: { id: string }) {
             <>
               <div class="menu-scrim" onClick={() => setMenu(false)} />
               <div class="menu">
+                <button onClick={() => (setMenu(false), openSheet({ kind: "history", sessionId: id }))}>History as text</button>
                 <button onClick={() => act("rename")}>Rename</button>
                 <button onClick={() => act("restart")}>Restart {TOOL_LABEL[s.tool]}</button>
                 <div class="menu-row">

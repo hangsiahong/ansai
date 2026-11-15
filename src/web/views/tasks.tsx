@@ -124,9 +124,11 @@ export function TaskList(p: { tasks: Task[]; showProject?: boolean; emptyText?: 
               <div class={`tgroup-head s-${st}`}>
                 {STATUS_LABEL[st]} <span>{groups[st].length}</span>
               </div>
-              {groups[st].map((t) => (
-                <TaskRow task={t} showProject={p.showProject} />
-              ))}
+              <div class="panel" style={{ "--sep": "48px" }}>
+                {groups[st].map((t) => (
+                  <TaskRow task={t} showProject={p.showProject} />
+                ))}
+              </div>
             </div>
           ),
       )}
@@ -135,7 +137,13 @@ export function TaskList(p: { tasks: Task[]; showProject?: boolean; emptyText?: 
           <button class="tgroup-head s-done toggle" onClick={() => setShowDone(!showDone)}>
             Done <span>{groups.done.length}</span> <em>{showDone ? "hide" : "show"}</em>
           </button>
-          {showDone && groups.done.map((t) => <TaskRow task={t} showProject={p.showProject} />)}
+          {showDone && (
+            <div class="panel" style={{ "--sep": "48px" }}>
+              {groups.done.map((t) => (
+                <TaskRow task={t} showProject={p.showProject} />
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>

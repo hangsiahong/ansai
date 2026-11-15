@@ -270,8 +270,8 @@ export function Sheet(p: {
           <h2>{p.title}</h2>
           <div class="row tight">
             {p.actions}
-            <button class="icon-btn" onClick={p.onClose} aria-label="Close">
-              <Icon name="x" />
+            <button class="icon-btn glass sm" onClick={p.onClose} aria-label="Close">
+              <Icon name="x" size={16} stroke={2.6} />
             </button>
           </div>
         </header>

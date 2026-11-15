@@ -1,15 +1,14 @@
 import { useEffect, useState } from "preact/hooks";
-import { api, type Project, type ToolId } from "../api";
+import { api, type Project } from "../api";
 import { confirmDialog, openSheet, refreshProjects, toast, toastError, useStore } from "../store";
-import { Empty, Icon, TOOL_SHORT, ToolBadge, goBack, nav, shortPath, useTick } from "../ui";
-import { SessionCard } from "./now";
+import { Empty, Icon, goBack, nav, shortPath, useTick } from "../ui";
+import { Launchers, SessionCell } from "./now";
 import { QuickAdd, TaskList } from "./tasks";
 
 export function ProjectPane({ id }: { id: string }) {
   useTick();
   const projects = useStore((s) => s.projects);
   const sessions = useStore((s) => s.sessions);
-  const tools = useStore((s) => s.tools);
   const allTasks = useStore((s) => s.tasks);
   const [fetched, setFetched] = useState<Project | null>(null);
   const project = projects.find((p) => p.id === id) ?? fetched;
@@ -53,17 +52,10 @@ export function ProjectPane({ id }: { id: string }) {
         </button>
       </header>
       <div class="scroll">
-        <div class="launch">
-          {(["claude", "codex", "agy", "shell"] as ToolId[]).map((t) => {
-            const installed = tools.find((x) => x.id === t)?.installed ?? true;
-            return (
-              <button class="launch-btn" disabled={!installed} onClick={() => openSheet({ kind: "new", projectId: id, tool: t })}>
-                <ToolBadge tool={t} size={28} />
-                <span>{TOOL_SHORT[t]}</span>
-              </button>
-            );
-          })}
-        </div>
+        <section class="sec">
+          <h2 class="sec-title">Start an agent here</h2>
+          <Launchers projectId={id} />
+        </section>
 
         <div class="split">
           <section class="sec">
@@ -77,9 +69,9 @@ export function ProjectPane({ id }: { id: string }) {
           <section class={`sec ${mine.length ? "first-narrow" : ""}`}>
             <h2 class="sec-title">Sessions</h2>
             {mine.length ? (
-              <div class="cards one">
+              <div class="panel" style={{ "--sep": "66px" }}>
                 {mine.map((s) => (
-                  <SessionCard s={s} />
+                  <SessionCell s={s} />
                 ))}
               </div>
             ) : (

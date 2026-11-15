@@ -1,7 +1,7 @@
 import { useMemo } from "preact/hooks";
 import type { Account, Session, ToolId } from "../api";
 import { openPalette, openSheet, useStore } from "../store";
-import { AGENTS, Empty, Icon, Link, StatusPill, TOOL_LABEL, TOOL_SHORT, ToolBadge, ago, sessionOrder, sessionState, useTick } from "../ui";
+import { AGENTS, Empty, Icon, Link, TOOL_SHORT, ToolBadge, ago, sessionOrder, sessionState, useTick } from "../ui";
 import { TaskRow } from "./tasks";
 
 function greeting() {
@@ -9,37 +9,37 @@ function greeting() {
   return h < 5 ? "Late night" : h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening";
 }
 
-export function SessionCard({ s }: { s: Session }) {
+/** One session as an iOS list cell: logo · title / detail · status · chevron. */
+export function SessionCell({ s }: { s: Session }) {
   const accounts = useStore((st) => st.accounts);
   const acc = s.account_id ? accounts.find((a) => a.id === s.account_id) : null;
   const st = sessionState(s);
+  const showMsg = (st.cls === "attn" || st.cls === "turn") && s.agent_message;
   return (
-    <Link href={`/s/${s.id}`} class={`scard ${st.cls}`}>
-      <div class="scard-top">
-        <ToolBadge tool={s.tool} />
-        <div class="scard-id">
-          <div class="scard-title">{s.title}</div>
-          <div class="scard-meta">
-            {s.project_name ?? "~"}
-            {acc && !acc.is_default ? ` · ${acc.name}` : ""} · {ago(s.activity_at ?? s.created_at)}
-          </div>
-        </div>
-        <StatusPill s={s} />
-      </div>
-      {s.agent_message && (st.cls === "attn" || st.cls === "turn") && <div class="scard-msg">{s.agent_message}</div>}
+    <Link href={`/s/${s.id}`} class={`cell ${st.cls}`}>
+      <ToolBadge tool={s.tool} size={38} />
+      <span class="cell-main">
+        <span class="cell-title">{s.title}</span>
+        <span class="cell-sub">
+          {showMsg ? s.agent_message : `${s.project_name ?? "~"}${acc && !acc.is_default ? ` · ${acc.name}` : ""} · ${ago(s.activity_at ?? s.created_at)}`}
+        </span>
+      </span>
+      <span class={`cell-detail ${st.cls}`}>{st.label}</span>
+      <Icon name="chevR" size={17} stroke={2.2} />
     </Link>
   );
 }
 
-function QuickStart() {
+/** Home-screen style launchers. */
+export function Launchers({ projectId }: { projectId?: string }) {
   const tools = useStore((s) => s.tools);
   return (
-    <div class="quickstart">
+    <div class="launchers">
       {(["claude", "codex", "agy", "shell"] as ToolId[])
         .filter((t) => tools.find((x) => x.id === t)?.installed !== false)
         .map((t) => (
-          <button class="qs-btn" onClick={() => openSheet({ kind: "new", tool: t })}>
-            <ToolBadge tool={t} size={22} />
+          <button class="launcher" onClick={() => openSheet({ kind: "new", tool: t, projectId })}>
+            <ToolBadge tool={t} size={58} />
             <span>{TOOL_SHORT[t]}</span>
           </button>
         ))}
@@ -47,31 +47,42 @@ function QuickStart() {
   );
 }
 
-function UsageStrip({ accounts }: { accounts: Account[] }) {
+function UsageRows({ accounts }: { accounts: Account[] }) {
   const rows = AGENTS.map((t) => accounts.find((a) => a.tool === t && a.is_default)).filter((a): a is Account => !!a && !!a.usage?.limits.length);
   if (!rows.length) return null;
   return (
-    <Link href="/accounts" class="usage-strip">
-      {rows.map((a) => {
-        const top = [...a.usage!.limits].sort((x, y) => y.used_percent - x.used_percent)[0]!;
-        const lvl = top.used_percent >= 90 ? "hot" : top.used_percent >= 70 ? "warm" : "ok";
-        return (
-          <div class="us-row">
-            <ToolBadge tool={a.tool} size={20} />
-            <span class="us-name">
-              {TOOL_SHORT[a.tool]}
-              {a.plan && <em> · {a.plan}</em>}
-            </span>
-            <span class={`us-bar ${lvl}`}>
-              <i style={{ width: `${top.used_percent}%` }} />
-            </span>
-            <span class="us-pct">
-              {top.used_percent}% <em>{top.label.replace("Weekly", "wk").replace("5-hour", "5h")}</em>
-            </span>
-          </div>
-        );
-      })}
-    </Link>
+    <section class="sec">
+      <div class="sec-head">
+        <h2 class="sec-title">Usage</h2>
+        <Link href="/accounts" class="sec-link">
+          Accounts
+        </Link>
+      </div>
+      <div class="panel" style={{ "--sep": "66px" }}>
+        {rows.map((a) => {
+          const top = [...a.usage!.limits].sort((x, y) => y.used_percent - x.used_percent)[0]!;
+          const lvl = top.used_percent >= 90 ? "hot" : top.used_percent >= 70 ? "warm" : "ok";
+          return (
+            <Link href="/accounts" class="cell">
+              <ToolBadge tool={a.tool} size={38} />
+              <span class="cell-main">
+                <span class="cell-title">
+                  {TOOL_SHORT[a.tool]}
+                  {a.plan && <span class="muted"> · {a.plan}</span>}
+                </span>
+                <span class={`us-bar ${lvl}`}>
+                  <i style={{ width: `${top.used_percent}%` }} />
+                </span>
+              </span>
+              <span class="cell-detail">
+                {top.used_percent}% {top.label.replace("Weekly", "weekly").replace("5-hour", "5h")}
+              </span>
+              <Icon name="chevR" size={17} stroke={2.2} />
+            </Link>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 
@@ -85,6 +96,7 @@ export function NowPane() {
 
   const attn = sessions.filter((s) => s.status === "running" && sessionState(s).cls === "attn");
   const others = sessions.filter((s) => !attn.includes(s));
+  const running = sessions.filter((s) => s.status === "running").length;
   const inProgress = tasks.filter((t) => t.status === "doing" || t.status === "review").sort((a, b) => b.updated_at - a.updated_at);
   const upNext = tasks
     .filter((t) => t.status === "todo")
@@ -99,26 +111,18 @@ export function NowPane() {
   return (
     <div class="pane now">
       <header class="now-head">
-        <div class="mobile-brand phone-only">
-          <img src="/icon.svg" alt="" width="26" height="26" />
-          <span class={`conn ${connected ? "on" : ""}`} />
-        </div>
         <div class="now-title">
-          <h1>{greeting()}</h1>
-          <p>
-            {attn.length
-              ? `${attn.length} agent${attn.length > 1 ? "s" : ""} waiting for you`
-              : sessions.filter((s) => s.status === "running").length
-                ? `${sessions.filter((s) => s.status === "running").length} running · nothing needs you`
-                : "Nothing running right now"}
+          <p class="now-eyebrow">
+            <span class={`conn ${connected ? "on" : ""}`} /> {attn.length ? `${attn.length} waiting for you` : running ? `${running} running` : "All quiet"}
           </p>
+          <h1>{greeting()}</h1>
         </div>
         <div class="row tight phone-only">
-          <button class="icon-btn" onClick={() => openPalette()} aria-label="Search">
-            <Icon name="search" />
+          <button class="icon-btn glass" onClick={() => openPalette()} aria-label="Search">
+            <Icon name="search" size={19} />
           </button>
-          <button class="icon-btn" onClick={() => openSheet({ kind: "settings" })} aria-label="Settings">
-            <Icon name="sliders" />
+          <button class="icon-btn glass" onClick={() => openSheet({ kind: "settings" })} aria-label="Settings">
+            <Icon name="sliders" size={19} />
           </button>
         </div>
       </header>
@@ -128,43 +132,44 @@ export function NowPane() {
           {attn.length > 0 && (
             <section class="sec">
               <h2 class="sec-title attn">Needs you</h2>
-              <div class="cards">
+              <div class="panel attn-panel" style={{ "--sep": "66px" }}>
                 {attn.map((s) => (
-                  <SessionCard s={s} />
+                  <SessionCell s={s} />
+                ))}
+              </div>
+            </section>
+          )}
+
+          {others.length > 0 && (
+            <section class="sec">
+              <h2 class="sec-title">Sessions</h2>
+              <div class="panel" style={{ "--sep": "66px" }}>
+                {others.map((s) => (
+                  <SessionCell s={s} />
                 ))}
               </div>
             </section>
           )}
 
           <section class="sec">
-            <div class="sec-head">
-              <h2 class="sec-title">{others.length ? "Sessions" : "Start something"}</h2>
-            </div>
-            {others.length > 0 ? (
-              <div class="cards">
-                {others.map((s) => (
-                  <SessionCard s={s} />
-                ))}
-              </div>
-            ) : (
-              <p class="hint">Open an agent in any of your projects — it keeps running here even when you close the app.</p>
-            )}
-            <QuickStart />
+            <h2 class="sec-title">{sessions.length ? "Start another" : "Start an agent"}</h2>
+            <Launchers />
+            {!sessions.length && <p class="sec-foot">Agents keep running on your laptop even when you close this app.</p>}
           </section>
         </div>
 
         <aside class="now-side">
-          <UsageStrip accounts={accounts} />
+          <UsageRows accounts={accounts} />
 
           {inProgress.length > 0 && (
             <section class="sec">
               <div class="sec-head">
                 <h2 class="sec-title">In progress</h2>
                 <Link href="/backlog" class="sec-link">
-                  Backlog <Icon name="chevR" size={14} />
+                  Backlog
                 </Link>
               </div>
-              <div class="panel">
+              <div class="panel" style={{ "--sep": "48px" }}>
                 {inProgress.map((t) => (
                   <TaskRow task={t} showProject />
                 ))}
@@ -176,11 +181,11 @@ export function NowPane() {
             <div class="sec-head">
               <h2 class="sec-title">Up next</h2>
               <button class="sec-link" onClick={() => openSheet({ kind: "new-task" })}>
-                <Icon name="plus" size={14} /> Task
+                Add task
               </button>
             </div>
             {upNext.length ? (
-              <div class="panel">
+              <div class="panel" style={{ "--sep": "48px" }}>
                 {upNext.map((t) => (
                   <TaskRow task={t} showProject />
                 ))}
@@ -197,14 +202,19 @@ export function NowPane() {
               <div class="sec-head">
                 <h2 class="sec-title">Projects</h2>
                 <Link href="/projects" class="sec-link">
-                  All {projects.length} <Icon name="chevR" size={14} />
+                  All {projects.length}
                 </Link>
               </div>
-              <div class="chips">
+              <div class="panel">
                 {shortcuts.map((p) => (
-                  <Link href={`/p/${p.id}`} class="pchip">
-                    <Icon name={p.pinned ? "star" : "folder"} size={14} />
-                    {p.name}
+                  <Link href={`/p/${p.id}`} class="prow">
+                    <span class={`prow-icon ${p.pinned ? "pinned" : ""}`}>
+                      <Icon name={p.pinned ? "star" : "folder"} size={16} stroke={2.2} />
+                    </span>
+                    <span class="prow-main">
+                      <span class="prow-name">{p.name}</span>
+                    </span>
+                    <Icon name="chevR" size={17} stroke={2.2} />
                   </Link>
                 ))}
               </div>
@@ -215,5 +225,3 @@ export function NowPane() {
     </div>
   );
 }
-
-export const toolLabel = (t: ToolId) => TOOL_LABEL[t];
