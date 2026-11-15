@@ -1199,6 +1199,24 @@ a.prow:active, button.prow:active { background: var(--press); }
   .runbox-head { font-size: 16px; }
 }
 
+/* Accounts: keep the quota card compact and actions comfortable on touch. */
+@media (max-width: 820px) {
+  .acct-section { margin-bottom: 24px; }
+  .acct-section-head { gap: 6px; margin-bottom: 9px; }
+  .acct-section-head .sec-title { font-size: 12px; }
+  .acct-section-head > .btn { min-height: 40px; }
+  .acct-grid { gap: 10px; }
+  .acct { gap: 12px; padding: 14px; }
+  .acct-head { gap: 7px; }
+  .acct .menu-wrap > .icon-btn { width: 40px; height: 40px; }
+  .limit { grid-template-columns: minmax(72px, .72fr) minmax(0, 1fr) 38px; column-gap: 8px; }
+  .limit-label { font-size: 12px; }
+  .bar { height: 8px; }
+  .tokens { gap: 12px; padding-top: 10px; }
+  .tok b { font-size: 16px; }
+  .acct-actions > .btn { min-height: 40px; }
+}
+
 /* ================================================================== team
    Agents talking to each other (and to you): a feed per project, and the
    messages inside each agent's chat. */
