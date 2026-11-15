@@ -24,6 +24,11 @@ test("finished = reached Review or Done since then; filed = agent tasks created 
   task("agent-new", { status: "todo", at: since + 4000, source: "agent", created: since + 4000 });
   task("agent-old", { status: "todo", at: since + 4000, source: "agent", created: since - 4000 });
   task("mine-new", { status: "todo", at: since + 4000, created: since + 4000 });
+  task("reordered", { status: "review", at: since + 5000 }); // only edited since then; no agent worked on it
+  db.query(
+    `INSERT INTO sessions (id, project_id, task_id, tool, title, cwd, argv, tmux_name, status, created_at, agent_state_at)
+     VALUES ('rv', 'dp', 'new-review', 'claude', 'R', '/tmp', '[]', 'ansai-rv', 'exited', ?, ?)`,
+  ).run(since - 10_000, since + 1000);
   const d = await digest(since);
   expect(d.finished).toEqual(["new-done", "new-review"]);
   expect(d.filed).toEqual(["agent-new"]);
