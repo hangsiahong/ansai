@@ -155,7 +155,7 @@ export function postMessage(o: { from: SessionRow | null; to?: string | null; pr
 const delivering = new Set<string>();
 
 /** Should a pending message wake this agent? Direct messages and your own broadcasts do; agents' broadcasts wait. */
-function wakes(s: SessionRow): boolean {
+export function wakes(s: SessionRow): boolean {
   return !!db
     .query(
       `SELECT 1 FROM messages WHERE id > ? AND COALESCE(from_session, '') != ?

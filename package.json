@@ -7,7 +7,8 @@
     "dev": "ANSAI_DEV=1 bun --hot src/server/index.ts",
     "start": "bun src/server/index.ts",
     "build": "bun build --compile --minify --sourcemap src/server/index.ts --outfile dist/ansai",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",
