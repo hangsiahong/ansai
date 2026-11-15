@@ -42,11 +42,12 @@ import { mcpHttp } from "./mcp";
 import { deliverIdle, getPlaybook, listMessages, postMessage, setPlaybook, teamBoard } from "./team";
 import { digest, markSeen } from "./digest";
 import { endProjectShift, endShift, nudgeIdle, stopPressed, shiftView, startProjectShift, startShift } from "./shifts";
-import { getSettings, setProjectAutopilot, startAutopilot, updateSettings } from "./autopilot";
+import { autopilotTick, getSettings, setProjectAutopilot, startAutopilot, updateSettings } from "./autopilot";
 import { STATUSES, createTask, deleteTask, getTask, listTasks, runTask, updateTask } from "./tasks";
 import { changesIn, taskDir } from "./changes";
 import { discardTaskWorktree, mergeTaskWorktree } from "./worktrees";
 import { db } from "./db";
+import { deleteSchedule, listSchedules, runScheduleNow, saveSchedule, setScheduleEnabled } from "./schedules";
 import {
   AGENT_TOOLS,
   createAccount,
@@ -369,6 +370,29 @@ const server = Bun.serve<WSData>({
         const ap = setProjectAutopilot(req.params.id!, b);
         emit("tasks");
         return json(ap);
+      }),
+    },
+    "/api/projects/:id/schedules": {
+      GET: guard((req) => json(listSchedules(req.params.id!))),
+      POST: guard(async (req) => {
+        const b = await parseBody(req, v.object({ id: v.optional(v.string({ max: 40 })), title: v.string({ min: 1, max: 300, trim: true }), prompt: v.string({ min: 1, max: PROMPT_MAX }), tool: v.oneOf(AGENT_TOOLS), accountId: optRef, model: optModel, effort: optEffort, cadence: v.oneOf(["daily", "weekdays", "weekly"] as const), localTime: v.string({ min: 5, max: 5 }), timezone: v.string({ min: 1, max: 100 }) }));
+        return json(saveSchedule(req.params.id!, b.id ?? null, b));
+      }),
+    },
+    "/api/projects/:id/schedules/:scheduleId": {
+      PATCH: guard(async (req) => {
+        const b = await parseBody(req, v.object({ enabled: v.optional(v.boolean()) }));
+        return json(setScheduleEnabled(req.params.id!, req.params.scheduleId!, b.enabled === true));
+      }),
+      DELETE: guard((req) => { deleteSchedule(req.params.id!, req.params.scheduleId!); return json({ ok: true }); }),
+    },
+    "/api/projects/:id/schedules/:scheduleId/run": {
+      POST: guard(async (req) => {
+        const task = runScheduleNow(req.params.id!, req.params.scheduleId!);
+        // The same autopilot scheduler enforces project permission and the global concurrency limit.
+        await autopilotTick();
+        const current = getTask(task.id)!;
+        return json({ task: current, queued: !!current.queued });
       }),
     },
     "/api/hooks/:tool/:event": {

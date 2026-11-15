@@ -11,6 +11,7 @@ export type Autopilot = {
   /** Time limit per run, in minutes (null = none). */
   maxMinutes?: number | null;
 };
+export type Schedule = { id: string; project_id: string; title: string; prompt: string; tool: Exclude<ToolId, "shell">; account_id: string | null; model: string | null; effort: string | null; cadence: "daily" | "weekdays" | "weekly"; local_time: string; timezone: string; next_at: number; enabled: number; occurrences: { id: string; task_id: string; scheduled_for: number; status: string; outcome: string | null; task_status: string; summary: string | null; last_failure: string | null; session_id: string | null }[] };
 export type Project = {
   id: string;
   name: string;
@@ -235,6 +236,11 @@ export const api = {
   setDevices: (allowed: string[]) => call<DeviceList>("PUT", "/api/devices", { allowed }),
 
   setAutopilot: (projectId: string, patch: Partial<Autopilot>) => call<Autopilot>("PUT", `/api/projects/${projectId}/autopilot`, patch),
+  schedules: (projectId: string) => call<Schedule[]>("GET", `/api/projects/${projectId}/schedules`),
+  saveSchedule: (projectId: string, schedule: Partial<Schedule> & { title: string; prompt: string; tool: Exclude<ToolId, "shell">; cadence: Schedule["cadence"]; local_time: string; timezone: string }) => call<Schedule>("POST", `/api/projects/${projectId}/schedules`, { ...schedule, id: schedule.id, accountId: schedule.account_id }),
+  toggleSchedule: (projectId: string, id: string, enabled: boolean) => call<{ ok: true }>("PATCH", `/api/projects/${projectId}/schedules/${id}`, { enabled }),
+  deleteSchedule: (projectId: string, id: string) => call<{ ok: true }>("DELETE", `/api/projects/${projectId}/schedules/${id}`),
+  runScheduleNow: (projectId: string, id: string) => call<{ task: Task; queued: boolean }>("POST", `/api/projects/${projectId}/schedules/${id}/run`),
   startShift: (sessionId: string, o: { until: number; focus?: string | null }) => call<Shift>("PUT", `/api/sessions/${sessionId}/shift`, o),
   endShift: (sessionId: string) => call<Shift>("DELETE", `/api/sessions/${sessionId}/shift`),
   startProjectShift: (projectId: string, o: { until: number; focus?: string | null }) =>

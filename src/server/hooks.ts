@@ -136,6 +136,10 @@ const APPROVAL_ACTIONS: PushAction[] = [
 ];
 
 function push(s: Row, kind: "input" | "done", body: string, actions: PushAction[] = []) {
+  if (s.task_id) {
+    if (kind === "input") db.query("UPDATE schedule_occurrences SET status='needs_attention', outcome=? WHERE task_id=?").run(body.slice(0, 1000), s.task_id);
+    else db.query("UPDATE schedule_occurrences SET status=CASE WHEN (SELECT summary FROM tasks WHERE id=?) IS NULL THEN 'needs_attention' ELSE 'completed' END, outcome=? WHERE task_id=?").run(s.task_id, body.slice(0, 1000), s.task_id);
+  }
   if (isWatched(s.id)) return; // you're looking at it already
   const title = kind === "input" ? `Needs you · ${s.title}` : `Done · ${s.title}`;
   // `since` pins the buttons to this prompt: if the agent has moved on, the server refuses them.
@@ -284,6 +288,7 @@ function retryAutopilotRun(s: Row, code: number | null, how: ExitHow): boolean {
   db.query(
     `UPDATE tasks SET status = 'todo', queued = 1, attempts = ?, last_failure = ?, summary = ?, done_at = NULL, updated_at = ? WHERE id = ?`,
   ).run(n, failure, `The previous run stopped before finishing: ${failure}. Retry ${n} of ${AUTO_RETRIES}.`, now(), s.task_id);
+  db.query("UPDATE schedule_occurrences SET status='queued', outcome=? WHERE task_id=?").run(failure, s.task_id);
   emit("tasks");
   return true;
 }
@@ -316,7 +321,10 @@ export function onExited(id: string, code: number | null, how: ExitHow = "exited
       `UPDATE tasks SET status = 'review', summary = COALESCE(summary, ?), last_failure = COALESCE(?, last_failure), updated_at = ? WHERE id = ? AND status = 'doing'
          AND NOT EXISTS (SELECT 1 FROM sessions WHERE task_id = ? AND id != ? AND status = 'running')`,
     ).run(reason, failure, now(), s.task_id, s.task_id, s.id);
-    if (recovered.changes) emit("tasks");
+    if (recovered.changes) {
+      db.query("UPDATE schedule_occurrences SET status='needs_attention', outcome=? WHERE task_id=?").run(reason, s.task_id);
+      emit("tasks");
+    }
   }
 
   if (isWatched(id) || !code) return; // clean exits are expected

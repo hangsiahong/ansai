@@ -200,6 +200,42 @@ const migrations: string[] = [
   );
   CREATE INDEX task_dependencies_prerequisite ON task_dependencies(depends_on_task_id);
   `,
+  // v15: recurring prompts and durable, uniquely keyed occurrences.
+  `
+  CREATE TABLE schedules (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    prompt TEXT NOT NULL,
+    title TEXT NOT NULL,
+    tool TEXT NOT NULL,
+    account_id TEXT REFERENCES accounts(id) ON DELETE SET NULL,
+    model TEXT,
+    effort TEXT,
+    cadence TEXT NOT NULL,
+    local_time TEXT NOT NULL,
+    timezone TEXT NOT NULL,
+    next_at INTEGER NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE INDEX schedules_due ON schedules(enabled, next_at);
+  CREATE TABLE schedule_occurrences (
+    id TEXT PRIMARY KEY,
+    schedule_id TEXT REFERENCES schedules(id) ON DELETE SET NULL,
+    scheduled_for INTEGER NOT NULL,
+    task_id TEXT NOT NULL UNIQUE REFERENCES tasks(id) ON DELETE CASCADE,
+    tool TEXT,
+    account_id TEXT REFERENCES accounts(id) ON DELETE SET NULL,
+    model TEXT,
+    effort TEXT,
+    status TEXT NOT NULL,
+    outcome TEXT,
+    created_at INTEGER NOT NULL,
+    UNIQUE(schedule_id, scheduled_for)
+  );
+  CREATE INDEX schedule_occurrences_schedule ON schedule_occurrences(schedule_id, created_at DESC);
+  `,
 ];
 
 export function getSetting<T>(key: string, fallback: T): T {

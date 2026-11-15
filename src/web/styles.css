@@ -1107,6 +1107,16 @@ a.prow:active, button.prow:active { background: var(--press); }
 .autopilot .switch-row { background: none; }
 .ap-body { display: flex; flex-direction: column; gap: 12px; padding: 4px 16px 14px; border-top: 0.5px solid var(--line); padding-top: 14px; }
 .panel.autopilot > .ap-body::before { display: none; }
+.schedule-card { padding: 14px; margin: 8px 0; display: grid; gap: 8px; }
+.schedule-title, .schedule-actions, .schedule-run { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.schedule-title { justify-content: space-between; }
+.schedule-run { border-top: 1px solid var(--line); padding-top: 7px; font-size: 13px; }
+.schedule-run a { color: var(--accent); }
+.schedule-actions { margin-top: 2px; }
+.schedule-form { padding: 16px; margin-top: 10px; }
+.schedule-form h3 { margin: 0 0 4px; }
+.schedule-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+@media (max-width: 560px) { .schedule-grid { grid-template-columns: 1fr 1fr; } }
 .ap-agents { display: flex; gap: 10px; }
 .ap-agent { border: 0; background: none; padding: 3px; border-radius: 16px; }
 .ap-agent.on { box-shadow: 0 0 0 2.5px var(--accent); }
