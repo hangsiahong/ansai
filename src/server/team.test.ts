@@ -127,6 +127,19 @@ describe("not waking for nothing", () => {
   });
 });
 
+describe("your direct messages always wake", () => {
+  test("a finished agent is woken for your review, but not for a teammate's message", () => {
+    db.query("INSERT INTO tasks (id, project_id, title, status, summary, created_at, updated_at) VALUES ('fin', 'p1', 'T', 'review', 'done', 0, 0)").run();
+    const a = agent("a", "p1");
+    agent("b", "p1", { state: "waiting", task: "fin" });
+    team.postMessage({ from: a, to: "b", body: "fyi" });
+    expect(team.shouldType(getSession("b")!, 10_000)).toBe(false); // held: its task is finished
+    team.postMessage({ from: null, to: "b", body: "Review: rename add to sum" });
+    expect(team.shouldType(getSession("b")!, 10_000)).toBe(true);
+    expect(team.shouldType(getSession("b")!, 1000)).toBe(false); // but never while its screen is moving
+  });
+});
+
 describe("rate limit", () => {
   test("an agent can send 12 messages per 10 minutes", () => {
     const a = agent("a", "p1");

@@ -209,6 +209,17 @@ export function holdReason(s: Pick<SessionRow, "task_id">, idleMs: number | null
   return null;
 }
 
+/**
+ * Type pending messages into this agent now? Only at its prompt, only for messages
+ * that wake (direct ones, or your broadcasts), and not into a finished or cold agent,
+ * unless you messaged it yourself (a review, a follow-up): that always wakes it.
+ */
+export function shouldType(s: SessionRow, quietMs: number | null): boolean {
+  if (!isIdle(s, quietMs) || !wakes(s)) return false;
+  const fromYou = db.query("SELECT 1 FROM messages WHERE id > ? AND from_session IS NULL AND to_session = ? LIMIT 1").get(s.msg_cursor ?? 0, s.id);
+  return !!fromYou || !holdReason(s, quietMs);
+}
+
 export async function deliverIdle() {
   const rows = db
     .query(
@@ -219,8 +230,7 @@ export async function deliverIdle() {
   for (const s of rows) {
     if (delivering.has(s.id)) continue;
     const at = sessionView(s).activity_at;
-    const quiet = at ? Date.now() - at : null;
-    if (!isIdle(s, quiet) || !wakes(s) || holdReason(s, quiet)) continue;
+    if (!shouldType(s, at ? Date.now() - at : null)) continue;
     delivering.add(s.id);
     try {
       const text = takePending(s.id);
