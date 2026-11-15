@@ -1,7 +1,7 @@
 import { useEffect, useState } from "preact/hooks";
 import { api, type Changes, type FileChange } from "./api";
 import { confirmDialog, openSheet, toast, toastError, useStore } from "./store";
-import { Icon, Sheet, ago } from "./ui";
+import { haptic, Icon, Sheet, ago } from "./ui";
 
 /**
  * What an agent changed, as a reviewable diff: a task's worktree against the
@@ -298,6 +298,7 @@ export function useReview(agentId: string | null, projectId: string | null) {
     setSending(true);
     try {
       await api.postMessage({ body: reviewMessage(comments), to: agentId, projectId });
+      haptic();
       toast(`Sent ${comments.length} comment${comments.length === 1 ? "" : "s"} to the agent`);
       setComments([]);
     } catch (e) {
