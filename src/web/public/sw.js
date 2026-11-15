@@ -39,16 +39,36 @@ self.addEventListener("push", (e) => {
       renotify: !!d.tag,
       icon: "/icon-192.png",
       badge: "/icon-192.png",
-      data: { url: d.url || "/" },
+      // "Needs you" can be answered from the notification (Android, desktop; iOS shows no buttons).
+      actions: (d.actions || []).slice(0, 2).map((a) => ({ action: a.id, title: a.title })),
+      data: { url: d.url || "/", session: d.session, since: d.since, actions: d.actions || [] },
     }),
   );
 });
 
+/** Press a notification button's keys in the agent's terminal; if that fails (it moved on), open the session. */
+async function answer(data, actionId) {
+  const a = (data.actions || []).find((x) => x.id === actionId);
+  if (!a || !data.session) return false;
+  try {
+    const res = await fetch(`/api/sessions/${data.session}/keys`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ keys: a.keys, ifSince: data.since ?? null }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 self.addEventListener("notificationclick", (e) => {
   e.notification.close();
-  const url = (e.notification.data && e.notification.data.url) || "/";
+  const data = e.notification.data || {};
+  const url = data.url || "/";
   e.waitUntil(
     (async () => {
+      if (e.action && (await answer(data, e.action))) return;
       const wins = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
       for (const w of wins) {
         if ("focus" in w) {

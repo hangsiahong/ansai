@@ -59,7 +59,10 @@ async function sendTo(row: SubRow, payload: object, urgency: "high" | "normal") 
   }
 }
 
-export async function notify(kind: PushKind, n: { title: string; body: string; url: string; tag?: string }) {
+export async function notify(
+  kind: PushKind,
+  n: { title: string; body: string; url: string; tag?: string; session?: string; since?: number | null; actions?: { id: string; title: string; keys: string[] }[] },
+) {
   const rows = db.query("SELECT endpoint, keys, prefs FROM push_subs").all() as SubRow[];
   const payload = { ...n, kind, tag: n.tag ?? n.url };
   await Promise.all(

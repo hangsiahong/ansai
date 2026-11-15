@@ -6,7 +6,7 @@ import { emit } from "./events";
 import { notify } from "./push";
 import { isWatched } from "./viewers";
 import { dropClaims, editWarning, takePending, wakes } from "./team";
-import { getSession } from "./sessions";
+import { getSession, sessionView } from "./sessions";
 import { claudeStop, codexTurnEnded, shiftWorked } from "./shifts";
 
 const EDITS = new Set(["Edit", "MultiEdit", "Write", "NotebookEdit"]);
@@ -114,10 +114,20 @@ const clip = (s: unknown, n = 140) => {
   return t.length > n ? t.slice(0, n - 1) + "…" : t;
 };
 
-function push(s: Row, kind: "input" | "done", body: string) {
+/** A button on a "needs you" notification: the keys it presses in the agent's terminal. */
+export type PushAction = { id: string; title: string; keys: string[] };
+// Tool approvals (Claude's permission prompt, Codex's): Enter takes the preselected yes, Esc says no.
+const APPROVAL_ACTIONS: PushAction[] = [
+  { id: "allow", title: "Allow", keys: ["Enter"] },
+  { id: "deny", title: "Deny", keys: ["Escape"] },
+];
+
+function push(s: Row, kind: "input" | "done", body: string, actions: PushAction[] = []) {
   if (isWatched(s.id)) return; // you're looking at it already
   const title = kind === "input" ? `Needs you · ${s.title}` : `Done · ${s.title}`;
-  notify(kind, { title, body, url: `/s/${s.id}`, tag: `s-${s.id}` }).catch(() => {});
+  // `since` pins the buttons to this prompt: if the agent has moved on, the server refuses them.
+  const since = (db.query("SELECT agent_state_at FROM sessions WHERE id = ?").get(s.id) as { agent_state_at: number | null } | null)?.agent_state_at ?? null;
+  notify(kind, { title, body, url: `/s/${s.id}`, tag: `s-${s.id}`, ...(actions.length ? { session: s.id, since, actions } : {}) }).catch(() => {});
 }
 
 /** What Claude reads back from a hook: extra context for the model (team messages), or "keep going" (shifts). */
@@ -170,7 +180,7 @@ export function handleHook(tool: string, event: string, sessionId: string, paylo
           return;
         }
         setState(s, "needs-input", msg);
-        push(s, "input", msg || "Waiting for your approval");
+        push(s, "input", msg || "Waiting for your approval", APPROVAL_ACTIONS);
         return;
       }
       case "Stop": {
@@ -214,7 +224,7 @@ export function codexScreen(id: string, prompt: string | null) {
   if (!s || s.status !== "running") return;
   if (prompt && s.agent_state !== "needs-input") {
     setState(s, "needs-input", prompt);
-    push(s, "input", prompt);
+    push(s, "input", prompt, APPROVAL_ACTIONS);
   } else if (!prompt && s.agent_state === "needs-input") {
     setState(s, "working");
   }
@@ -226,7 +236,9 @@ export function startupScreen(id: string, message: string | null) {
   if (!s || s.status !== "running") return;
   if (message) {
     setState(s, "needs-input", message);
-    push(s, "input", message);
+    // The dialog's own answer (e.g. Trust folder = Down + Enter): plain Enter would pick "No, exit".
+    const p = getSession(id) ? sessionView(getSession(id)!).startup : null;
+    push(s, "input", message, p?.accept ? [{ id: "accept", title: p.accept, keys: p.acceptKeys }] : []);
   } else if (s.agent_state === "needs-input") {
     // Hooks take over from here (SessionStart sets "waiting").
     db.query("UPDATE sessions SET agent_state = NULL, agent_message = NULL WHERE id = ? AND agent_state = 'needs-input'").run(id);

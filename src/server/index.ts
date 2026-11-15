@@ -541,7 +541,16 @@ const server = Bun.serve<WSData>({
     },
     "/api/sessions/:id/keys": {
       POST: guard(async (req) => {
-        const { keys } = await parseBody(req, v.object({ keys: v.array(v.string({ min: 1, max: 16 }), { max: 20 }) }));
+        const { keys, ifSince } = await parseBody(
+          req,
+          v.object({ keys: v.array(v.string({ min: 1, max: 16 }), { max: 20 }), ifSince: v.optional(v.nullable(v.number())) }),
+        );
+        // A notification button only answers the prompt it was sent for: if the agent has
+        // moved on (answered, or now waiting on something else), don't press anything.
+        if (ifSince !== undefined) {
+          const s = getSession(req.params.id!);
+          if (!s || s.agent_state !== "needs-input" || s.agent_state_at !== ifSince) throw conflict("the agent isn't waiting on that prompt any more");
+        }
         await sendKeys(req.params.id!, keys);
         return json({ ok: true });
       }),
