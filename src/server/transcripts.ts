@@ -115,8 +115,10 @@ type ParseState = {
   effort: string | null;
   /** Files this agent has written or edited (absolute or cwd-relative path → last time), for teammates. */
   touched: Map<string, number>;
+  /** Tokens the model read on its last call (the conversation's current size). */
+  context: number | null;
 };
-const freshState = (): ParseState => ({ tools: new Map(), title: null, firstUser: null, model: null, effort: null, touched: new Map() });
+const freshState = (): ParseState => ({ tools: new Map(), title: null, firstUser: null, model: null, effort: null, touched: new Map(), context: null });
 
 const EDIT_TOOLS = new Set(["Edit", "MultiEdit", "Write", "NotebookEdit"]);
 function noteTouched(st: ParseState, path: unknown, ts: number) {
@@ -220,6 +222,8 @@ function parseClaude(line: string, st: ParseState, out: ChatItem[]) {
   if (j.type === "assistant" && typeof j.message?.model === "string" && !j.message.model.startsWith("<")) {
     st.model = j.message.model; // "<synthetic>" = Claude's own error/interrupt notes
     st.effort = typeof j.effort === "string" ? j.effort : null;
+    const u = j.message.usage;
+    if (u) st.context = (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.output_tokens ?? 0);
   }
   if (j.type === "user") {
     if (j.isMeta) return;
@@ -311,6 +315,11 @@ function parseCodex(line: string, st: ParseState, out: ChatItem[], key: string) 
     if (typeof c.model === "string") st.model = c.model;
     const effort = c.effort ?? c.collaboration_mode?.settings?.reasoning_effort;
     st.effort = typeof effort === "string" ? effort : null;
+    return;
+  }
+  if (j.type === "event_msg" && j.payload?.type === "token_count") {
+    const u = j.payload.info?.last_token_usage; // input_tokens already includes cached input
+    if (u) st.context = (u.input_tokens ?? 0) + (u.output_tokens ?? 0);
     return;
   }
   if (j.type !== "response_item") return;
@@ -462,6 +471,7 @@ class ChatTail {
       if (firstLoad) for (const ws of this.subs) this.sendInit(ws);
       this.autoTitle(s);
       this.recordModel(s);
+      if (!firstLoad && this.st.context !== this.sentCtx) this.broadcast({ t: "ctx", tokens: (this.sentCtx = this.st.context) });
       this.recordAsTask(s);
       this.mirrorPlan(s, changed);
     } catch (e) {
@@ -471,8 +481,12 @@ class ChatTail {
     }
   }
 
+  /** Last context size sent to viewers. */
+  sentCtx: number | null = null;
+
   sendInit(ws: Sub) {
-    this.send(ws, { t: "init", items: this.items.slice(-FIRST_SEND), more: this.truncated || this.items.length > FIRST_SEND, found: !!this.path });
+    this.sentCtx = this.st.context;
+    this.send(ws, { t: "init", items: this.items.slice(-FIRST_SEND), more: this.truncated || this.items.length > FIRST_SEND, found: !!this.path, ctx: this.st.context });
   }
 
   /** The latest plan (TodoWrite / update_plan) shows up on the session's backlog task. */
