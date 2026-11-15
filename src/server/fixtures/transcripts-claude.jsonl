@@ -1,0 +1,14 @@
+{"type":"user","uuid":"u-main","timestamp":"2026-01-02T03:04:05.000Z","message":{"content":"Please inspect this file. <system-reminder>internal reminder</system-reminder>\n<pasted_content id=\"paste-1\">pasted words\nwith lines\n</pasted_content id=\"paste-1\">"}}
+{"type":"user","uuid":"u-meta","timestamp":"2026-01-02T03:04:06.000Z","isMeta":true,"message":{"content":"hidden metadata"}}
+{"type":"user","uuid":"u-side","timestamp":"2026-01-02T03:04:07.000Z","isSidechain":true,"message":{"content":"hidden sidechain"}}
+{"type":"assistant","uuid":"a-main","timestamp":"2026-01-02T03:04:08.000Z","effort":"high","message":{"model":"claude-sonnet-4-5","usage":{"input_tokens":12,"cache_read_input_tokens":3,"cache_creation_input_tokens":2,"output_tokens":4},"content":[{"type":"thinking","thinking":"Let me inspect."},{"type":"text","text":"I will read it."},{"type":"tool_use","id":"tool-read","name":"Read","input":{"file_path":"/tmp/transcript-project/a.txt"}},{"type":"tool_use","id":"tool-edit","name":"Edit","input":{"file_path":"/tmp/transcript-project/b.txt","old_string":"old","new_string":"new"}}]}}
+{"type":"user","uuid":"u-result","timestamp":"2026-01-02T03:04:09.000Z","message":{"content":[{"type":"tool_result","tool_use_id":"tool-read","content":[{"type":"text","text":"file contents"}]},{"type":"tool_result","tool_use_id":"tool-edit","content":"edit failed","is_error":true}]}}
+{"type":"user","uuid":"u-command","timestamp":"2026-01-02T03:04:10.000Z","message":{"content":"<command-name>/model</command-name><command-args>opus</command-args>"}}
+{"type":"user","uuid":"u-bash","timestamp":"2026-01-02T03:04:11.000Z","message":{"content":"<bash-input>git status</bash-input>"}}
+{"type":"user","uuid":"u-interrupted","timestamp":"2026-01-02T03:04:12.000Z","message":{"content":"[Request interrupted by user]"}}
+{"type":"user","uuid":"u-team","timestamp":"2026-01-02T03:04:13.000Z","message":{"content":"ansai: a message from your team. check this"}}
+{"type":"user","uuid":"u-shift","timestamp":"2026-01-02T03:04:14.000Z","message":{"content":"ansai shift: you're on shift until 2026-01-02T04:04:14Z (one hour)"}}
+{"type":"user","uuid":"u-hook","timestamp":"2026-01-02T03:04:15.000Z","message":{"content":"Stop hook feedback: ansai shift: you're on shift until 2026-01-02T04:04:14Z (one hour)"}}
+{"type":"user","uuid":"u-model","timestamp":"2026-01-02T03:04:16.000Z","message":{"content":"<local-command-stdout>Set model to `claude-opus-4-5` and saved"}}
+{"type":"user","uuid":"u-effort","timestamp":"2026-01-02T03:04:17.000Z","message":{"content":"<local-command-stdout>Set effort level to max"}}
+{"type":"assistant","uuid":"a-model","timestamp":"2026-01-02T03:04:18.000Z","effort":"medium","message":{"model":"claude-opus-4-5","content":[{"type":"text","text":"Ready."}]}}
