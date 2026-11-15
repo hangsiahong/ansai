@@ -496,6 +496,44 @@ async function watchStartupScreens() {
   }
 }
 
+/**
+ * Esc while Claude is still thinking makes it rewind: your prompt goes back into its
+ * input box, nothing is logged (so the log's "[Request interrupted…]" check can't see
+ * it), and no hook fires, so the session would say "working" forever. On screen it's
+ * Claude's idle input box, with text in it, at the bottom, and no "esc to interrupt"
+ * (Claude shows that exactly while a turn runs).
+ */
+export function claudeRewound(screen: string): boolean {
+  if (/esc to interrup[t]/i.test(screen)) return false;
+  const lines = screen.split("\n").map((l) => l.trimEnd());
+  while (lines.length && !lines[lines.length - 1]!.trim()) lines.pop();
+  const rules = lines.flatMap((l, i) => (/^─{20,}$/.test(l.trim()) ? [i] : []));
+  if (rules.length < 2) return false;
+  const [top, bottom] = rules.slice(-2) as [number, number];
+  // The input box (rule, "❯ text", wrapped lines, rule) with at most its footer under it.
+  return /^❯\s+\S/.test(lines[top + 1] ?? "") && lines.length - 1 - bottom <= 3; // Claude puts a no-break space after ❯
+}
+
+const QUIET_MS = 8000;
+
+/** A Claude "working" for 8 s+ with no output since, showing a rewound prompt: it's waiting for you. */
+async function watchRewinds(at = Date.now()) {
+  const rows = db
+    .query("SELECT id, tmux_name, agent_state_at FROM sessions WHERE tool = 'claude' AND status = 'running' AND agent_state = 'working'")
+    .all() as Pick<SessionRow, "id" | "tmux_name" | "agent_state_at">[];
+  for (const r of rows) {
+    const l = live.get(r.tmux_name);
+    // The spinner redraws while Claude works, so any output in the last 8 s means it may be.
+    if (!l || at - l.activity < QUIET_MS || at - (r.agent_state_at ?? at) < QUIET_MS) continue;
+    const cap = await tmux(["capture-pane", "-p", "-t", r.tmux_name]);
+    if (cap.code !== 0 || !claudeRewound(cap.out)) continue;
+    const u = db
+      .query("UPDATE sessions SET agent_state = 'waiting', agent_state_at = ?, agent_message = 'Interrupted' WHERE id = ? AND agent_state = 'working'")
+      .run(Date.now(), r.id);
+    if (u.changes) emit("sessions");
+  }
+}
+
 // ---------------------------------------------------------------- reconcile
 
 let lastStatusSig = "";
@@ -555,6 +593,7 @@ export function startReconcileLoop(ms = 2000) {
     reconcile()
       .then(watchCodexScreens)
       .then(watchStartupScreens)
+      .then(() => watchRewinds())
       .catch((e) => console.error("reconcile:", e))
       .finally(() => setTimeout(tick, ms));
   tick();
