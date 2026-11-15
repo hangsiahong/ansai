@@ -109,6 +109,29 @@ export type ChatItem =
   | { id: string; k: "note"; text: string; ts: number }
   | { id: string; k: "tool"; ts: number; name: string; title: string; input?: Record<string, unknown>; result?: string; error?: boolean; done: boolean };
 
+export type FileChange = {
+  path: string;
+  oldPath: string | null;
+  status: "added" | "modified" | "deleted" | "renamed" | "untracked";
+  additions: number;
+  deletions: number;
+  binary: boolean;
+  patch: string;
+  truncated: boolean;
+};
+export type Changes = {
+  dir: string;
+  branch: string | null;
+  base: { label: string; sha: string };
+  worktree: boolean;
+  commits: { sha: string; subject: string; at: number }[];
+  uncommitted: number;
+  files: FileChange[];
+  additions: number;
+  deletions: number;
+  truncated: boolean;
+};
+
 export type Tool = { id: ToolId; label: string; installed: boolean };
 export type Me = { user: string; device: string; tailscale: { dnsName: string | null; owner: string | null; url: string | null }; shell: string };
 
@@ -139,6 +162,7 @@ export const api = {
   updateTask: (id: string, patch: { title?: string; body?: string; status?: TaskStatus; projectId?: string | null; priority?: number; position?: number; queued?: boolean }) =>
     call<Task>("PATCH", `/api/tasks/${id}`, patch),
   deleteTask: (id: string) => call<{ ok: true }>("DELETE", `/api/tasks/${id}`),
+  taskChanges: (id: string) => call<Changes>("GET", `/api/tasks/${id}/changes`),
   runTask: (id: string, o: { tool: ToolId; yolo?: boolean; accountId?: string | null }) => call<Session>("POST", `/api/tasks/${id}/run`, o),
 
   accounts: () => call<Account[]>("GET", "/api/accounts"),
@@ -172,6 +196,7 @@ export const api = {
   createSession: (o: { tool: ToolId; projectId?: string; prompt?: string; title?: string; yolo?: boolean; accountId?: string | null }) =>
     call<Session>("POST", "/api/sessions", o),
   renameSession: (id: string, title: string) => call<Session>("PATCH", `/api/sessions/${id}`, { title }),
+  sessionChanges: (id: string) => call<Changes>("GET", `/api/sessions/${id}/changes`),
   restartSession: (id: string) => call<Session>("POST", `/api/sessions/${id}/restart`),
   closeSession: (id: string) => call<{ ok: true }>("DELETE", `/api/sessions/${id}`),
   history: (id: string) => call<string>("GET", `/api/sessions/${id}/history`),

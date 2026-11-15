@@ -4,6 +4,7 @@ import { confirmDialog, getState, openSheet, patchTaskLocal, refreshProjects, se
 import { AGENTS, Icon, Sheet, StatusPill, TOOL_LABEL, TOOL_SHORT, ToolBadge, ago, nav, shortPath } from "./ui";
 import { AccountPicker } from "./accounts";
 import { NotifyPanel } from "./notify";
+import { ChangesSheet } from "./changes";
 
 export function Sheets() {
   const sheet = useStore((s) => s.sheet);
@@ -11,6 +12,7 @@ export function Sheets() {
   if (!sheet) return null;
   if (sheet.kind === "new") return <NewSessionSheet projectId={sheet.projectId} tool={sheet.tool} accountId={sheet.accountId} onClose={close} />;
   if (sheet.kind === "history") return <HistorySheet sessionId={sheet.sessionId} onClose={close} />;
+  if (sheet.kind === "changes") return <ChangesSheet taskId={sheet.taskId} sessionId={sheet.sessionId} onClose={close} />;
   if (sheet.kind === "add-project") return <AddProjectSheet onClose={close} />;
   if (sheet.kind === "task") return <TaskSheet key={sheet.taskId} taskId={sheet.taskId} onClose={close} />;
   if (sheet.kind === "new-task") return <NewTaskSheet projectId={sheet.projectId ?? null} onClose={close} />;
@@ -383,11 +385,15 @@ function TaskSheet(p: { taskId: string; onClose: () => void }) {
           </div>
         )}
 
-        {task.worktree_path && (
-          <div class="field">
-            <span>Task worktree · {task.worktree_branch}</span>
-            <div class="muted small">{task.worktree_path}</div>
-          </div>
+        {task.project_id && (
+          <button class="chg-open" onClick={() => openSheet({ kind: "changes", taskId: task.id })}>
+            <Icon name="branch" size={17} />
+            <span>
+              <b>Code changes</b>
+              <em>{task.worktree_path ? `Branch ${task.worktree_branch} · ${shortPath(task.worktree_path)}` : "Uncommitted work in the project folder"}</em>
+            </span>
+            <Icon name="chevR" size={16} />
+          </button>
         )}
 
         {task.plan && task.plan.total > 0 && (

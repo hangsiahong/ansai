@@ -29,7 +29,7 @@ import {
   writeTmuxConf,
 } from "./sessions";
 import { TOOLS, toolList, type ToolId } from "./tools";
-import { HttpError, badRequest, errorCode, notFound, tooLarge } from "./errors";
+import { HttpError, badRequest, conflict, errorCode, notFound, tooLarge } from "./errors";
 import { parseBody, v } from "./validate";
 import { onChange, emit, type Topic } from "./events";
 import { handleHook, writeHookFiles } from "./hooks";
@@ -39,7 +39,8 @@ import { startBackgroundTails, subscribeChat, unsubscribeChat } from "./transcri
 import { mcpHttp } from "./mcp";
 import { deliverIdle, listMessages, postMessage } from "./team";
 import { getSettings, setProjectAutopilot, startAutopilot, updateSettings } from "./autopilot";
-import { STATUSES, createTask, deleteTask, listTasks, runTask, updateTask } from "./tasks";
+import { STATUSES, createTask, deleteTask, getTask, listTasks, runTask, updateTask } from "./tasks";
+import { changesIn, taskDir } from "./changes";
 import {
   AGENT_TOOLS,
   createAccount,
@@ -265,6 +266,15 @@ const server = Bun.serve<WSData>({
         return json({ ok: true });
       }),
     },
+    "/api/tasks/:id/changes": {
+      GET: guard(async (req) => {
+        const task = getTask(req.params.id!);
+        if (!task) throw notFound("no such task");
+        const project = task.project_id ? getProject(task.project_id) : null;
+        if (!project) throw conflict("this task isn't in a project, so it has no code changes");
+        return json(await changesIn(await taskDir(task, project.path)));
+      }),
+    },
     "/api/tasks/:id/run": {
       POST: guard(async (req) => {
         const b = await parseBody(req, v.object({ tool: v.oneOf(TOOL_IDS), yolo: optBool, accountId: optRef }));
@@ -420,6 +430,13 @@ const server = Bun.serve<WSData>({
       DELETE: guard(async (req) => {
         await closeSession(req.params.id!);
         return json({ ok: true });
+      }),
+    },
+    "/api/sessions/:id/changes": {
+      GET: guard(async (req) => {
+        const s = getSession(req.params.id!);
+        if (!s) throw notFound("no such session");
+        return json(await changesIn(s.cwd));
       }),
     },
     "/api/sessions/:id/restart": { POST: guard(async (req) => json(await restartSession(req.params.id!))) },
