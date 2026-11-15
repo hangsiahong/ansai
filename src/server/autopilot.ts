@@ -2,7 +2,8 @@ import { db, getSetting, setSetting } from "./db";
 import { emit } from "./events";
 import { notFound } from "./errors";
 import { getProject } from "./projects";
-import { AGENT_TOOLS } from "./accounts";
+import { AGENT_TOOLS, checkAgySignIn } from "./accounts";
+import { notify } from "./push";
 import { getTask, projectAutopilot, runTask as startTask, type Autopilot, type Task } from "./tasks";
 import { scheduleTick, updateOccurrence } from "./schedules";
 
@@ -54,6 +55,20 @@ export function setProjectAutopilot(projectId: string, raw: Partial<Autopilot>):
 
 let ticking = false;
 
+/** Queued tasks waiting for agy to be signed in; you hear about each once. */
+const heldForSignIn = new Set<string>();
+function holdForSignIn(t: Task) {
+  if (heldForSignIn.has(t.id)) return;
+  heldForSignIn.add(t.id);
+  console.warn(`[ansai] autopilot is holding "${t.title}": agy isn't signed in`);
+  notify("input", {
+    title: `Autopilot is waiting · ${t.title}`,
+    body: "agy isn't signed in, so this task stays queued. Run `agy` in a terminal on the laptop to sign in; it starts after that.",
+    url: t.project_id ? `/p/${t.project_id}` : "/",
+    tag: `agy-signin-${t.id}`,
+  }).catch(() => {});
+}
+
 export async function autopilotTick() {
   if (ticking) return;
   ticking = true;
@@ -93,11 +108,19 @@ export async function autopilotTick() {
         emit("tasks");
         continue;
       }
+      const tool = (scheduled.schedule_tool as Autopilot["tool"] | null) ?? ap.tool;
+      const accountId = scheduled.schedule_tool ? scheduled.schedule_account : ap.accountId;
+      // Signed out, agy would sit on its sign-in menu: the task stays queued until you sign in.
+      if (tool === "agy" && (await checkAgySignIn(accountId ?? null)) === false) {
+        holdForSignIn(t);
+        continue;
+      }
+      heldForSignIn.delete(t.id);
       try {
         await runTask(t.id, {
-          tool: (scheduled.schedule_tool as Autopilot["tool"] | null) ?? ap.tool,
+          tool,
           yolo: ap.yolo,
-          accountId: scheduled.schedule_tool ? scheduled.schedule_account : ap.accountId,
+          accountId,
           model: scheduled.schedule_tool ? scheduled.schedule_model : ap.model,
           effort: scheduled.schedule_tool ? scheduled.schedule_effort : ap.effort,
           auto: true,
