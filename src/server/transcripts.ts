@@ -484,6 +484,7 @@ class ChatTail {
       if (!firstLoad && this.st.context !== this.sentCtx) this.broadcast({ t: "ctx", tokens: (this.sentCtx = this.st.context) });
       this.recordAsTask(s);
       this.mirrorPlan(s, changed);
+      if (!firstLoad) this.noteInterrupt(s, upserts);
     } catch (e) {
       console.error("[ansai] chat tail:", e);
     } finally {
@@ -506,6 +507,20 @@ class ChatTail {
     const plans = changed.filter((x): x is ToolItem => x.k === "tool" && Array.isArray((x.input as any)?.todos));
     const last = plans[plans.length - 1];
     if (last) setPlan(taskId, (last.input as any).todos);
+  }
+
+  /**
+   * Claude sends no hook when you interrupt it (Esc), so its state would stay "working"
+   * (or "needs-input", when Esc declined a permission) until the next prompt. Its log
+   * does record the interrupt: when that's the newest thing it wrote, it's waiting for you.
+   */
+  private noteInterrupt(s: SessionRow, upserts: ChatItem[]) {
+    const last = upserts[upserts.length - 1];
+    if (s.tool !== "claude" || !last || last.k !== "note" || last.text !== "Interrupted") return;
+    const r = db
+      .query(`UPDATE sessions SET agent_state = 'waiting', agent_state_at = ?, agent_message = 'Interrupted' WHERE id = ? AND agent_state IN ('working', 'needs-input')`)
+      .run(Date.now(), s.id);
+    if (r.changes) emit("sessions");
   }
 
   /** Keep the session's model + effort in step with what the agent last ran on. */
