@@ -6,7 +6,7 @@ import { emit } from "./events";
 import { notify } from "./push";
 import { isWatched } from "./viewers";
 import { dropClaims, editWarning, takePending, wakes } from "./team";
-import { getSession, sessionView } from "./sessions";
+import { clearStartup, getSession, sessionView } from "./sessions";
 import { claudeStop, codexTurnEnded, shiftWorked } from "./shifts";
 
 const EDITS = new Set(["Edit", "MultiEdit", "Write", "NotebookEdit"]);
@@ -137,6 +137,8 @@ const context = (event: string, text: string): HookReply => ({ hookSpecificOutpu
 export function handleHook(tool: string, event: string, sessionId: string, payload: any): HookReply | undefined {
   const s = db.query("SELECT id, title, tool, task_id, agent_state, status FROM sessions WHERE id = ?").get(sessionId) as Row | null;
   if (!s || s.status === "closed") return;
+  // Hooks run only once the agent is past its startup screens: forget any dialog seen before.
+  if (tool === "claude" || (tool === "codex" && event === "turn")) clearStartup(sessionId);
 
   // Every Claude hook names the conversation log; /clear starts a new one.
   if (tool === "claude" && typeof payload?.transcript_path === "string" && payload.transcript_path.endsWith(".jsonl")) {
@@ -231,7 +233,7 @@ export function codexScreen(id: string, prompt: string | null) {
 }
 
 /** A startup dialog appeared (message) or went away (null) on a Claude screen. */
-export function startupScreen(id: string, message: string | null) {
+export function startupScreen(id: string, message: string | null, was?: string) {
   const s = db.query("SELECT id, title, tool, task_id, agent_state, status FROM sessions WHERE id = ?").get(id) as Row | null;
   if (!s || s.status !== "running") return;
   if (message) {
@@ -239,10 +241,11 @@ export function startupScreen(id: string, message: string | null) {
     // The dialog's own answer (e.g. Trust folder = Down + Enter): plain Enter would pick "No, exit".
     const p = getSession(id) ? sessionView(getSession(id)!).startup : null;
     push(s, "input", message, p?.accept ? [{ id: "accept", title: p.accept, keys: p.acceptKeys }] : []);
-  } else if (s.agent_state === "needs-input") {
-    // Hooks take over from here (SessionStart sets "waiting").
-    db.query("UPDATE sessions SET agent_state = NULL, agent_message = NULL WHERE id = ? AND agent_state = 'needs-input'").run(id);
-    emit("sessions");
+  } else if (s.agent_state === "needs-input" && was) {
+    // Hooks take over from here (SessionStart sets "waiting"). Only undo our own "Needs you":
+    // if the message is no longer the dialog's, it's a real approval and must stay.
+    const r = db.query("UPDATE sessions SET agent_state = NULL, agent_message = NULL WHERE id = ? AND agent_state = 'needs-input' AND agent_message = ?").run(id, was);
+    if (r.changes) emit("sessions");
   }
 }
 
