@@ -616,9 +616,27 @@ export function parsePanes(out: string): Map<string, Pane> {
 /** Sync DB status with what tmux actually has. Returns true if anything changed. */
 export async function reconcile(): Promise<boolean> {
   const r = await tmux(["list-panes", "-a", "-F", PANE_FORMAT]);
-  if (r.code !== 0 && /no server running|error connecting/i.test(r.err)) serverChecked = false; // start it scoped again next time
-  return applyPanes(r.code === 0 ? parsePanes(r.out) : new Map());
+  if (r.code === 0) {
+    listFailures = 0;
+    return applyPanes(parsePanes(r.out));
+  }
+  if (/no server running|error connecting|server exited|lost server/i.test(r.err)) {
+    serverChecked = false; // start it scoped again next time
+    listFailures = 0;
+    return applyPanes(new Map()); // tmux itself is gone, and every agent with it
+  }
+  // tmux couldn't answer this once (out of processes or memory, killed mid-call). That says
+  // nothing about the agents: taking it as "no panes" marked every session exited, re-queued
+  // its autopilot task and ended its shift, while the agents were still running. Look again
+  // next tick; only a failure that keeps coming back is believed.
+  if (++listFailures < LIST_FAILURES_BELIEVED) {
+    if (listFailures === 1) console.warn(`[ansai] tmux couldn't list its sessions (will look again): ${r.err || `exit ${r.code}`}`);
+    return false;
+  }
+  return applyPanes(new Map());
 }
+let listFailures = 0;
+const LIST_FAILURES_BELIEVED = 5;
 
 /** reconcile() once tmux has answered: each open row follows its pane (tests hand it panes directly). */
 export function applyPanes(seen: Map<string, Pane>): boolean {

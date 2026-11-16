@@ -103,6 +103,37 @@ describe("typing into a session", () => {
   });
 });
 
+describe("when tmux can't say what is running", () => {
+  test("one failed look doesn't mark the agents gone; a tmux server that is gone does", async () => {
+    agent("a", { state: "working" });
+    quiet("a");
+    const fake = sessions.setTmux(async () => ({ code: 1, out: "", err: "fork failed: Resource temporarily unavailable" }));
+    try {
+      for (let i = 0; i < 4; i++) expect(await sessions.reconcile()).toBe(false);
+      expect(getSession("a")!.status).toBe("running");
+      sessions.setTmux(async () => ({ code: 1, out: "", err: "no server running on /tmp/tmux-1000/ansai" }));
+      expect(await sessions.reconcile()).toBe(true);
+      expect(getSession("a")!.status).toBe("exited");
+    } finally {
+      sessions.setTmux(fake);
+    }
+  });
+
+  test("a failure that keeps coming back is believed in the end", async () => {
+    agent("a", { state: "working" });
+    quiet("a");
+    const fake = sessions.setTmux(async () => ({ code: 1, out: "", err: "something else" }));
+    try {
+      for (let i = 0; i < 4; i++) await sessions.reconcile();
+      expect(getSession("a")!.status).toBe("running");
+      await sessions.reconcile();
+      expect(getSession("a")!.status).toBe("exited");
+    } finally {
+      sessions.setTmux(fake);
+    }
+  });
+});
+
 describe("team messages typed into an idle agent", () => {
   test("a message that couldn't be typed stays undelivered and goes out next time", async () => {
     const a = agent("a", { state: "working" });
