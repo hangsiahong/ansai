@@ -134,7 +134,7 @@ export function NowPane() {
             <Icon name="search" size={19} />
           </button>
           <button class="icon-btn glass" onClick={() => openSheet({ kind: "settings" })} aria-label="Settings">
-            <Icon name="sliders" size={19} />
+            <Icon name="gear" size={19} />
           </button>
         </div>
       </header>

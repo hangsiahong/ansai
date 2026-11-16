@@ -99,7 +99,7 @@ export function Sidebar({ route }: { route: string }) {
 
       <footer class="side-foot">
         <button class="side-row" onClick={() => openSheet({ kind: "settings" })}>
-          <Icon name="sliders" size={17} />
+          <span class="tile gray sm"><Icon name="gear" size={14} /></span>
           <span class="side-label">Settings</span>
           {me && <span class="side-device">{me.device}</span>}
         </button>

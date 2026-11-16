@@ -65,7 +65,7 @@ function PaletteInner() {
       { id: "a-projects", group: "Go to", label: "Projects", icon: "layers", run: go("/projects") },
       { id: "a-accounts", group: "Go to", label: "Accounts & usage", icon: "gauge", run: go("/accounts") },
       { id: "a-system", group: "Go to", label: "System", hint: "CPU, memory, disk, temperature", icon: "cpu", run: go("/system") },
-      { id: "a-settings", group: "Go to", label: "Settings", icon: "sliders", run: () => (close(), openSheet({ kind: "settings" })) },
+      { id: "a-settings", group: "Go to", label: "Settings", icon: "gear", run: () => (close(), openSheet({ kind: "settings" })) },
       { id: "a-theme", group: "Actions", label: "Switch theme", hint: "System → Dark → Light", icon: "moon", run: () => setTheme(({ system: "dark", dark: "light", light: "system" } as const)[getState().theme]) },
     ];
     all.push(...actions);

@@ -4,10 +4,10 @@ import { toast, toastError } from "./store";
 import { Icon } from "./ui";
 
 const KINDS = [
-  { id: "input", label: "An agent needs you", hint: "permission prompts and questions" },
-  { id: "done", label: "An agent finished its turn", hint: "Claude Code and Codex" },
-  { id: "exited", label: "An agent crashed", hint: "exited with an error" },
-  { id: "system", label: "The machine is struggling", hint: "disk almost full, overheating, low memory or battery" },
+  { id: "input", label: "An agent needs you", hint: "permission prompts and questions", icon: "question", color: "orange" },
+  { id: "done", label: "An agent finished its turn", hint: "Claude Code and Codex", icon: "check", color: "green" },
+  { id: "exited", label: "An agent crashed", hint: "exited with an error", icon: "stop", color: "red" },
+  { id: "system", label: "The machine is struggling", hint: "disk almost full, overheating, low memory or battery", icon: "cpu", color: "red" },
 ] as const;
 
 function b64ToBytes(b64: string) {
@@ -104,7 +104,10 @@ export function NotifyPanel() {
           <div class="panel">
             {KINDS.map((k) => (
               <label class="switch-row in-panel">
-                <span>
+                <span class={`tile ${k.color}`}>
+                  <Icon name={k.icon} size={16} />
+                </span>
+                <span class="switch-text">
                   <b>{k.label}</b>
                   <em>{k.hint}</em>
                 </span>

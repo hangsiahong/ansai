@@ -695,14 +695,20 @@ function BacklogSettings() {
   return (
     <div class="panel">
       <label class="switch-row">
-        <span>
+        <span class="tile blue">
+          <Icon name="history" size={16} />
+        </span>
+        <span class="switch-text">
           <b>Record agent sessions</b>
           <em>Sessions you start by hand show up as tasks</em>
         </span>
         <input type="checkbox" class="switch" checked={st.trackSessions} onChange={(e) => save({ trackSessions: (e.target as HTMLInputElement).checked })} />
       </label>
       <div class="switch-row">
-        <span>
+        <span class="tile indigo">
+          <Icon name="layers" size={16} />
+        </span>
+        <span class="switch-text">
           <b>Autopilot agents at once</b>
           <em>Across all projects · one per project</em>
         </span>
