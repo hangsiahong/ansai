@@ -8,7 +8,7 @@ const { db, now, getSetting, setSetting } = await import("./db");
 const { autopilotTick, setProjectAutopilot, setTaskStarter } = await import("./autopilot");
 const { handleHook } = await import("./hooks");
 const holds = await import("./holds");
-const { listAccounts } = await import("./accounts");
+const { listAccounts, refreshAccountsSoon } = await import("./accounts");
 const { runDeadline } = await import("./runs");
 
 const MIN = 60_000;
@@ -95,6 +95,7 @@ describe("an autopilot run at its account's usage limit", () => {
     const reset = now() + 90 * MIN;
     snapshot(reset);
     run("a", { task: "t1" });
+    refreshAccountsSoon(); // the list is kept for 10 s: an earlier test file may have read it before these accounts existed
     expect(listAccounts().find((a) => a.id === "claude-default")!.held_until).toBeNull();
     fail("a");
     expect(listAccounts().find((a) => a.id === "claude-default")!.held_until).toBe(reset + holds.timing.slack);
