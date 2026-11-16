@@ -27,13 +27,21 @@ export type ChatItem =
 type ToolItem = Extract<ChatItem, { k: "tool" }>;
 
 const MAX_ITEMS = 1500;
+/** Tool calls still waiting for their output once their card has left the kept items (see ChatTail.forget). */
+const MAX_WAITING_TOOLS = 500;
 const FIRST_SEND = 400;
 const MAX_FIRST_READ = 12 * 1024 * 1024; // very long logs: start near the end
 
-const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}\n… ${s.length - n} more characters` : s);
+/**
+ * The first n characters of s, as a string of its own. A plain slice is only a view: it keeps
+ * all of s in memory for as long as it lives, so a card showing the first 8,000 characters of
+ * a tool's output would hold the whole megabyte until a viewer opened the chat.
+ */
+const head = (s: string, n: number): string => JSON.parse(JSON.stringify(s.slice(0, n)));
+const clip = (s: string, n: number) => (s.length > n ? `${head(s, n)}\n… ${s.length - n} more characters` : s);
 const one = (s: string, n = 120) => {
   const t = s.replace(/\s+/g, " ").trim();
-  return t.length > n ? t.slice(0, n - 1) + "…" : t;
+  return t.length > n ? head(t, n - 1) + "…" : t;
 };
 
 // ----------------------------------------------------------------- discovery
@@ -107,6 +115,7 @@ export async function resolveTranscript(s: SessionRow): Promise<string | null> {
 const isTeamDelivery = (t: string) => /^ansai: (a message|\d+ messages) from your team\./.test(t);
 
 type ParseState = {
+  /** Tool calls by id, so the output that arrives later lands on the right card. Kept small by ChatTail.forget. */
   tools: Map<string, ToolItem>;
   title: string | null;
   firstUser: string | null;
@@ -423,11 +432,29 @@ class ChatTail {
       changed.set(it.id, it);
     }
     if (this.items.length > MAX_ITEMS) {
+      this.forget(this.items.slice(0, -MAX_ITEMS));
       this.items = this.items.slice(-MAX_ITEMS);
       this.index = new Map(this.items.map((x, i) => [x.id, i]));
       this.truncated = true;
     }
     return [...changed.values()];
+  }
+
+  /**
+   * Stop remembering tool calls whose cards just left the kept items, or a long session holds
+   * every tool call it ever made (and its output) for as long as it runs. A finished call is
+   * dropped with its card. One still waiting for its output is remembered a while longer, so
+   * output that comes back very late still reaches its card on screens that have it — but not
+   * for ever, since an interrupted call never gets any: past the cap, the oldest go.
+   */
+  private forget(dropped: ChatItem[]) {
+    const tools = this.st.tools;
+    for (const it of dropped) if (it.k === "tool" && it.done && tools.get(it.id) === it) tools.delete(it.id);
+    // Calls are remembered in the order they were made, so the first ones are the longest-waiting.
+    for (const id of tools.keys()) {
+      if (tools.size <= MAX_ITEMS + MAX_WAITING_TOOLS) break;
+      tools.delete(id);
+    }
   }
 
   send(ws: Sub, msg: object) {
@@ -586,6 +613,9 @@ class ChatTail {
 }
 
 const tails = new Map<string, ChatTail>();
+
+/** The tail following a session's log, if there is one. Exported for tests. */
+export const tailOf = (sessionId: string) => tails.get(sessionId);
 
 export async function subscribeChat(sessionId: string, ws: Sub) {
   let tail = tails.get(sessionId);

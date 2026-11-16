@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { appendFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const { db } = await import("./db");
-const { subscribeChat, touchedFiles, unsubscribeChat } = await import("./transcripts");
+const { subscribeChat, tailOf, touchedFiles, unsubscribeChat } = await import("./transcripts");
 
 type Item = { id: string; k: string; text?: string; name?: string; title?: string; result?: string; error?: boolean; done?: boolean };
 const sessions: string[] = [];
@@ -78,6 +79,102 @@ describe("Codex transcript parsing", () => {
       expect(chat.items.some((item) => item.text?.includes("from your team"))).toBe(false);
       expect(db.query("SELECT model, effort FROM sessions WHERE id = ?").get(chat.id)).toEqual({ model: "gpt-5-codex", effort: "high" });
       expect(touchedFiles(db.query("SELECT * FROM sessions WHERE id = ?").get(chat.id) as never)).toEqual(["src/two.ts", "src/one.ts"]);
+    } finally { chat.close(); }
+  });
+});
+
+// The tail keeps the newest 1500 chat items. What it remembers about tool calls must stay
+// in step with that, or a long-running agent's every tool call and output stays in memory.
+describe("a long session", () => {
+  const ts = "2026-01-02T03:04:05.000Z";
+  let uid = 0;
+  const say = (text: string) => ({ type: "assistant", uuid: `a${++uid}`, timestamp: ts, message: { model: "claude-opus-5-5", content: [{ type: "text", text }] } });
+  const call = (id: string) => ({ type: "assistant", uuid: `a${++uid}`, timestamp: ts, message: { model: "claude-opus-5-5", content: [{ type: "tool_use", id, name: "Bash", input: { command: `echo ${id}`, description: `Run ${id}` } }] } });
+  const output = (id: string, text: string) => ({ type: "user", uuid: `u${++uid}`, timestamp: ts, message: { content: [{ type: "tool_result", tool_use_id: id, content: text }] } });
+  const rows = (list: object[]) => list.map((r) => JSON.stringify(r)).join("\n") + "\n";
+
+  async function follow(first: object[]) {
+    const id = `transcript-test-long-${crypto.randomUUID()}`;
+    const file = join(process.env.ANSAI_HOME!, `${id}.jsonl`);
+    writeFileSync(file, rows(first));
+    db.query(
+      `INSERT INTO sessions (id, tool, title, cwd, argv, tmux_name, status, created_at, transcript)
+       VALUES (?, 'claude', 'A named session', '/tmp/transcript-project', '[]', ?, 'running', ?, ?)`,
+    ).run(id, `tmux-${id}`, Date.now(), file);
+    sessions.push(id);
+    const messages: string[] = [];
+    const ws = { readyState: 1, send: (m: string) => messages.push(m) };
+    await subscribeChat(id, ws as never);
+    const tail = tailOf(id)!;
+    /** Write more of the log and return the items viewers are sent for it. */
+    const more = async (list: object[]): Promise<Item[]> => {
+      const seen = messages.length;
+      appendFileSync(file, rows(list));
+      while (tail.offset < statSync(file).size) await tail.poll(); // (its own timer may be mid-poll)
+      return messages.slice(seen).map((m) => JSON.parse(m)).filter((m) => m.t === "items").flatMap((m) => m.items as Item[]);
+    };
+    /** Everything remembered is a card still on the list, or a call still waiting for its output. */
+    const onlyNeeded = () => {
+      const kept = new Set(tail.items.map((x) => x.id));
+      return [...tail.st.tools.values()].every((t) => kept.has(t.id) || !t.done);
+    };
+    return { tail, more, onlyNeeded, close: () => unsubscribeChat(id, ws as never) };
+  }
+  const busy = (from: number, to: number) => Array.from({ length: to - from }, (_, i) => [say(`step ${from + i}`), call(`t${from + i}`), output(`t${from + i}`, `out ${from + i}`)]).flat();
+
+  test("forgets finished tool calls as their cards leave the list; output still lands on the right card", async () => {
+    // 4000 items: "early" is long gone from the kept 1500, "recent" is among them; neither has its output yet.
+    const chat = await follow([call("early"), ...busy(0, 1990), call("recent"), ...busy(1990, 2000)]);
+    try {
+      const { tail, more } = chat;
+      expect(tail.items.length).toBe(1500);
+      expect(tail.items.some((x) => x.id === "early")).toBe(false);
+      expect(tail.st.tools.size).toBe(tail.items.filter((x) => x.k === "tool").length + 1); // + "early", still waiting
+      expect(tail.st.tools.size).toBeLessThan(800);
+      expect(chat.onlyNeeded()).toBe(true);
+
+      // late output, for a card still on the list
+      expect(await more([output("recent", "late output")])).toEqual([expect.objectContaining({ id: "recent", title: "Run recent", result: "late output", done: true })]);
+      expect(tail.items.find((x) => x.id === "recent")).toMatchObject({ result: "late output", done: true });
+      // the same call answered again: the card takes the newer output
+      expect(await more([output("recent", "newer output")])).toEqual([expect.objectContaining({ id: "recent", result: "newer output", done: true })]);
+      // a finished card further back still updates too
+      expect(await more([output("t1500", "rerun")])).toEqual([expect.objectContaining({ id: "t1500", title: "Run t1500", result: "rerun" })]);
+      // output for a call whose card already left the list still goes out, for screens that have the card
+      expect(await more([output("early", "at last")])).toEqual([expect.objectContaining({ id: "early", title: "Run early", result: "at last", done: true })]);
+
+      // and it stays that way however long the session runs
+      for (let i = 2000; i < 6000; i += 500) {
+        await more(busy(i, i + 500));
+        expect(tail.items.length).toBe(1500);
+        expect(tail.st.tools.size).toBeLessThan(800);
+        expect(chat.onlyNeeded()).toBe(true);
+      }
+      expect(tail.st.tools.has("early")).toBe(false);
+      expect(tail.items.find((x) => x.id === "t5999")).toMatchObject({ result: "out 5999", done: true });
+    } finally { chat.close(); }
+  });
+
+  test("calls that never get their output (interrupted) don't pile up either", async () => {
+    const chat = await follow([say("start")]);
+    try {
+      const { tail, more } = chat;
+      for (let i = 0; i < 6000; i += 1000) await more(Array.from({ length: 1000 }, (_, k) => [say(`step ${i + k}`), call(`hung${i + k}`)]).flat());
+      expect(tail.items.length).toBe(1500);
+      expect(tail.st.tools.size).toBeLessThanOrEqual(2000); // the kept items, and the 500 longest-remembered beyond them
+      expect(tail.st.tools.has("hung0")).toBe(false);
+      // one whose card left the list a while ago is still remembered
+      expect(tail.items.some((x) => x.id === "hung5000")).toBe(false);
+      expect(await more([output("hung5000", "finally")])).toEqual([expect.objectContaining({ id: "hung5000", result: "finally", done: true })]);
+    } finally { chat.close(); }
+  });
+
+  test("long output is cut to the same text as ever", async () => {
+    const long = "é".repeat(7999) + "🙂" + "x".repeat(12_000); // the cut lands inside the two-unit emoji
+    const chat = await follow([call("big"), output("big", long), say("z".repeat(50_000))]);
+    try {
+      expect(chat.tail.items.find((x) => x.id === "big")).toMatchObject({ result: `${long.slice(0, 8000)}\n… 12001 more characters` });
+      expect(chat.tail.items.at(-1)).toMatchObject({ k: "assistant", text: `${"z".repeat(40_000)}\n… 10000 more characters` });
     } finally { chat.close(); }
   });
 });

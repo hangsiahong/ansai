@@ -41,9 +41,12 @@ export function sessionTokens(id: string): RunTokens | null {
   return t && t.fresh + t.cached > 0 ? t : null;
 }
 
+/** Only log lines carrying this text can hold token counts; the rest are never parsed. */
+const usageMarker = (tool: string) => (tool === "claude" ? '"usage"' : '"token_count"');
+
 /** Add one log line's usage to a scan. Exported for tests. */
 export function addUsage(sc: Scan, tool: string, line: string) {
-  if (!line.includes(tool === "claude" ? '"usage"' : '"token_count"')) return;
+  if (!line.includes(usageMarker(tool))) return;
   const j = JSON.parse(line);
   if (tool === "claude") {
     const u = j.type === "assistant" ? j.message?.usage : null;
@@ -64,8 +67,46 @@ export function addUsage(sc: Scan, tool: string, line: string) {
 
 export const newScan = (path: string): Scan => ({ path, offset: 0, tokens: { fresh: 0, cached: 0 }, recent: [] });
 
+/** How much of a log is in memory at a time. Logs reach hundreds of MB, and after a restart a scan starts from the top. */
+const SLICE = 4 * 1024 * 1024;
+
+/**
+ * Hand every complete line of a log from `offset` on to `onLine`, as bytes, reading one slice at
+ * a time (the same way usage.ts does) so a long log never sits in memory whole. A line cut by a
+ * slice edge is finished from the next slice; lines are split on the newline byte, before any
+ * decoding, so a character cut by an edge is whole again by the time its line is read as text.
+ * Returns the offset just past the last complete line. Exported for tests.
+ */
+export async function eachLine(path: string, offset: number, onLine: (line: Buffer) => void, slice = SLICE): Promise<number> {
+  const file = Bun.file(path);
+  const size = file.size;
+  let held: Buffer[] = []; // the start of a line that ends in a later slice
+  let heldBytes = 0;
+  let read = offset;
+  while (read < size) {
+    const chunk = Buffer.from(await file.slice(read, Math.min(read + slice, size)).arrayBuffer());
+    if (!chunk.length) break; // the log shrank while we were reading it
+    read += chunk.length;
+    let start = 0;
+    for (let nl = chunk.indexOf(10); nl !== -1; nl = chunk.indexOf(10, start)) {
+      const tail = chunk.subarray(start, nl);
+      onLine(held.length ? Buffer.concat([...held, tail]) : tail);
+      held = [];
+      heldBytes = 0;
+      start = nl + 1;
+    }
+    if (start < chunk.length) {
+      // Copied, unless it is the whole slice, so the slice itself can be freed before the next one is read.
+      held.push(start ? Buffer.from(chunk.subarray(start)) : chunk);
+      heldBytes += chunk.length - start;
+    }
+    if (read < size) await Bun.sleep(1); // let sockets breathe between slices
+  }
+  return read - heldBytes;
+}
+
 /** Read what running Claude/Codex sessions have logged since the last scan. Returns true if any total changed. */
-export async function scanTokens(): Promise<boolean> {
+export async function scanTokens(slice = SLICE): Promise<boolean> {
   const rows = db
     .query("SELECT id, tool, transcript FROM sessions WHERE status = 'running' AND tool IN ('claude', 'codex') AND transcript IS NOT NULL")
     .all() as { id: string; tool: string; transcript: string }[];
@@ -73,20 +114,24 @@ export async function scanTokens(): Promise<boolean> {
   for (const r of rows) {
     let sc = scans.get(r.id);
     if (!sc || sc.path !== r.transcript) scans.set(r.id, (sc = newScan(r.transcript))); // Claude starts a new log after /clear
-    const file = Bun.file(r.transcript);
-    const size = file.size;
-    if (size <= sc.offset) continue;
-    const text = await file.slice(sc.offset, size).text();
-    const end = text.lastIndexOf("\n");
-    if (end < 0) continue;
-    const before = sc.tokens.fresh + sc.tokens.cached;
-    for (const line of text.slice(0, end).split("\n")) {
-      try {
-        addUsage(sc, r.tool, line);
-      } catch {}
-    }
-    sc.offset += Buffer.byteLength(text.slice(0, end + 1));
-    if (sc.tokens.fresh + sc.tokens.cached !== before) changed = true;
+    if (Bun.file(r.transcript).size <= sc.offset) continue;
+    // Counted on a copy and swapped in at the end, so a half-read log never shows as the session's total.
+    const next: Scan = { path: sc.path, offset: sc.offset, tokens: { ...sc.tokens }, recent: [...sc.recent] };
+    const marker = usageMarker(r.tool);
+    next.offset = await eachLine(
+      r.transcript,
+      sc.offset,
+      (line) => {
+        if (line.indexOf(marker) === -1) return; // most of a log is tool output: skip it without decoding
+        try {
+          addUsage(next, r.tool, line.toString("utf8"));
+        } catch {}
+      },
+      slice,
+    );
+    if (next.offset === sc.offset) continue; // no complete line yet
+    scans.set(r.id, next);
+    if (next.tokens.fresh + next.tokens.cached !== sc.tokens.fresh + sc.tokens.cached) changed = true;
   }
   return changed;
 }
