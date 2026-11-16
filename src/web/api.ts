@@ -24,7 +24,7 @@ export type Project = {
   lean?: boolean;
 };
 export type Plan = { done: number; total: number; current: string | null; items: { content: string; status: string }[] };
-export type Settings = { autopilotMax: number; trackSessions: boolean; closeFinished: boolean };
+export type Settings = { autopilotMax: number; trackSessions: boolean; closeFinished: boolean; doctor: boolean };
 
 export type Session = {
   id: string;

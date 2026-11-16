@@ -23,13 +23,15 @@ export function setTaskStarter(fn: typeof startTask) {
  * `autopilotMax` autopilot agents overall.
  */
 
-export type Settings = { autopilotMax: number; trackSessions: boolean; closeFinished: boolean };
+/** `doctor`: ansai checks itself every 10 minutes and files what it finds in its own backlog (doctor.ts). */
+export type Settings = { autopilotMax: number; trackSessions: boolean; closeFinished: boolean; doctor: boolean };
 
 export function getSettings(): Settings {
   return {
     autopilotMax: Math.max(1, Math.min(6, getSetting<number>("autopilot_max", 2))),
     trackSessions: getSetting<boolean>("track_sessions", true),
     closeFinished: getSetting<boolean>("close_finished", true),
+    doctor: getSetting<boolean>("doctor", true),
   };
 }
 
@@ -37,6 +39,7 @@ export function updateSettings(patch: Partial<Settings>) {
   if (patch.autopilotMax !== undefined) setSetting("autopilot_max", Math.max(1, Math.min(6, Math.floor(Number(patch.autopilotMax) || 2))));
   if (patch.trackSessions !== undefined) setSetting("track_sessions", !!patch.trackSessions);
   if (patch.closeFinished !== undefined) setSetting("close_finished", !!patch.closeFinished);
+  if (patch.doctor !== undefined) setSetting("doctor", !!patch.doctor);
   return getSettings();
 }
 

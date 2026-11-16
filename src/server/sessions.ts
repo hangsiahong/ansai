@@ -122,6 +122,8 @@ export type SessionRow = {
 
 type Live = { activity: number; command: string; attached: number };
 const live = new Map<string, Live>(); // keyed by tmux_name
+/** When the pane last printed anything (ms), as of the last reconcile; null before ansai has seen it. */
+export const paneActivity = (tmuxName: string): number | null => live.get(tmuxName)?.activity ?? null;
 
 /** A dialog the agent shows before it starts (trust this folder, bypass-mode warning, first-run setup). */
 export type StartupPrompt = { kind: string; message: string; accept: string | null; acceptKeys: string[]; decline: string | null; declineKeys: string[] };
