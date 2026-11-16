@@ -3,6 +3,7 @@ import { useEffect } from "preact/hooks";
 import "./styles.css";
 import { boot, openPalette, useStore } from "./store";
 import { DialogHost, Icon, nav, useIsPhone, useRoute } from "./ui";
+import { ErrorBoundary, watchForErrors } from "./crash";
 import { Sheets } from "./sheets";
 import { Palette } from "./palette";
 import { Sidebar, TabBar } from "./views/nav";
@@ -30,6 +31,11 @@ function Blocked({ reason }: { reason: string }) {
       </div>
     </div>
   );
+}
+
+/** /crash-test: a page that fails to draw on purpose, so the error screen can be seen and tested. */
+function CrashTest(): never {
+  throw new Error("This page fails on purpose (crash test)");
 }
 
 function App() {
@@ -106,6 +112,7 @@ function App() {
   else if (route === "/backlog") main = <BacklogPane />;
   else if (route === "/accounts") main = <AccountsPane />;
   else if (route === "/system") main = <SystemPane />;
+  else if (route === "/crash-test") main = <CrashTest />;
   else main = <NowPane />;
 
   const inSession = route.startsWith("/s/");
@@ -113,10 +120,13 @@ function App() {
     <div class={`app ${inSession ? "in-session" : ""}`}>
       {!phone && <Sidebar route={route} />}
       <main class="main route-main" key={route}>
-        {main}
+        {/* A page that fails to draw leaves the tab bar and sidebar working: tap somewhere else. */}
+        <ErrorBoundary where="page">{main}</ErrorBoundary>
       </main>
       {phone && !inSession && <TabBar route={route} />}
-      <Sheets />
+      <ErrorBoundary where="sheet">
+        <Sheets />
+      </ErrorBoundary>
       <Palette />
       <DialogHost />
       {toastS && (
@@ -141,8 +151,15 @@ for (const [rel, href, type] of [
   document.head.appendChild(l);
 }
 
+const root = document.getElementById("app")!;
+watchForErrors(root);
 boot();
-render(<App />, document.getElementById("app")!);
+render(
+  <ErrorBoundary where="app">
+    <App />
+  </ErrorBoundary>,
+  root,
+);
 
 if ("serviceWorker" in navigator && window.isSecureContext) {
   navigator.serviceWorker.register("/sw.js").catch(() => {});

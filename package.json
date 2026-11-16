@@ -8,7 +8,8 @@
     "start": "bun src/server/index.ts",
     "build": "bun build --compile --minify --sourcemap src/server/index.ts --outfile dist/ansai",
     "typecheck": "tsc --noEmit",
-    "test": "bun test"
+    "test": "bun test",
+    "smoke": "bun scripts/smoke.ts"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",

@@ -796,6 +796,16 @@ a.prow:active, button.prow:active { background: var(--press); }
 .blocked-card { max-width: 380px; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 12px; }
 .blocked-card h1 { font-size: 22px; }
 .blocked-card p { color: var(--text-2); }
+/* a screen that failed to draw (crash.tsx) */
+.crash-card { max-width: 460px; }
+.crash-text {
+  align-self: stretch; margin: 0; padding: 10px 12px; border-radius: 10px; background: var(--fill); color: var(--text-2);
+  font-family: var(--mono); font-size: 12px; line-height: 1.45; text-align: left; white-space: pre-wrap; overflow-wrap: anywhere;
+  max-height: 34vh; overflow: auto; user-select: text; -webkit-user-select: text;
+}
+.crash-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+.crash-page { min-height: 100%; display: grid; place-items: center; padding: 24px; }
+.crash-over { position: fixed; inset: 0; z-index: 400; display: grid; place-items: center; padding: 24px; background: var(--bg); }
 .toast {
   position: fixed; left: 50%; bottom: calc(24px + var(--safe-b)); transform: translateX(-50%); z-index: 100; max-width: calc(100vw - 32px);
   padding: 11px 16px; border-radius: 12px; font-size: 14px; font-weight: 500; background: var(--text); color: var(--bg);

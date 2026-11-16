@@ -35,6 +35,8 @@ import { startRunWatch } from "./limits";
 import { THRESHOLD_LIMITS, healthSummary, history, isRange, processes, RANGES, setThresholds, startHealthLoop, systemNow, testAlert, thresholdsView, type Thresholds } from "./health";
 import { HttpError, badRequest, conflict, errorCode, notFound, tooLarge } from "./errors";
 import { parseBody, v, type Check } from "./validate";
+import { clientErrorLine } from "./clienterrors";
+import { attachmentsDir, sweepAttachments } from "./attachments";
 import { onChange, emit, type Topic } from "./events";
 import { handleHook, writeHookFiles } from "./hooks";
 import { getPrefs, publicKey, subscribe, testPush, unsubscribe } from "./push";
@@ -199,6 +201,7 @@ const server = Bun.serve<WSData>({
     "/accounts": index,
     "/system": index,
     "/s/*": index,
+    "/crash-test": index, // a page that fails on purpose, to see (and test) the error screen
     "/sw.js": asset(swPath, "text/javascript", "no-cache"),
     "/manifest.webmanifest": asset(manifestPath, "application/manifest+json"),
     "/icon.svg": asset(iconSvgPath, "image/svg+xml"),
@@ -206,6 +209,18 @@ const server = Bun.serve<WSData>({
     "/icon-512.png": asset(icon512Path, "image/png"),
 
     "/api/me": guard(async (_r, _s, user, device) => json({ user, device, tailscale: await tailscaleStatus(), shell: config.shell })),
+    // The web app tells the laptop when a screen failed to draw (crash.tsx).
+    "/api/client-error": {
+      POST: guard(async (req, _s, _u, device) => {
+        const b = await parseBody(
+          req,
+          v.object({ where: v.optional(v.string({ max: 40 })), route: v.optional(v.string({ max: 400 })), text: v.string({ min: 1, max: 4000 }) }),
+        );
+        const line = clientErrorLine(device, b);
+        if (line) console.error(line);
+        return json({ ok: true });
+      }),
+    },
     "/api/devices": {
       GET: guard(async () => json(await deviceList())),
       PUT: guard(async (req, _s, _u, device) => {
@@ -662,7 +677,7 @@ const server = Bun.serve<WSData>({
         if (!files.length || files.length > 5) return fail(400, "Attach between 1 and 5 files");
         if (files.some((f) => f.size > 20 * 1024 * 1024)) return fail(413, "Each attachment must be 20 MB or smaller");
         if (files.reduce((n, f) => n + f.size, 0) > 50 * 1024 * 1024) return fail(413, "Attachments must total 50 MB or less");
-        const dir = join("/tmp/ansai-attachments", s.id);
+        const dir = attachmentsDir(s.id);
         await mkdir(dir, { recursive: true, mode: 0o700 });
         const saved = [];
         for (const file of files) {
@@ -792,6 +807,7 @@ startUsageLoop();
 startHealthLoop();
 startBackgroundTails();
 startAutopilot();
+sweepAttachments().catch(() => {});
 startRunWatch();
 startBackupLoop();
 // Idle agents get their direct messages typed in (busy Claude sessions get them through hooks).

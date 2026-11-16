@@ -15,6 +15,7 @@ bun install
 ./scripts/install-service.sh            # systemd user service on :7777 (recommended)
 # or: bun run dev                       # hot reload, for hacking on ansai
 bun run test                            # bun test: auth, autopilot, team messaging (no tmux or network)
+bun run smoke                           # a real browser opens the app at phone and desktop size, on its own test server
 ```
 
 Phone access:

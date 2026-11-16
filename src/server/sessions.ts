@@ -12,6 +12,7 @@ import { shiftView } from "./shifts";
 import { accountEnv, getAccount, refreshAccountsSoon, resolveAccount, type AccountRow } from "./accounts";
 import { agySaw, codexScreen, onExited, playbookNote, startupScreen, withHooks, type HookOpts } from "./hooks";
 import { isLean } from "./lean";
+import { dropAttachments } from "./attachments";
 
 // ---------------------------------------------------------------- tmux plumbing
 
@@ -378,6 +379,7 @@ export async function closeSession(id: string) {
   db.query("UPDATE sessions SET status = 'closed', ended_at = COALESCE(ended_at, ?) WHERE id = ?").run(now(), id);
   if (s.status === "running") onExited(id, null, "closed"); // closing an already-exited session changes nothing
   live.delete(s.tmux_name);
+  await dropAttachments(id); // the files you attached were for this agent only
   await reconcile();
 }
 
