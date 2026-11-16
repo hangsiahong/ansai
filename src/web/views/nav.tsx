@@ -109,7 +109,7 @@ export function Sidebar({ route }: { route: string }) {
 export function TabBar({ route }: { route: string }) {
   const tasks = useStore((s) => s.tasks);
   const attn = useStore((s) => s.sessions.filter((x) => x.status === "running" && x.agent_state === "needs-input").length);
-  const open = tasks.filter((t) => t.status === "doing" || t.status === "review").length;
+  const open = tasks.filter((t) => t.status === "review").length; // finished work waiting for you
   const tab = (href: string, icon: string, label: string, badge?: number) => {
     const on = href === "/" ? route === "/" : route.startsWith(href) || (href === "/projects" && route.startsWith("/p/"));
     return (

@@ -92,6 +92,8 @@ function UsageRows({ accounts }: { accounts: Account[] }) {
   );
 }
 
+const REVIEW_SHOWN = 5;
+
 export function NowPane() {
   useTick();
   const sessions = useStore((s) => [...s.sessions].sort(sessionOrder));
@@ -103,7 +105,10 @@ export function NowPane() {
   const attn = sessions.filter((s) => s.status === "running" && sessionState(s).cls === "attn");
   const others = sessions.filter((s) => !attn.includes(s));
   const running = sessions.filter((s) => s.status === "running").length;
-  const inProgress = tasks.filter((t) => t.status === "doing" || t.status === "review").sort((a, b) => b.updated_at - a.updated_at);
+  // "Doing" is an agent working on it now; "Review" is finished work waiting for you.
+  const newest = (a: { updated_at: number }, b: { updated_at: number }) => b.updated_at - a.updated_at;
+  const working = tasks.filter((t) => t.status === "doing").sort(newest);
+  const toReview = tasks.filter((t) => t.status === "review").sort(newest);
   const upNext = tasks
     .filter((t) => t.status === "todo")
     .sort((a, b) => b.priority - a.priority || a.position - b.position)
@@ -183,19 +188,36 @@ export function NowPane() {
         <aside class="now-side">
           <UsageRows accounts={accounts} />
 
-          {inProgress.length > 0 && (
+          {working.length > 0 && (
             <section class="sec">
               <div class="sec-head">
-                <h2 class="sec-title">In progress</h2>
+                <h2 class="sec-title">Agents working on</h2>
                 <Link href="/backlog" class="sec-link">
                   Backlog
                 </Link>
               </div>
               <div class="panel" style={{ "--sep": "48px" }}>
-                {inProgress.map((t) => (
+                {working.map((t) => (
                   <TaskRow task={t} showProject />
                 ))}
               </div>
+            </section>
+          )}
+
+          {toReview.length > 0 && (
+            <section class="sec">
+              <div class="sec-head">
+                <h2 class="sec-title">Ready for your review · {toReview.length}</h2>
+                <Link href="/backlog" class="sec-link">
+                  {toReview.length > REVIEW_SHOWN ? "See all" : "Backlog"}
+                </Link>
+              </div>
+              <div class="panel" style={{ "--sep": "48px" }}>
+                {toReview.slice(0, REVIEW_SHOWN).map((t) => (
+                  <TaskRow task={t} showProject />
+                ))}
+              </div>
+              <p class="sec-foot">Agents finished these. Open one to check the work, then mark it Done.</p>
             </section>
           )}
 

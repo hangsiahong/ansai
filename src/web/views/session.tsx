@@ -57,6 +57,7 @@ export function SessionPane({ id }: { id: string }) {
   const [compose, setCompose] = useState("");
   const [attachments, setAttachments] = useState<File[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [ctx, setCtx] = useState<number | null>(null);
   const [showDock, setShowDock] = useState(isTouch());
   const [menu, setMenu] = useState(false);
   const touch = isTouch();
@@ -204,6 +205,12 @@ export function SessionPane({ id }: { id: string }) {
                 </button>
               </>
             )}
+            {ctx !== null && ctx > 0 && (
+              <span class={ctx >= 150_000 ? "danger-text" : ctx >= 100_000 ? "warn-text" : ""} title="How much the agent re-reads on every reply">
+                {" · "}
+                {compact(ctx)} context
+              </span>
+            )}
             {s.tokens && (
               <span title={`${s.tokens.fresh.toLocaleString()} fresh tokens (input, cache writes, output) and ${s.tokens.cached.toLocaleString()} cache reads so far`}>
                 {" · "}
@@ -323,7 +330,7 @@ export function SessionPane({ id }: { id: string }) {
       {closed ? (
         <div class="pane center muted">Session closed.</div>
       ) : view === "chat" ? (
-        <ChatView s={s} />
+        <ChatView s={s} onCtx={setCtx} />
       ) : (
         <div class="term-wrap">
           <TerminalView sessionId={id} handle={handle} onStatus={setTstatus} onCtrlUsed={() => setCtrl(false)} />

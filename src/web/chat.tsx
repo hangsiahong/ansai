@@ -433,12 +433,14 @@ function interleave(items: ChatItem[], team: Message[]): (ChatItem | Message)[] 
   return out;
 }
 
-export function ChatView({ s }: { s: Session }) {
+/** `onCtx` hears the conversation's context size, for the session header. */
+export function ChatView({ s, onCtx }: { s: Session; onCtx?: (tokens: number | null) => void }) {
   const [items, setItems] = useState<ChatItem[]>([]);
   const [phase, setPhase] = useState<"loading" | "live" | "nofile" | "reconnecting">("loading");
   const [more, setMore] = useState(false);
   const [ctx, setCtx] = useState<number | null>(null);
   const [nudgeOff, setNudgeOff] = useState(false);
+  useEffect(() => onCtx?.(ctx), [ctx]);
   const scroller = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   const [showJump, setShowJump] = useState(false);
@@ -530,9 +532,17 @@ export function ChatView({ s }: { s: Session }) {
 
   return (
     <div class="chat">
-      {ctx !== null && ctx > 0 && (
-        <div class={`ctx-chip ${ctx >= CTX_LONG ? "hot" : ctx >= CTX_WARM ? "warm" : ""}`} title="How much the agent re-reads on every reply">
-          {compact(ctx)} context
+      {ctx !== null && ctx >= CTX_WARM && (
+        <div class={`ctx-bar ${ctx >= CTX_LONG ? "hot" : "warm"}`}>
+          <Icon name="layers" size={14} />
+          <span>
+            <b>{compact(ctx)} context.</b> Every reply re-reads all of it.
+          </span>
+          {running && st.cls !== "working" && (
+            <button class="btn sm" onClick={() => api.send(s.id, "/compact", true).catch(toastError)}>
+              Compact
+            </button>
+          )}
         </div>
       )}
       <div class="chat-scroll" ref={scroller} onScroll={onScroll}>

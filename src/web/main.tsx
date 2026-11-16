@@ -63,14 +63,30 @@ function App() {
     return () => removeEventListener("keydown", k, true);
   }, []);
 
-  // Keep layout above the on-screen keyboard (iOS doesn't resize the layout viewport).
+  // Keep the app in the part of the screen you can see. iOS doesn't shrink the page
+  // for the on-screen keyboard: it pans the view down to the focused field instead.
+  // Sizing the app to the visible height alone left that pan in place, so the compose
+  // box ended up at the top of the screen with an empty gap down to the keyboard. So
+  // size the app to the visible area and move it to wherever that area is.
   useEffect(() => {
     const vv = window.visualViewport;
     if (!vv) return;
-    const f = () => document.documentElement.style.setProperty("--app-h", `${vv.height}px`);
+    const root = document.documentElement;
+    const f = () => {
+      const zoomed = Math.abs(vv.scale - 1) > 0.01; // a pinch-zoom pans on purpose; don't follow it
+      root.style.setProperty("--app-h", `${zoomed ? window.innerHeight : vv.height}px`);
+      root.style.setProperty("--app-top", `${zoomed ? 0 : Math.max(0, vv.pageTop)}px`);
+      const kb = !zoomed && window.innerHeight - vv.height > 120;
+      if (!kb && root.hasAttribute("data-kb") && window.scrollY) window.scrollTo(0, 0); // iOS can leave the page scrolled after the keyboard closes
+      root.toggleAttribute("data-kb", kb);
+    };
     f();
     vv.addEventListener("resize", f);
-    return () => vv.removeEventListener("resize", f);
+    vv.addEventListener("scroll", f);
+    return () => {
+      vv.removeEventListener("resize", f);
+      vv.removeEventListener("scroll", f);
+    };
   }, []);
 
   if (blocked) return <Blocked reason={blocked} />;
