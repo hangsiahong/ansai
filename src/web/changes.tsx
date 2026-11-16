@@ -227,7 +227,10 @@ export function ChangesSheet(p: { taskId?: string; sessionId?: string; onClose: 
     setBusy(true);
     try {
       const r = await api.mergeTask(task!.id);
-      toast(`Merged ${r.files} file${r.files === 1 ? "" : "s"} into ${r.into} (${r.sha.slice(0, 7)})`);
+      toast(
+        `Merged ${r.files} file${r.files === 1 ? "" : "s"} into ${r.into} (${r.sha.slice(0, 7)})` +
+          (r.release ? ". ansai now checks it and updates itself (about 2 minutes); you'll get a notification." : ""),
+      );
       openSheet({ kind: "task", taskId: task!.id });
     } catch (e) {
       toastError(e);

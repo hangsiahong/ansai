@@ -61,6 +61,7 @@ import { discardTaskWorktreeClosingAgents, mergeTaskWorktree } from "./worktrees
 import { db } from "./db";
 import { startBackupLoop } from "./backup";
 import { doctorView, startDoctor } from "./doctor";
+import { releaseAfterMerge, releaseStatus, startSelfRelease } from "./selfrelease";
 import { PAGE_PATHS, findWebDist, webRoutes } from "./webdist";
 import { WEEKDAYS, deleteSchedule, listSchedules, runScheduleNow, saveSchedule, setScheduleEnabled } from "./schedules";
 import {
@@ -391,7 +392,8 @@ const server = Bun.serve<WSData>({
         // An idle agent is closed too, once its work has landed; a conflict leaves it open to be asked for a rebase.
         const r = await mergeTaskWorktree(task, { close: closeSession });
         updateTask(task.id, { status: "done" });
-        return json(r);
+        // A task of ansai's own project goes live: checks, then a restart (selfrelease.ts).
+        return json({ ...r, release: releaseAfterMerge(task, r.sha, r.into) });
       }),
     },
     "/api/tasks/:id/worktree": {
@@ -420,11 +422,12 @@ const server = Bun.serve<WSData>({
     "/api/settings": {
       GET: guard(() => json(getSettings())),
       PUT: guard(async (req) => {
-        const b = await parseBody(req, v.object({ autopilotMax: v.optional(v.number({ int: true, min: 1, max: 6 })), trackSessions: optBool, closeFinished: optBool, doctor: optBool }));
+        const b = await parseBody(req, v.object({ autopilotMax: v.optional(v.number({ int: true, min: 1, max: 6 })), trackSessions: optBool, closeFinished: optBool, doctor: optBool, releaseOnMerge: optBool }));
         return json(updateSettings(b));
       }),
     },
     // `?now=1` also runs the checks now, without filing anything.
+    "/api/self-release": { GET: guard(() => json(releaseStatus())) },
     "/api/doctor": { GET: guard(async (req) => json(await doctorView(new URL(req.url).searchParams.get("now") === "1"))) },
     "/api/projects/:id/shift": {
       PUT: guard(async (req) => {
@@ -857,6 +860,7 @@ startAutopilot();
 sweepAttachments().catch(() => {});
 startRunWatch();
 startBackupLoop();
+startSelfRelease();
 // Idle agents get their direct messages typed in (busy Claude sessions get them through hooks).
 setInterval(() => deliverIdle().catch((e) => console.error("[ansai] team delivery:", e)), 2000);
 // Agents on shift get their next prompt instead of waiting for you (Claude mostly through its Stop hook).

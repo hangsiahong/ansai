@@ -25,7 +25,8 @@ export function setTaskStarter(fn: typeof startTask) {
  */
 
 /** `doctor`: ansai checks itself every 10 minutes and files what it finds in its own backlog (doctor.ts). */
-export type Settings = { autopilotMax: number; trackSessions: boolean; closeFinished: boolean; doctor: boolean };
+/** `releaseOnMerge`: merging a task in ansai's own project puts it live (selfrelease.ts). */
+export type Settings = { autopilotMax: number; trackSessions: boolean; closeFinished: boolean; doctor: boolean; releaseOnMerge: boolean };
 
 export function getSettings(): Settings {
   return {
@@ -33,6 +34,7 @@ export function getSettings(): Settings {
     trackSessions: getSetting<boolean>("track_sessions", true),
     closeFinished: getSetting<boolean>("close_finished", true),
     doctor: getSetting<boolean>("doctor", true),
+    releaseOnMerge: getSetting<boolean>("release_on_merge", true),
   };
 }
 
@@ -41,6 +43,7 @@ export function updateSettings(patch: Partial<Settings>) {
   if (patch.trackSessions !== undefined) setSetting("track_sessions", !!patch.trackSessions);
   if (patch.closeFinished !== undefined) setSetting("close_finished", !!patch.closeFinished);
   if (patch.doctor !== undefined) setSetting("doctor", !!patch.doctor);
+  if (patch.releaseOnMerge !== undefined) setSetting("release_on_merge", !!patch.releaseOnMerge);
   return getSettings();
 }
 

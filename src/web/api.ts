@@ -26,7 +26,14 @@ export type Project = {
   lean?: boolean;
 };
 export type Plan = { done: number; total: number; current: string | null; items: { content: string; status: string }[] };
-export type Settings = { autopilotMax: number; trackSessions: boolean; closeFinished: boolean; doctor: boolean };
+export type Settings = { autopilotMax: number; trackSessions: boolean; closeFinished: boolean; doctor: boolean; releaseOnMerge: boolean };
+/** Merging a task of ansai's own project puts it live (server: selfrelease.ts). */
+export type SelfRelease = {
+  available: boolean;
+  pending: { sha: string; title: string } | null;
+  running: { sha: string; title: string; started: number } | null;
+  last: { sha: string; title: string; ok: boolean; why: string; done: number } | null;
+};
 
 export type Session = {
   id: string;
@@ -277,7 +284,7 @@ export const api = {
   taskText: (id: string) => call<{ body: string; summary: string | null }>("GET", `/api/tasks/${id}/text`),
   taskChanges: (id: string) => call<Changes>("GET", `/api/tasks/${id}/changes`),
   reviewTask: (id: string, tool?: "claude" | "codex") => call<Session>("POST", `/api/tasks/${id}/review`, { tool }),
-  mergeTask: (id: string) => call<{ sha: string; into: string; files: number }>("POST", `/api/tasks/${id}/merge`),
+  mergeTask: (id: string) => call<{ sha: string; into: string; files: number; release: boolean }>("POST", `/api/tasks/${id}/merge`),
   discardWorktree: (id: string) => call<{ ok: true }>("DELETE", `/api/tasks/${id}/worktree`),
   runTask: (id: string, o: { tool: ToolId; yolo?: boolean; accountId?: string | null } & Partial<ModelPick>) => call<Session>("POST", `/api/tasks/${id}/run`, o),
 
@@ -332,6 +339,7 @@ export const api = {
   endProjectShift: (projectId: string) => call<{ ended: number }>("DELETE", `/api/projects/${projectId}/shift`),
   settings: () => call<Settings>("GET", "/api/settings"),
   updateSettings: (patch: Partial<Settings>) => call<Settings>("PUT", "/api/settings", patch),
+  selfRelease: () => call<SelfRelease>("GET", "/api/self-release"),
 
   messages: (q: { project?: string; session?: string } = {}) =>
     call<Message[]>("GET", `/api/messages?${new URLSearchParams(q as Record<string, string>)}`),

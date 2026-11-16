@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "preact/hooks";
-import { api, STATUS_LABEL, TASK_STATUSES, type DeviceList, type ModelPick, type Settings, type Task, type ToolId } from "./api";
+import { api, STATUS_LABEL, TASK_STATUSES, type DeviceList, type ModelPick, type SelfRelease, type Settings, type Task, type ToolId } from "./api";
 import { confirmDialog, getState, openSheet, patchTaskLocal, refreshProjects, setTheme, toast, toastCleanup, toastError, useStore, type ThemePref } from "./store";
 import { AGENTS, Icon, Sheet, StatusPill, TOOL_LABEL, TOOL_SHORT, ToolBadge, ago, compact, nav, shortPath, until } from "./ui";
 import { AccountPicker } from "./accounts";
@@ -717,10 +717,20 @@ function DevicesPanel() {
   );
 }
 
+/** How the last self-update went, or that one is under way. */
+function releaseNote(r: SelfRelease): string {
+  if (r.running) return ` Updating now to ${r.running.sha.slice(0, 7)} (“${r.running.title}”).`;
+  if (r.pending) return ` Updating to ${r.pending.sha.slice(0, 7)} next.`;
+  if (!r.last) return "";
+  return r.last.ok ? ` Last update: ${r.last.sha.slice(0, 7)}, ${ago(r.last.done)} ago.` : ` Last update failed ${ago(r.last.done)} ago: ${r.last.why}`;
+}
+
 function BacklogSettings() {
   const [st, setSt] = useState<Settings | null>(null);
+  const [rel, setRel] = useState<SelfRelease | null>(null);
   useEffect(() => {
     api.settings().then(setSt).catch(toastError);
+    api.selfRelease().then(setRel).catch(() => {}); // only adds a switch; the rest of the sheet works without it
   }, []);
   if (!st) return null;
   const save = (patch: Partial<Settings>) => {
@@ -777,6 +787,21 @@ function BacklogSettings() {
         </span>
         <input type="checkbox" class="switch" checked={st.doctor} onChange={(e) => save({ doctor: (e.target as HTMLInputElement).checked })} />
       </label>
+      {rel?.available && (
+        <label class="switch-row">
+          <span class="tile green">
+            <Icon name="refresh" size={16} />
+          </span>
+          <span class="switch-text">
+            <b>Update ansai when you merge its tasks</b>
+            <em>
+              Merging a task in ansai's own project puts it live: the checks run, then a short restart. If the new version doesn't start, ansai goes back to the one before.
+              {releaseNote(rel)}
+            </em>
+          </span>
+          <input type="checkbox" class="switch" checked={st.releaseOnMerge} onChange={(e) => save({ releaseOnMerge: (e.target as HTMLInputElement).checked })} />
+        </label>
+      )}
     </div>
   );
 }
