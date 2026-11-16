@@ -7,7 +7,7 @@ import { ModelPicker } from "../models";
 import { Launchers, SessionCell } from "./now";
 import { QuickAdd, TaskList } from "./tasks";
 import { TeamPanel } from "../team";
-import { PlaybookCard } from "../playbook";
+import { ChecksCard, PlaybookCard } from "../playbook";
 import { canShift } from "../shift";
 
 const RUN_LIMITS: [number | null, string][] = [
@@ -302,7 +302,7 @@ export function ProjectPane({ id }: { id: string }) {
             <details class="automation-group">
               <summary>
                 <span>Automation</span>
-                <em>Autopilot · Playbook · Schedules · Startup</em>
+                <em>Autopilot · Playbook · Checks · Schedules · Startup</em>
                 <Icon name="chevD" size={16} />
               </summary>
               <div class="automation-stack">
@@ -311,6 +311,7 @@ export function ProjectPane({ id }: { id: string }) {
                   <AutopilotCard project={project} openTodo={tasks.filter((t) => t.status === "todo" && !t.queued).map((t) => t.id)} />
                 </details>
                 <PlaybookCard projectId={id} />
+                <ChecksCard projectId={id} />
                 <Schedules projectId={id} />
                 <details class="automation-item">
                   <summary>Agent startup · {project.lean !== false ? "Lean" : "Full"} <Icon name="chevD" size={15} /></summary>

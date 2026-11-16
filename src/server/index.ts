@@ -46,6 +46,8 @@ import { getPrefs, publicKey, subscribe, testPush, unsubscribe } from "./push";
 import { setViewer } from "./viewers";
 import { startBackgroundTails, subscribeChat, unsubscribeChat } from "./transcripts";
 import { mcpHttp } from "./mcp";
+import { getChecks, setChecks } from "./checks";
+import { evidenceFile } from "./evidence";
 import { callerAllowed, shownKey } from "./sessionkeys";
 import { deliverIdle, getPlaybook, listMessages, postMessage, resumeClaims, setPlaybook, teamBoard } from "./team";
 import { resumeCompactions } from "./compaction";
@@ -354,6 +356,16 @@ const server = Bun.serve<WSData>({
         return json(await changesIn(await taskDir(task, project.path)));
       }),
     },
+    "/api/tasks/:id/evidence/:name": {
+      GET: guard((req) => {
+        const f = evidenceFile(req.params.id!, req.params.name!);
+        const file = f && Bun.file(f.path);
+        if (!f || !file) throw notFound("no such evidence");
+        return file.exists().then((ok) =>
+          ok ? new Response(file, { headers: { "content-type": f.type, "cache-control": "private, max-age=3600", "x-content-type-options": "nosniff" } }) : fail(404, "no such evidence"),
+        );
+      }),
+    },
     "/api/tasks/:id/review": {
       POST: guard(async (req) => {
         const b = await parseBody(req, v.object({ tool: v.optional(v.oneOf(["claude", "codex"] as const)) }));
@@ -391,7 +403,11 @@ const server = Bun.serve<WSData>({
       }),
     },
 
-    "/mcp": guard((req) => mcpHttp(req)),
+    // finish_task waits for the project's checks, which can outlast the 120s idle timeout.
+    "/mcp": guard((req, server) => {
+      server.timeout(req, 0);
+      return mcpHttp(req);
+    }),
     "/api/settings": {
       GET: guard(() => json(getSettings())),
       PUT: guard(async (req) => {
@@ -466,6 +482,17 @@ const server = Bun.serve<WSData>({
         if (!getProject(req.params.id!)) throw notFound("no such project");
         const b = await parseBody(req, v.object({ text: v.string({ max: 8000 }) }));
         return json({ text: setPlaybook(req.params.id!, b.text) });
+      }),
+    },
+    "/api/projects/:id/checks": {
+      GET: guard((req) => {
+        if (!getProject(req.params.id!)) throw notFound("no such project");
+        return json({ cmd: getChecks(req.params.id!) });
+      }),
+      PUT: guard(async (req) => {
+        if (!getProject(req.params.id!)) throw notFound("no such project");
+        const b = await parseBody(req, v.object({ cmd: v.string({ max: 2000 }) }));
+        return json({ cmd: setChecks(req.params.id!, b.cmd) });
       }),
     },
     "/api/projects/:id/team": {

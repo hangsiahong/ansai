@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
-import { api, STATUS_LABEL, TASK_STATUSES, type Session, type Task, type TaskStatus, type TeamBoard } from "../api";
+import { api, STATUS_LABEL, TASK_STATUSES, type Session, type Task, type TaskChecks, type TaskStatus, type TeamBoard } from "../api";
 import { overlapsByTask, overlapText, overlapTitle, type TaskOverlap } from "../overlaps";
 import { getState, loadTeam, openSheet, patchTaskLocal, toastCleanup, toastError, useStore } from "../store";
 import { Icon, Link, ToolBadge } from "../ui";
@@ -141,6 +141,12 @@ function TaskMeta({ task, showProject }: { task: Task; showProject?: boolean }) 
       {task.last_failure && task.status !== "done" && task.status !== "doing" && (
         <span class="tchip fail" title={`The last run stopped early: ${task.last_failure}`}>
           <Icon name="x" size={11} stroke={2.8} /> {task.queued && task.status === "todo" ? `Retrying (${task.attempts})` : "Stopped early"}
+        </span>
+      )}
+      {task.checks && task.status !== "done" && <ChecksChip checks={task.checks} />}
+      {!!task.evidence?.length && task.status !== "done" && (
+        <span class="tchip proof" title="Screenshots or logs the agent attached as proof">
+          <Icon name="eye" size={11} stroke={2.6} /> {task.evidence.length}
         </span>
       )}
       {!!task.blocked_by?.length && (
@@ -326,5 +332,23 @@ export function Board(p: { tasks: Task[]; showProject?: boolean; addProjectId: s
         </section>
       ))}
     </div>
+  );
+}
+
+export function ChecksChip({ checks }: { checks: TaskChecks }) {
+  if ("running" in checks)
+    return (
+      <span class="tchip queued" title={`Running ${checks.cmd}`}>
+        <Icon name="refresh" size={11} stroke={2.6} /> Checking
+      </span>
+    );
+  return checks.ok ? (
+    <span class="tchip ok" title={`${checks.cmd} passed in ${Math.round(checks.ms / 1000)}s`}>
+      <Icon name="check" size={11} stroke={2.8} /> Checks
+    </span>
+  ) : (
+    <span class="tchip fail" title={`${checks.cmd} failed`}>
+      <Icon name="x" size={11} stroke={2.8} /> Checks failed
+    </span>
   );
 }

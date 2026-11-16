@@ -8,6 +8,8 @@ import { changesIn, taskDir } from "./changes";
 import type { ToolId } from "./tools";
 import { checkAgySignIn } from "./accounts";
 import { agySignInHint } from "./agyauth";
+import { checksRunning, getChecks, parseChecks, type ChecksState } from "./checks";
+import { dropEvidence, parseEvidence, type Evidence } from "./evidence";
 
 export const STATUSES = ["todo", "doing", "review", "done"] as const;
 export type TaskStatus = (typeof STATUSES)[number];
@@ -35,6 +37,9 @@ export type Task = {
   /** Autopilot retries used, and why the last run stopped early (null if it didn't). */
   attempts: number;
   last_failure: string | null;
+  /** JSON: ChecksState (checks.ts) and Evidence[] (evidence.ts), set at finish_task. */
+  checks: string | null;
+  evidence: string | null;
   dependencies?: TaskDependency[];
   blocked_by?: TaskDependency[];
 };
@@ -100,8 +105,14 @@ export function listTasks() {
   const byReview = new Map(reviews.map((r) => [r.task_id, { session_id: r.session_id, reviewer_tool: r.reviewer_tool, status: r.status === "running" && r.session_status !== "running" ? "stopped" as const : r.status, summary: r.summary, findings: JSON.parse(r.findings) as ReviewFinding[] }]));
   return rows.map((t) => {
     const deps = byDependency.get(t.id) ?? [];
-    return { ...t, plan: t.plan ? (JSON.parse(t.plan) as Plan) : null, sessions: byTask.get(t.id) ?? [], dependencies: deps, blocked_by: deps.filter((d) => d.status !== "done"), review: byReview.get(t.id) ?? null };
+    return { ...t, plan: t.plan ? (JSON.parse(t.plan) as Plan) : null, checks: liveChecks(t), evidence: parseEvidence(t.evidence), sessions: byTask.get(t.id) ?? [], dependencies: deps, blocked_by: deps.filter((d) => d.status !== "done"), review: byReview.get(t.id) ?? null };
   });
+}
+
+// A "running" left behind by a restart mid-run would otherwise spin forever.
+function liveChecks(t: Task): ChecksState | null {
+  const c = parseChecks(t.checks);
+  return c && "running" in c && !checksRunning(t.id) ? null : c;
 }
 
 /** Start a separate, constrained reviewer in the task's existing worktree. */
@@ -278,6 +289,7 @@ export async function deleteTask(id: string) {
   // The task's worktree and branch go with it, unless that would lose work (409).
   await removeTaskWorktreeSafely(task);
   if (!db.query("DELETE FROM tasks WHERE id = ?").run(id).changes) throw notFound("no such task");
+  await dropEvidence(id);
   emit("tasks");
 }
 
@@ -306,7 +318,7 @@ export async function handoff(task: Task, dir: string | null): Promise<string> {
 }
 
 /** `tools`: the agent has ansai's own tools (MCP). agy doesn't, and went looking for them for minutes when told to call one. */
-export function taskPrompt(task: Task & { notes?: string[]; handoff?: string }, tools = true): string {
+export function taskPrompt(task: Task & { notes?: string[]; handoff?: string; checksCmd?: string }, tools = true): string {
   return [
     `Backlog task: ${task.title}`,
     task.worktree_path
@@ -322,9 +334,14 @@ export function taskPrompt(task: Task & { notes?: string[]; handoff?: string }, 
         ? "- Keep to this task. Record unrelated problems you notice with the ansai add_task tool instead of fixing them now."
         : "- Keep to this task. List unrelated problems you notice at the end instead of fixing them now.",
       tools
-        ? "- When it is done, call the ansai finish_task tool with a 2-3 sentence summary, then tell me how to verify it."
+        ? "- When it is done, call the ansai finish_task tool with a 2-3 sentence summary, then tell me how to verify it. Pass `evidence` (paths to screenshots or a check log) when you have proof it works; I review from my phone and look at that first."
         : "- When it is done, stop and tell me in 2-3 sentences what changed and how to verify it.",
-    ].join("\n"),
+      tools && task.checksCmd
+        ? `- finish_task first runs \`${task.checksCmd}\` in your working folder. If it fails, the task stays in Doing and you get the output back: fix it and call finish_task again.`
+        : "",
+    ]
+      .filter(Boolean)
+      .join("\n"),
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -357,6 +374,7 @@ export async function runTask(
     const launchTask = {
       ...(worktree ? { ...task, worktree_path: worktree.path, worktree_branch: worktree.branch, notes: worktree.notes } : task),
       handoff: rerun || task.summary ? await handoff(task, worktree?.cwd ?? null) : "",
+      checksCmd: task.project_id ? getChecks(task.project_id) : "",
     };
     const session = await createSession({
       projectId: task.project_id,
@@ -383,11 +401,11 @@ export async function runTask(
 }
 
 /** Called by an agent (MCP finish_task): record its summary and hand the task back for review. */
-export function finishTask(id: string, summary: string) {
+export function finishTask(id: string, summary: string, evidence: Evidence[] = []) {
   const task = getTask(id);
   if (!task) throw notFound("no such task");
   // A finished task starts its retry count over.
-  db.query("UPDATE tasks SET summary = ?, attempts = 0, last_failure = NULL, updated_at = ? WHERE id = ?").run(summary.slice(0, 4000), now(), id);
+  db.query("UPDATE tasks SET summary = ?, evidence = ?, attempts = 0, last_failure = NULL, updated_at = ? WHERE id = ?").run(summary.slice(0, 4000), evidence.length ? JSON.stringify(evidence) : null, now(), id);
   db.query("UPDATE schedule_occurrences SET status = 'completed', outcome = ? WHERE task_id = ?").run(summary.slice(0, 1000), id);
   if (task.status !== "done") updateTask(id, { status: "review" });
   else emit("tasks");

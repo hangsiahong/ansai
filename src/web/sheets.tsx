@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "preact/hooks";
-import { api, STATUS_LABEL, TASK_STATUSES, type DeviceList, type ModelPick, type Settings, type ToolId } from "./api";
+import { api, STATUS_LABEL, TASK_STATUSES, type DeviceList, type ModelPick, type Settings, type Task, type ToolId } from "./api";
 import { confirmDialog, getState, openSheet, patchTaskLocal, refreshProjects, setTheme, toast, toastCleanup, toastError, useStore, type ThemePref } from "./store";
 import { AGENTS, Icon, Sheet, StatusPill, TOOL_LABEL, TOOL_SHORT, ToolBadge, ago, compact, nav, shortPath, until } from "./ui";
 import { AccountPicker } from "./accounts";
@@ -418,6 +418,15 @@ function TaskSheet(p: { taskId: string; onClose: () => void }) {
             </button>
           ))}
         </div>
+        {task.summary && (
+          <div class="summary-card">
+            <div class="summary-head">
+              <Icon name="check" size={14} stroke={2.6} /> Agent's summary
+            </div>
+            <p>{task.summary}</p>
+          </div>
+        )}
+        <Proof task={task} />
         <textarea
           class="input notes"
           rows={4}
@@ -471,15 +480,6 @@ function TaskSheet(p: { taskId: string; onClose: () => void }) {
           })()}
           {!task.project_id && <span class="muted">Choose a project before adding task dependencies.</span>}
         </div>
-
-        {task.summary && (
-          <div class="summary-card">
-            <div class="summary-head">
-              <Icon name="check" size={14} stroke={2.6} /> Agent's summary
-            </div>
-            <p>{task.summary}</p>
-          </div>
-        )}
 
         {task.status === "review" && task.worktree_path && (
           <div class="field reviewer-section">
@@ -777,5 +777,45 @@ function SettingsSheet(p: { onClose: () => void }) {
         )}
       </div>
     </Sheet>
+  );
+}
+
+function Proof({ task }: { task: Task }) {
+  const c = task.checks;
+  const ev = task.evidence ?? [];
+  if (!c && !ev.length) return null;
+  const url = (name: string) => `/api/tasks/${task.id}/evidence/${encodeURIComponent(name)}`;
+  return (
+    <div class="field proof">
+      <span>Proof</span>
+      {c && "running" in c && (
+        <div class="proof-check running">
+          <Icon name="refresh" size={14} stroke={2.4} /> Running <code>{c.cmd}</code>
+        </div>
+      )}
+      {c && !("running" in c) && (
+        <details class={`proof-check ${c.ok ? "ok" : "bad"}`} open={!c.ok}>
+          <summary>
+            <Icon name={c.ok ? "check" : "x"} size={14} stroke={2.6} /> {c.ok ? "Checks passed" : c.timedOut ? "Checks timed out" : "Checks failed"} in {Math.max(1, Math.round(c.ms / 1000))}s{ago(c.at) === "now" ? "" : ` · ${ago(c.at)} ago`}
+          </summary>
+          <div class="proof-cmd">$ {c.cmd}</div>
+          {c.tail && <pre class="proof-log">{c.tail}</pre>}
+        </details>
+      )}
+      {ev.some((e) => e.kind === "image") && (
+        <div class="proof-shots">
+          {ev.filter((e) => e.kind === "image").map((e) => (
+            <a href={url(e.name)} target="_blank" rel="noopener">
+              <img src={url(e.name)} alt={e.name} loading="lazy" />
+            </a>
+          ))}
+        </div>
+      )}
+      {ev.filter((e) => e.kind === "text").map((e) => (
+        <a class="proof-file" href={url(e.name)} target="_blank" rel="noopener">
+          <Icon name="file" size={14} /> {e.name.replace(/^\d+-/, "")}
+        </a>
+      ))}
+    </div>
   );
 }
