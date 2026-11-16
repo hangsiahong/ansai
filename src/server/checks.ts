@@ -75,7 +75,7 @@ export async function runTaskChecks(taskId: string, cwd: string, cmd: string, ti
   running.add(taskId);
   saveChecks(taskId, { running: true, cmd, at: now() });
   const result = queue.then(() => runCommand(cwd, cmd, timeoutMs));
-  queue = result.catch(() => {});
+  queue = result.catch(() => {}); // the caller gets the error from result; the queue only waits for it to settle
   try {
     const r = await result;
     saveChecks(taskId, r);

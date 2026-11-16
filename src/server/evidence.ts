@@ -71,7 +71,7 @@ export async function saveEvidence(taskId: string, files: Picked[], root?: strin
 }
 
 export async function dropEvidence(taskId: string, root?: string) {
-  if (ID.test(taskId)) await rm(evidenceDir(taskId, root), { recursive: true, force: true }).catch(() => {});
+  if (ID.test(taskId)) await rm(evidenceDir(taskId, root), { recursive: true, force: true }).catch(() => {}); // a leftover folder must not stop the task being deleted
 }
 
 export function evidenceFile(taskId: string, name: string, root?: string): { path: string; type: string } | null {
