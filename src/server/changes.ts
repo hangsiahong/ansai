@@ -2,12 +2,13 @@ import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { cleanEnv } from "./config";
 import { conflict } from "./errors";
+import { projectCheckout } from "./worktrees";
 
 /**
  * What an agent changed in a folder, as a reviewable diff.
  *
  * In a task worktree (a linked Git worktree) the diff is against the point
- * where its branch left the main checkout's branch, so it covers the task's
+ * where its branch left the branch of its project's folder, so it covers the task's
  * commits plus anything not committed yet. In an ordinary checkout it is the
  * uncommitted work against HEAD. New files that Git doesn't track yet are
  * included either way, since agents usually don't commit.
@@ -191,15 +192,19 @@ export async function changesIn(dir: string): Promise<Changes> {
   let base: Changes["base"] = { label: "last commit", sha: hasHead ? (await gitOk(dir, ["rev-parse", "HEAD"])).trim() : EMPTY_TREE };
   if (!hasHead) base.label = "empty repository";
   if (worktree && hasHead) {
-    // Compare against where this branch left the main checkout's branch.
-    const list = await gitOk(dir, ["worktree", "list", "--porcelain"]);
-    const main = list.split("\n\n")[0] ?? "";
-    const mainBranch = main.match(/^branch refs\/heads\/(.+)$/m)?.[1];
-    const mainHead = main.match(/^HEAD ([0-9a-f]+)$/m)?.[1];
-    const ref = mainBranch ?? mainHead;
+    // Compare against where this branch left the project's branch: for a task's worktree that
+    // is its project's own folder (which may be a linked worktree itself); otherwise the
+    // repository's main checkout (a bare repository has none: the last commit it is).
+    let against = await projectCheckout(dir);
+    if (!against) {
+      const list = await gitOk(dir, ["worktree", "list", "--porcelain"]);
+      const main = list.split("\n\n")[0] ?? "";
+      against = { path: "", branch: main.match(/^branch refs\/heads\/(.+)$/m)?.[1] ?? null, head: main.match(/^HEAD ([0-9a-f]+)$/m)?.[1] ?? null };
+    }
+    const ref = against.branch ?? against.head;
     if (ref) {
       const mb = await git(dir, ["merge-base", "HEAD", ref]);
-      if (mb.code === 0 && mb.out.trim()) base = { label: mainBranch ?? "main checkout", sha: mb.out.trim() };
+      if (mb.code === 0 && mb.out.trim()) base = { label: against.branch ?? "main checkout", sha: mb.out.trim() };
     }
   }
 

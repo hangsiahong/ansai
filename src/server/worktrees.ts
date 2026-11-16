@@ -192,7 +192,7 @@ async function gitIn(dir: string, args: string[], timeout = 60_000) {
   return { code: await proc.exited, stdout: stdout.trim(), stderr: stderr.trim() };
 }
 
-/** The main checkout (first entry of `git worktree list`) and the branch it has checked out. */
+/** Any folder of the worktree's repository to run `git worktree`/`git branch` from: the first entry of `git worktree list` (it may be bare). */
 async function mainCheckout(worktree: string): Promise<{ path: string; branch: string | null }> {
   const list = await gitIn(worktree, ["worktree", "list", "--porcelain"]);
   if (list.code !== 0) throw conflict(`git: ${list.stderr}`);
@@ -200,6 +200,72 @@ async function mainCheckout(worktree: string): Promise<{ path: string; branch: s
   const path = first.match(/^worktree (.+)$/m)?.[1];
   if (!path) throw conflict("couldn't find the project's main checkout");
   return { path, branch: first.match(/^branch refs\/heads\/(.+)$/m)?.[1] ?? null };
+}
+
+const real = (p: string) => {
+  try {
+    return realpathSync(p);
+  } catch {
+    return resolve(p);
+  }
+};
+
+export type Checkout = { path: string; branch: string | null; head: string | null };
+
+/**
+ * The checkout a task's worktree was made from and goes back into: its project's own
+ * folder, with whatever branch that has checked out now. Null when `dir` isn't in a task
+ * worktree of a project ansai still has, or the project's folder is gone or is another
+ * repository.
+ *
+ * This used to be "the first entry of `git worktree list`", the repository's main
+ * checkout. That is a different folder when the project is itself a linked worktree
+ * (ansai's scan adds those as projects): the task branched from the project's `feature`,
+ * but Merge put it on `main` in the other folder, taking feature's unreleased commits
+ * along. And a bare repository with worktrees beside it has no main checkout at all, so
+ * Merge always answered "detached HEAD" and Code changes hid the agent's commits.
+ */
+export async function projectCheckout(dir: string): Promise<Checkout | null> {
+  const row = db
+    .query(
+      `SELECT p.path FROM tasks t JOIN projects p ON p.id = t.project_id
+       WHERE t.worktree_path IS NOT NULL AND (t.worktree_path = ? OR substr(?, 1, length(t.worktree_path) + 1) = t.worktree_path || '/')`,
+    )
+    .get(dir, dir) as { path: string } | null;
+  if (!row || !existsSync(row.path)) return null;
+  const top = await gitIn(row.path, ["rev-parse", "--show-toplevel"]);
+  if (top.code !== 0) return null;
+  // The same repository, and not the task's worktree itself.
+  const [mine, theirs, here] = await Promise.all([
+    gitIn(dir, ["rev-parse", "--path-format=absolute", "--git-common-dir"]),
+    gitIn(top.stdout, ["rev-parse", "--path-format=absolute", "--git-common-dir"]),
+    gitIn(dir, ["rev-parse", "--show-toplevel"]),
+  ]);
+  if (mine.code !== 0 || theirs.code !== 0 || here.code !== 0 || real(mine.stdout) !== real(theirs.stdout) || real(here.stdout) === real(top.stdout)) return null;
+  return checkoutAt(top.stdout);
+}
+
+async function checkoutAt(path: string): Promise<Checkout> {
+  const [ref, head] = await Promise.all([gitIn(path, ["symbolic-ref", "-q", "HEAD"]), gitIn(path, ["rev-parse", "--verify", "-q", "HEAD"])]);
+  return { path, branch: ref.code === 0 && ref.stdout.startsWith("refs/heads/") ? ref.stdout.slice("refs/heads/".length) : null, head: head.code === 0 ? head.stdout : null };
+}
+
+/**
+ * Where Merge puts a task's work: the project's own folder. For a task with no project
+ * left to ask, the repository's main checkout; a bare repository has none, and picking
+ * one of the worktrees beside it would be a guess.
+ */
+async function mergeTarget(wt: string): Promise<Checkout> {
+  const own = await projectCheckout(wt);
+  if (own) return own;
+  const list = await gitIn(wt, ["worktree", "list", "--porcelain"]);
+  if (list.code !== 0) throw conflict(`git: ${list.stderr}`);
+  const first = list.stdout.split("\n\n")[0] ?? "";
+  const path = first.match(/^worktree (.+)$/m)?.[1];
+  if (!path) throw conflict("couldn't find the project's main checkout");
+  if (/^bare$/m.test(first))
+    throw conflict("can't tell which folder to merge into: this task's project folder is no longer in ansai (or is gone), and its repository is a bare one with several checkouts. Add the folder back as a project, then merge again.");
+  return checkoutAt(path);
 }
 
 const CUT_OFF = "This task's worktree is cut off from its project: the project folder was moved, renamed or deleted.";
@@ -286,9 +352,9 @@ export async function discardTaskWorktree(task: TaskRef) {
 
 /**
  * Bring a task's work into the project: commit what the agent left uncommitted
- * on its branch, squash-merge the branch into the main checkout's branch as one
- * commit (titled after the task), then remove the worktree and branch.
- * Refuses rather than guessing: the main checkout must be on a branch with no
+ * on its branch, squash-merge the branch into the branch the project's folder has
+ * checked out, as one commit (titled after the task), then remove the worktree and
+ * branch. Refuses rather than guessing: the project folder must be on a branch with no
  * uncommitted changes to tracked files, and conflicts are rolled back. It also
  * refuses when removing the worktree would delete work the merge didn't bring:
  * the worktree isn't on the task's branch, or it holds a nested Git repository.
@@ -306,8 +372,8 @@ export async function mergeTaskWorktree(task: TaskRef): Promise<{ sha: string; i
   if (open.length) throw conflict("close the agent's session first: merging removes its worktree folder");
   if (!(await connected(wt)))
     throw conflict(`${CUT_OFF} There is nothing to merge into until the folder is back where it was, or added to ansai where it is now. The task's files are still in ${wt}.`);
-  const main = await mainCheckout(wt);
-  if (!main.branch) throw conflict("the project folder isn't on a branch (detached HEAD), so there's nothing to merge into");
+  const main = await mergeTarget(wt);
+  if (!main.branch) throw conflict(`the project folder (${main.path}) isn't on a branch (detached HEAD), so there's nothing to merge into`);
   const dirty = await gitIn(main.path, ["status", "--porcelain", "--untracked-files=no"]);
   if (dirty.stdout) {
     const n = dirty.stdout.split("\n").length;

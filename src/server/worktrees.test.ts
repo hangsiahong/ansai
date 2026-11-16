@@ -8,6 +8,7 @@ import { join } from "node:path";
 const { db, now } = await import("./db");
 const { deleteTask, getTask } = await import("./tasks");
 const { discardTaskWorktree, ensureTaskWorktree, mergeTaskWorktree } = await import("./worktrees");
+const { changesIn } = await import("./changes");
 
 const repo = join(process.env.ANSAI_HOME!, "wt-repo");
 
@@ -211,5 +212,110 @@ describe("a project folder that moved or was deleted", () => {
     // `repo` (the other tests' project) is a real repository among ansai's projects, but not this worktree's
     db.query("INSERT OR IGNORE INTO projects (id, name, path, created_at) VALUES ('wt-repo', 'wt-repo', ?, 0)").run(repo);
     expect((await rejection(mergeTaskWorktree(getTask(id)!))).message).toContain("moved, renamed or deleted");
+  });
+});
+
+// ansai's project scan adds linked worktrees as projects too. A task there branches from
+// that folder's branch, so that is where its work must go back, not to the repository's
+// first checkout (which Merge and Code changes used to take, whatever the project was).
+describe("a project that is a linked worktree itself", () => {
+  const home = process.env.ANSAI_HOME!;
+  let k = 0;
+  /** A repository on main, plus `feature` checked out beside it with a commit main doesn't have; the project is that second folder. */
+  async function linkedProject() {
+    const name = `lw${++k}`;
+    const main = join(home, `${name}-main`);
+    const feature = join(home, `${name}-feature`);
+    mkdirSync(main);
+    git(main, "init", "-q", "-b", "main");
+    writeFileSync(join(main, "a.txt"), "a\n");
+    git(main, "add", "-A");
+    git(main, "commit", "-q", "-m", "init");
+    git(main, "worktree", "add", "-q", "-b", "feature", feature);
+    writeFileSync(join(feature, "unreleased.txt"), "not on main yet\n");
+    git(feature, "add", "-A");
+    git(feature, "commit", "-q", "-m", "feature work");
+    db.query("INSERT INTO projects (id, name, path, created_at) VALUES (?, ?, ?, 0)").run(name, name, feature);
+    const id = `task-${name}`;
+    db.query("INSERT INTO tasks (id, project_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)").run(id, name, `Task ${id}`, now(), now());
+    const wt = (await ensureTaskWorktree(getTask(id)!, feature))!;
+    writeFileSync(join(wt.path, "work.txt"), "the agent's work\n");
+    return { id, wt, main, feature };
+  }
+
+  test("Code changes shows the task's work against the project's branch, not main", async () => {
+    const { wt } = await linkedProject();
+    git(wt.path, "add", "-A");
+    git(wt.path, "commit", "-q", "-m", "agent commit");
+    const c = await changesIn(wt.path);
+    expect(c.base.label).toBe("feature");
+    expect(c.files.map((f) => f.path)).toEqual(["work.txt"]); // not feature's own unreleased.txt
+    expect(c.commits.map((x) => x.subject)).toEqual(["agent commit"]);
+  });
+
+  test("Merge lands in the project's folder on its branch, and main gets nothing", async () => {
+    const { id, wt, main, feature } = await linkedProject();
+    const mainBefore = git(main, "rev-parse", "main");
+    const r = await mergeTaskWorktree(getTask(id)!);
+    expect(r.into).toBe("feature");
+    expect(r.files).toBe(1);
+    expect(readFileSync(join(feature, "work.txt"), "utf8")).toBe("the agent's work\n");
+    expect(git(feature, "log", "-1", "--format=%s")).toBe(`Task ${id}`);
+    expect(git(main, "rev-parse", "main")).toBe(mainBefore);
+    expect(existsSync(join(main, "work.txt"))).toBe(false);
+    expect(existsSync(join(main, "unreleased.txt"))).toBe(false);
+    expect(existsSync(wt.path)).toBe(false);
+    expect(getTask(id)!.worktree_path).toBeNull();
+  });
+
+  test("it refuses when the project's folder has uncommitted changes, not when main's does", async () => {
+    const { id, main, feature } = await linkedProject();
+    writeFileSync(join(main, "a.txt"), "edited on main\n");
+    writeFileSync(join(feature, "unreleased.txt"), "edited in the project\n");
+    expect((await rejection(mergeTaskWorktree(getTask(id)!))).message).toContain("the project folder has uncommitted changes in 1 file");
+    git(feature, "checkout", "-q", "--", "unreleased.txt");
+    expect((await mergeTaskWorktree(getTask(id)!)).into).toBe("feature");
+  });
+});
+
+// A bare repository with its checkouts beside it has no main checkout: Merge always said
+// "detached HEAD", and Code changes compared against nothing, hiding the agent's commits.
+describe("a project that is a checkout of a bare repository", () => {
+  const home = process.env.ANSAI_HOME!;
+  let k = 0;
+  async function bareProject(withProject = true) {
+    const name = `bare${++k}`;
+    const bare = join(home, `${name}.git`);
+    const dev = join(home, `${name}-dev`);
+    git(home, "clone", "-q", "--bare", repo, bare);
+    git(bare, "worktree", "add", "-q", "-b", "dev", dev);
+    if (withProject) db.query("INSERT INTO projects (id, name, path, created_at) VALUES (?, ?, ?, 0)").run(name, name, dev);
+    const id = `task-${name}`;
+    db.query("INSERT INTO tasks (id, project_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)").run(id, withProject ? name : null, `Task ${id}`, now(), now());
+    const wt = (await ensureTaskWorktree(getTask(id)!, dev))!;
+    writeFileSync(join(wt.path, "work.txt"), "the agent's work\n");
+    git(wt.path, "add", "-A");
+    git(wt.path, "commit", "-q", "-m", "agent commit");
+    return { id, wt, dev };
+  }
+
+  test("Code changes shows the agent's commits, and Merge lands in the project's folder", async () => {
+    const { id, wt, dev } = await bareProject();
+    const c = await changesIn(wt.path);
+    expect(c.base.label).toBe("dev");
+    expect(c.commits.map((x) => x.subject)).toEqual(["agent commit"]);
+
+    const r = await mergeTaskWorktree(getTask(id)!);
+    expect(r.into).toBe("dev");
+    expect(readFileSync(join(dev, "work.txt"), "utf8")).toBe("the agent's work\n");
+    expect(existsSync(wt.path)).toBe(false);
+  });
+
+  test("with no project left to say which checkout, Merge refuses rather than pick one", async () => {
+    const { id, wt } = await bareProject(false);
+    const e = await rejection(mergeTaskWorktree(getTask(id)!));
+    expect(e.status).toBe(409);
+    expect(e.message).toContain("can't tell which folder to merge into");
+    expect(readFileSync(join(wt.path, "work.txt"), "utf8")).toBe("the agent's work\n");
   });
 });
