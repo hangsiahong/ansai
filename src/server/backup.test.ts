@@ -45,13 +45,16 @@ describe("database backups", () => {
     expect(listBackups().length).toBe(2);
   });
 
-  test("keeps the last 7 daily and the last 5 pre-update backups, and never touches other files", () => {
+  test("keeps the last 7 daily, the last 5 pre-update and the last 5 pre-release backups, and never touches other files", () => {
     for (let d = 1; d <= 10; d++) old(`ansai-daily-202611${String(d).padStart(2, "0")}T030000.db`, 11 - d);
     for (let v = 10; v <= 17; v++) old(`ansai-before-v${v}-20261101T0${v - 10}0000.db`, 30 - v);
+    for (let h = 1; h <= 7; h++) old(`ansai-before-release-20261110T0${h}0000.db`, 20 - h);
     old("my-own-copy.db", 400);
     old("ansai-daily-notes.txt", 400);
     const gone = pruneBackups();
     expect(gone.sort()).toEqual([
+      "ansai-before-release-20261110T010000.db",
+      "ansai-before-release-20261110T020000.db",
       "ansai-before-v10-20261101T000000.db",
       "ansai-before-v11-20261101T010000.db",
       "ansai-before-v12-20261101T020000.db",
@@ -62,6 +65,6 @@ describe("database backups", () => {
     const left = readdirSync(backupDir);
     expect(left).toContain("my-own-copy.db");
     expect(left).toContain("ansai-daily-notes.txt");
-    expect(left.length).toBe(7 + 5 + 2);
+    expect(left.length).toBe(7 + 5 + 5 + 2);
   });
 });

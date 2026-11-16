@@ -18,6 +18,29 @@ bun run test                            # bun test: auth, autopilot, team messag
 bun run smoke                           # a real browser opens the app at phone and desktop size, on its own test server
 ```
 
+### Putting a change live
+
+The service doesn't run from this folder. It runs from its own copy of the code, the
+**release folder** (`~/.ansai/release`), so edits here, yours or an agent's half-done ones,
+never reach the running service. A commit goes live when you release it:
+
+```sh
+./scripts/release.sh                    # release the commit this folder is on
+./scripts/release.sh --status           # what is live, and which commits here aren't yet
+./scripts/release.sh <commit>           # release that commit: also the way back to an older one
+```
+
+A release runs the checks on exactly that commit in a throwaway folder (typecheck, tests,
+browser smoke test), copies the database to `~/.ansai/backups`, moves the release folder to
+the commit, restarts the service and waits until it answers. If the new version doesn't come
+up, it puts the previous commit back and restarts again. A plain
+`systemctl --user restart ansai` restarts the released version and picks up nothing new.
+`--skip-checks` skips the checks when you have to go back fast.
+
+`./scripts/install-service.sh --dev` runs the service straight from this folder instead, as
+ansai used to: every restart then ships whatever is in it. The installer keeps the unit file
+it replaces as `~/.config/systemd/user/ansai.service.previous`.
+
 Phone access:
 
 ```sh
@@ -68,7 +91,7 @@ Install the Tailscale app on your phone with the same account, open that URL, th
 - **Answer from the notification:** a *Needs you* push has buttons: Allow / Deny for tool approvals, or the dialog's own answer for startup screens (e.g. *Trust folder*). Each button is pinned to the prompt it was sent for. If the agent has moved on, the tap opens the session instead of pressing anything. Buttons appear on Android and desktop; iOS web push has none.
 - **Playbooks:** each project page has a *Playbook*, your standing instructions (e.g. "run the tests before finishing"). Every agent started (or restarted) in that project gets it as system-level instructions: Claude through `--append-system-prompt`, Codex through `developer_instructions`, next to ansai's own note. It never becomes a prompt of its own. agy has no such flag, so there it goes in front of the first prompt. Your repository's files (CLAUDE.md, AGENTS.md) are never touched.
 - **System monitor:** the *System* page (and a *This machine* row on *Now*) shows how the laptop or server ansai runs on is doing: CPU (per thread, load, queueing), memory and swap, every disk, temperatures (CPU, GPU, NVMe, Wi-Fi, board) with fan speed, and the battery with a charge-limit-aware state and time left. History charts go back 7 days (one row a minute in the database; gaps show where ansai wasn't running or the machine slept). *What's using it* adds up CPU and memory per agent, so you can see which agent is eating the laptop, and links to it. A push goes out, once, when a disk is over 90% full, a chip stays hot, memory runs low, or the battery drops under 15% (each only after it lasts 2 minutes, and again no sooner than 6 hours later unless it gets worse; switch it off under Settings › Notifications). Linux only: it reads `/proc` and `/sys`, with no extra packages or root.
-- **Backups:** ansai's database (tasks, sessions, accounts, messages, settings) is copied to `~/.ansai/backups` once a day while it runs and before every update that changes the database. The last 7 daily copies and the last 5 pre-update copies are kept. To restore one: stop ansai, copy the backup over `~/.ansai/ansai.db`, delete `ansai.db-wal` and `ansai.db-shm`, start ansai.
+- **Backups:** ansai's database (tasks, sessions, accounts, messages, settings) is copied to `~/.ansai/backups` once a day while it runs, before every update that changes the database, and before every release (`scripts/release.sh`). The last 7 daily copies, the last 5 pre-update copies and the last 5 pre-release copies are kept. To restore one: stop ansai, copy the backup over `~/.ansai/ansai.db`, delete `ansai.db-wal` and `ansai.db-shm`, start ansai.
 - **Cost awareness:** the chat shows the conversation's context size (every reply re-reads all of it) and, past ~150k, offers to compact it. The Accounts page counts fresh tokens (input, cache writes, output) and lists cache reads, which cost a fraction as much, separately. Team messages only wake an agent when it's worth a turn.
 - **Lean startup:** Claude agents ansai starts skip your claude.ai connectors (Gmail, Drive, Calendar…) and chat-channel plugins such as Telegram, through their own `--settings`, so your files stay untouched. That's about 6k fewer tokens in every request, and agents no longer take your Telegram bot from the session you chat through (a bot allows only one poller). A project's own MCP servers and your other plugins still load. It's on for every project; turn it off under the project's *Automation › Agent startup*. ansai's own tools are always loaded up front, not deferred behind tool search.
 - **Agents compact themselves:** Claude Code compacts on its own only near the model's full limit, and until then every step re-reads the whole conversation. Once a Claude agent's conversation passes 150k tokens (and every 100k after), ansai tells it so between steps. The agent picks a good stopping point and calls ansai's `compact` tool with what the summary must keep and what it does next, then ends its turn. ansai types `/compact`, waits for Claude to finish, and sends the next step back as the agent's next prompt, so autopilot runs and shifts keep going without you. The chat's Compact button still works for doing it yourself.

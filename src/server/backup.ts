@@ -4,18 +4,20 @@ import { backupDatabase, backupDir } from "./db";
 
 /**
  * Backups of ansai's database (tasks, sessions, accounts, messages, settings), in
- * ~/.ansai/backups. One a day while ansai runs, plus one before every schema update
- * (db.ts). Old ones are removed: the last KEEP_DAILY daily copies and the last
- * KEEP_UPDATES pre-update copies stay.
+ * ~/.ansai/backups. One a day while ansai runs, one before every schema update (db.ts),
+ * and one before every release (scripts/release.sh makes that one). Old ones are removed:
+ * the last KEEP_DAILY daily copies, the last KEEP_UPDATES pre-update copies and the last
+ * KEEP_RELEASES pre-release copies stay.
  *
  * To restore: stop ansai, copy the backup over ~/.ansai/ansai.db, delete ansai.db-wal
  * and ansai.db-shm, start ansai.
  */
 const KEEP_DAILY = 7;
 const KEEP_UPDATES = 5;
+const KEEP_RELEASES = 5;
 const DAY = 24 * 3600_000;
 
-type Backup = { file: string; kind: "daily" | "update"; at: number };
+type Backup = { file: string; kind: "daily" | "update" | "release"; at: number };
 
 export function listBackups(): Backup[] {
   let names: string[];
@@ -26,10 +28,11 @@ export function listBackups(): Backup[] {
   }
   const out: Backup[] = [];
   for (const file of names) {
-    const m = /^ansai-(daily|before-v\d+)-\d{8}T\d{6}(-\d+)?\.db$/.exec(file);
+    const m = /^ansai-(daily|before-v\d+|before-release)-\d{8}T\d{6}(-\d+)?\.db$/.exec(file);
     if (!m) continue; // not ours: never touched
     try {
-      out.push({ file, kind: m[1] === "daily" ? "daily" : "update", at: statSync(join(backupDir, file)).mtimeMs });
+      const kind = m[1] === "daily" ? "daily" : m[1] === "before-release" ? "release" : "update";
+      out.push({ file, kind, at: statSync(join(backupDir, file)).mtimeMs });
     } catch {}
   }
   return out.sort((a, b) => b.at - a.at);
@@ -38,7 +41,8 @@ export function listBackups(): Backup[] {
 /** Remove backups beyond what's kept. Returns the files removed. */
 export function pruneBackups(): string[] {
   const all = listBackups();
-  const drop = [...all.filter((b) => b.kind === "daily").slice(KEEP_DAILY), ...all.filter((b) => b.kind === "update").slice(KEEP_UPDATES)];
+  const beyond = (kind: Backup["kind"], keep: number) => all.filter((b) => b.kind === kind).slice(keep);
+  const drop = [...beyond("daily", KEEP_DAILY), ...beyond("update", KEEP_UPDATES), ...beyond("release", KEEP_RELEASES)];
   const gone: string[] = [];
   for (const b of drop) {
     try {
