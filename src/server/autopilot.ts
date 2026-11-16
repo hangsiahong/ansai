@@ -71,6 +71,37 @@ function holdForSignIn(t: Task) {
   }).catch(() => {});
 }
 
+/**
+ * The agent session a queued task still has open, if any (runTask refuses to start a second).
+ * `fresh` when it was started after the task was last touched: ansai restarted between
+ * starting the agent and moving its task to Doing, so that agent IS this run. Otherwise it
+ * is an agent from an earlier run, left open when you sent the task back to the queue.
+ */
+function openRun(t: Task): { fresh: boolean } | null {
+  const s = db
+    .query(
+      `SELECT s.created_at FROM sessions s WHERE s.task_id = ? AND s.status = 'running'
+         AND NOT EXISTS (SELECT 1 FROM task_reviews r WHERE r.session_id = s.id AND r.status = 'complete')
+       ORDER BY s.created_at DESC LIMIT 1`,
+    )
+    .get(t.id) as { created_at: number } | null;
+  return s ? { fresh: s.created_at >= t.updated_at } : null;
+}
+
+/** Queued tasks waiting for you to close the agent an earlier run left open; you hear about each once. */
+const heldForOpenAgent = new Set<string>();
+function holdForOpenAgent(t: Task) {
+  if (heldForOpenAgent.has(t.id)) return;
+  heldForOpenAgent.add(t.id);
+  console.warn(`[ansai] autopilot is holding "${t.title}": an agent from an earlier run is still open`);
+  notify("input", {
+    title: `Autopilot is waiting · ${t.title}`,
+    body: "This task still has an agent open from an earlier run, so a new one can't start. Close that agent and the task starts by itself, or message the agent to carry on.",
+    url: t.project_id ? `/p/${t.project_id}` : "/",
+    tag: `open-agent-${t.id}`,
+  }).catch(() => {});
+}
+
 export async function autopilotTick() {
   if (ticking) return;
   ticking = true;
@@ -123,6 +154,15 @@ export async function autopilotTick() {
         continue;
       }
       heldForSignIn.delete(t.id);
+      // Marking the task Doing here used to happen for ANY open agent: a Review task sent back
+      // to the queue while its old agent was still open went to Doing with nobody working on it,
+      // and held an autopilot slot for good.
+      const open = openRun(t);
+      if (open && !open.fresh) {
+        holdForOpenAgent(t);
+        continue;
+      }
+      heldForOpenAgent.delete(t.id);
       try {
         await runTask(t.id, {
           tool,
@@ -136,7 +176,7 @@ export async function autopilotTick() {
         running++;
         if (!getTask(t.id)?.worktree_path) busySharedProjects.add(t.project_id);
       } catch (e) {
-        if (db.query("SELECT 1 FROM sessions WHERE task_id=? AND status='running'").get(t.id)) {
+        if (openRun(t)?.fresh) {
           // Recover the narrow restart window after createSession committed but before runTask moved the task to Doing.
           db.query("UPDATE tasks SET status='doing',queued=0 WHERE id=?").run(t.id);
           updateOccurrence(t.id, "running", null);

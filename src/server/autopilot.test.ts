@@ -13,6 +13,8 @@ let n = 0;
 // What runTask does, minus tmux: a running auto session, task in Doing, unqueued.
 setTaskStarter((async (id: string) => {
   if (failing.has(id)) throw new Error("agent isn't installed");
+  // runTask refuses a task that still has an agent open.
+  if (db.query("SELECT 1 FROM sessions WHERE task_id = ? AND status = 'running'").get(id)) throw new Error("this task already has a running agent session");
   started.push(id);
   const sid = `s${++n}`;
   db.query(
@@ -155,5 +157,37 @@ describe("autopilot", () => {
     task("b", "p2");
     await autopilotTick();
     expect(started).toEqual(["a"]);
+  });
+});
+
+describe("a queued task that still has an agent open", () => {
+  const openAgent = (taskId: string, createdAt: number) =>
+    db.query(
+      `INSERT INTO sessions (id, project_id, task_id, tool, title, cwd, argv, tmux_name, status, agent_state, created_at, auto)
+       VALUES (?, 'p1', ?, 'claude', 'old', '/tmp', '[]', ?, 'running', 'waiting', ?, 1)`,
+    ).run(`old-${taskId}`, taskId, `ansai-old-${taskId}`, createdAt);
+  const state = (id: string) => db.query("SELECT status, queued FROM tasks WHERE id = ?").get(id);
+
+  test("an agent left open by an earlier run holds the task in the queue (it used to go to Doing with nobody on it)", async () => {
+    task("a", "p1", { worktree: true });
+    task("b", "p1", { worktree: true });
+    openAgent("a", now() - 3600_000);
+    db.query("UPDATE tasks SET updated_at = ? WHERE id = 'a'").run(now()); // sent back to To do and queued just now
+    await autopilotTick();
+    expect(state("a")).toEqual({ status: "todo", queued: 1 });
+    expect(started).toEqual(["b"]); // and it doesn't hold a slot
+    // closing the old agent lets the task start by itself
+    db.query("UPDATE sessions SET status = 'closed' WHERE id = 'old-a'").run();
+    await autopilotTick();
+    expect(started).toEqual(["b", "a"]);
+  });
+
+  test("an agent started just before ansai restarted is this run: the task goes to Doing", async () => {
+    task("a", "p1", { worktree: true });
+    db.query("UPDATE tasks SET updated_at = ? WHERE id = 'a'").run(now() - 5000); // queued, then...
+    openAgent("a", now() - 1000); // ...its agent started, and ansai went down before noting it
+    await autopilotTick();
+    expect(state("a")).toEqual({ status: "doing", queued: 0 });
+    expect(started).toEqual([]);
   });
 });
