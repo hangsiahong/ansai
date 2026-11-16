@@ -54,13 +54,26 @@ export type Sample = {
   host: string;
   /** Seconds since boot. */
   uptime: number;
-  cpu: { pct: number | null; cores: number[]; threads: number; model: string; load: [number, number, number]; pressure: Pressure | null };
+  cpu: {
+    pct: number | null;
+    cores: number[];
+    threads: number;
+    model: string;
+    load: [number, number, number];
+    pressure: Pressure | null;
+    /** How fast the cores are running right now, and the ceiling they're held to (MHz). Null without cpufreq (many VMs). */
+    speed: CpuSpeed | null;
+  };
+  /** The laptop's power profile (quiet / balanced / performance), which decides how fast the CPU may run and how hot it gets. */
+  profile: PowerProfile | null;
   mem: { total: number; available: number; used: number; pct: number; swapTotal: number; swapUsed: number; pressure: Pressure | null };
   temps: Temp[];
   fans: { label: string; rpm: number }[];
   disks: Disk[];
   battery: Battery | null;
 };
+export type CpuSpeed = { avgMhz: number; maxMhz: number; limitMhz: number };
+export type PowerProfile = { current: string; choices: string[] };
 export type Issue = { id: string; level: "warn" | "crit"; title: string; detail: string };
 export type Summary = {
   at: number;
@@ -407,6 +420,36 @@ export function readBattery(root = "/sys/class"): Battery | null {
   };
 }
 
+// ------------------------------------------------------------- clock and profile
+
+/** Current clock of every core (average and fastest) and the highest speed they are allowed. `root` is injectable for tests. */
+export function readCpuSpeed(root = "/sys/devices/system/cpu"): CpuSpeed | null {
+  let names: string[] = [];
+  try {
+    names = readdirSync(root).filter((n) => /^cpu\d+$/.test(n));
+  } catch {
+    return null;
+  }
+  const cur: number[] = [];
+  let limit = 0;
+  for (const n of names) {
+    const f = join(root, n, "cpufreq");
+    const c = num(read(join(f, "scaling_cur_freq")));
+    if (c != null && c > 0) cur.push(c / 1000);
+    const m = num(read(join(f, "scaling_max_freq"))) ?? num(read(join(f, "cpuinfo_max_freq")));
+    if (m != null) limit = Math.max(limit, m / 1000);
+  }
+  if (!cur.length) return null;
+  return { avgMhz: Math.round(cur.reduce((a, b) => a + b, 0) / cur.length), maxMhz: Math.round(Math.max(...cur)), limitMhz: Math.round(limit) };
+}
+
+/** The ACPI platform profile (laptops: quiet / balanced / performance), if the firmware has one. */
+export function readPowerProfile(dir = "/sys/firmware/acpi"): PowerProfile | null {
+  const current = read(join(dir, "platform_profile"))?.trim();
+  if (!current) return null;
+  return { current, choices: (read(join(dir, "platform_profile_choices")) ?? "").split(/\s+/).filter(Boolean) };
+}
+
 // ---------------------------------------------------------------- thresholds
 
 /** When trouble counts as trouble. Adjustable on the System page; stored in the settings table. */
@@ -529,7 +572,9 @@ export function takeSample(at = now()): Sample {
       model: cpuModel,
       load: [load[0] || 0, load[1] || 0, load[2] || 0],
       pressure: parsePressure(read("/proc/pressure/cpu")),
+      speed: readCpuSpeed(),
     },
+    profile: readPowerProfile(),
     mem: { ...mem, pct: mem.total ? round1((100 * mem.used) / mem.total) : 0, pressure: parsePressure(read("/proc/pressure/memory")) },
     temps,
     fans: readFans(),

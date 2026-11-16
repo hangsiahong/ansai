@@ -232,6 +232,31 @@ test("no battery, and a headset's battery, mean no battery", () => {
   expect(h.readBattery(headset)).toBeNull();
 });
 
+// ------------------------------------------------------------- clock and profile
+
+test("clock: average and fastest core now, and the ceiling they are held to", () => {
+  const cpu = (n: number, cur: number | null, max: number) => ({
+    [`cpu${n}/cpufreq/scaling_max_freq`]: `${max}\n`,
+    [`cpu${n}/cpufreq/cpuinfo_max_freq`]: "5100000\n",
+    ...(cur == null ? {} : { [`cpu${n}/cpufreq/scaling_cur_freq`]: `${cur}\n` }),
+  });
+  // Values as the kernel gives them: kHz. cpu2 is offline (no scaling_cur_freq).
+  const root = fixture({ ...cpu(0, 1500000, 2000000), ...cpu(1, 1700000, 2000000), ...cpu(2, null, 2000000), "cpufreq/ignored": "", "cpuidle/x": "" });
+  expect(h.readCpuSpeed(root)).toEqual({ avgMhz: 1600, maxMhz: 1700, limitMhz: 2000 });
+  // Without a scaling_max_freq the hardware ceiling stands in
+  const bare = fixture({ "cpu0/cpufreq/scaling_cur_freq": "800000\n", "cpu0/cpufreq/cpuinfo_max_freq": "3600000\n" });
+  expect(h.readCpuSpeed(bare)).toEqual({ avgMhz: 800, maxMhz: 800, limitMhz: 3600 });
+  expect(h.readCpuSpeed(fixture({ "x/y": "" }))).toBeNull(); // a VM without cpufreq
+  expect(h.readCpuSpeed(join(process.env.ANSAI_HOME!, "nope"))).toBeNull();
+});
+
+test("power profile", () => {
+  const root = fixture({ "platform_profile": "quiet\n", "platform_profile_choices": "quiet balanced performance\n" });
+  expect(h.readPowerProfile(root)).toEqual({ current: "quiet", choices: ["quiet", "balanced", "performance"] });
+  expect(h.readPowerProfile(fixture({ "platform_profile": "low-power\n" }))).toEqual({ current: "low-power", choices: [] });
+  expect(h.readPowerProfile(fixture({ "x/y": "" }))).toBeNull(); // servers and VMs have none
+});
+
 // -------------------------------------------------------------------- issues
 
 const GB = 1024 ** 3;
@@ -239,7 +264,8 @@ const sample = (over: Partial<import("./health").Sample> = {}): import("./health
   at: 0,
   host: "t",
   uptime: 0,
-  cpu: { pct: 10, cores: [], threads: 8, model: "", load: [1, 1, 1], pressure: null },
+  cpu: { pct: 10, cores: [], threads: 8, model: "", load: [1, 1, 1], pressure: null, speed: null },
+  profile: null,
   mem: { total: 32 * GB, available: 16 * GB, used: 16 * GB, pct: 50, swapTotal: 0, swapUsed: 0, pressure: null },
   temps: [],
   fans: [],
@@ -525,6 +551,11 @@ test.skipIf(!h.supported)("a real sample of this machine is plausible, and so is
   expect(s.cpu.pct!).toBeGreaterThanOrEqual(0);
   expect(s.cpu.pct!).toBeLessThanOrEqual(100);
   expect(s.cpu.cores).toHaveLength(s.cpu.threads);
+  if (s.cpu.speed) {
+    expect(s.cpu.speed.avgMhz).toBeGreaterThan(0);
+    expect(s.cpu.speed.maxMhz).toBeGreaterThanOrEqual(s.cpu.speed.avgMhz);
+    expect(s.cpu.speed.limitMhz).toBeGreaterThan(0);
+  }
   expect(s.mem.total).toBeGreaterThan(256 * 1024 * 1024);
   expect(s.mem.available).toBeGreaterThan(0);
   expect(s.mem.available).toBeLessThanOrEqual(s.mem.total);

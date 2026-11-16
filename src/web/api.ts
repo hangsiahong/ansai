@@ -203,7 +203,8 @@ export type SystemSample = {
   at: number;
   host: string;
   uptime: number;
-  cpu: { pct: number | null; cores: number[]; threads: number; model: string; load: [number, number, number]; pressure: SystemPressure | null };
+  cpu: { pct: number | null; cores: number[]; threads: number; model: string; load: [number, number, number]; pressure: SystemPressure | null; speed: { avgMhz: number; maxMhz: number; limitMhz: number } | null };
+  profile: { current: string; choices: string[] } | null;
   mem: { total: number; available: number; used: number; pct: number; swapTotal: number; swapUsed: number; pressure: SystemPressure | null };
   temps: { id: string; label: string; kind: "cpu" | "gpu" | "nvme" | "wifi" | "board"; c: number; warn: number; crit: number }[];
   fans: { label: string; rpm: number }[];

@@ -59,6 +59,7 @@ const uptime = (s: number) => {
 };
 const duration = (min: number) => (min >= 90 ? `${(min / 60).toFixed(1)} h` : `${min} min`);
 const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n));
+const ghz = (mhz: number) => (mhz / 1000).toFixed(1);
 const level = (pct: number, warm: number, hot: number) => (pct >= hot ? "hot" : pct >= warm ? "warm" : "ok");
 
 type Sample = SystemSample;
@@ -102,6 +103,15 @@ const Fact = ({ k, v, tone = "" }: { k: string; v: ComponentChildren; tone?: str
 
 // -------------------------------------------------------------------- cards
 
+const QUIET = "A quiet profile keeps the CPU's speed and heat down, so work runs slower and the fans stay off longer. Change it in your system's power settings for more speed.";
+const PROFILE_HINT: Record<string, string> = {
+  quiet: QUIET,
+  "low-power": QUIET,
+  "power-saver": QUIET,
+  cool: QUIET,
+  performance: "A performance profile lets the CPU run faster and hotter, and the fans louder.",
+};
+
 function CpuCard({ s }: { s: Sample }) {
   const c = s.cpu;
   const model = c.model.replace(/\((R|TM)\)/g, "").replace(/\s+/g, " ").trim();
@@ -118,8 +128,11 @@ function CpuCard({ s }: { s: Sample }) {
       <dl class="sys-facts">
         <Fact k="Load average" v={c.load.map((x) => x.toFixed(2)).join(" · ")} />
         <Fact k="Threads" v={c.threads} />
+        {c.speed && <Fact k="Clock speed" v={`${ghz(c.speed.avgMhz)} GHz (limit ${ghz(c.speed.limitMhz)})`} />}
+        {s.profile && <Fact k="Power profile" v={s.profile.current.replace(/[-_]/g, " ")} />}
         {c.pressure && <Fact k="Waiting for a CPU" v={`${c.pressure.avg10.toFixed(1)}%`} tone={c.pressure.avg10 >= 25 ? "warn-text" : ""} />}
       </dl>
+      {s.profile && PROFILE_HINT[s.profile.current] && <p class="muted small">{PROFILE_HINT[s.profile.current]}</p>}
     </Card>
   );
 }
