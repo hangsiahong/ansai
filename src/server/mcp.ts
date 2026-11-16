@@ -6,7 +6,7 @@ import { JSON_LIMIT, readJson } from "./validate";
 import { createTask, finishTask, finishTaskReview, getTask, reportReviewFinding } from "./tasks";
 import { claimFiles, deliveryNote, describeAgents, describeHistory, postMessage, releaseFiles, takePending } from "./team";
 import { endShift, shiftView } from "./shifts";
-import { compactionAsked, noteToolsListed, requestCompaction } from "./compaction";
+import { compactionAsked, keepFits, NOTE_MAX, noteToolsListed, requestCompaction } from "./compaction";
 import { checksRunning, getChecks, runTaskChecks } from "./checks";
 import { pickEvidence, saveEvidence } from "./evidence";
 
@@ -111,7 +111,7 @@ const TOOLS = [
       properties: {
         keep: {
           type: "string",
-          description: "What the summary must keep, in at most 600 characters (longer is cut off): your task and its acceptance criteria, decisions made and why, what's verified, open problems, ids and paths you'll need. The summary is written from the whole conversation, so name what matters; don't retell it.",
+          description: "What the summary must keep: your task and its acceptance criteria, decisions made and why, what's verified, open problems, ids and paths you'll need. The summary is written from the whole conversation, so name what matters; don't retell it. The first 600 characters steer the summary; a longer note (up to 8,000) also comes back to you in full with `next`.",
         },
         next: { type: "string", description: "What you'll do right after, sent back to you as your next prompt. Leave it empty only if you're waiting for the user." },
       },
@@ -222,8 +222,9 @@ async function runTool(sessionId: string, name: string, args: any) {
     const next = String(args?.next ?? "").trim();
     const again = compactionAsked(s.id);
     requestCompaction(s.id, keep, next);
+    const long = keepFits(keep) ? "" : next ? `Your note is ${keep.length} characters: the first 600 steer the summary, and all of it${keep.length > NOTE_MAX ? ` (up to ${NOTE_MAX})` : ""} comes back to you with your next step. ` : `Your note is ${keep.length} characters: only the first 600 reach the summary. Give a \`next\` to get all of it back after compacting. `;
     return text(
-      `${again ? "Updated. " : ""}Compaction queued. Finish this step, then end your turn now with a one-line note of where you are. ` +
+      `${again ? "Updated. " : ""}Compaction queued. ${long}Finish this step, then end your turn now with a one-line note of where you are. ` +
         (next ? `ansai compacts the conversation and then sends you: “${next}”` : "ansai compacts the conversation; you then wait for the user."),
     );
   }

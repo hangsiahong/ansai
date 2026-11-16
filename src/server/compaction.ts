@@ -39,6 +39,9 @@ const STEP = 100_000;
  * says what it must not drop.
  */
 export const KEEP_MAX = 600;
+/** A note longer than KEEP_MAX comes back to the agent in full with its next step, so nothing it named is lost. */
+export const NOTE_MAX = 8000;
+export const keepFits = (keep: string) => oneLine(keep, Infinity).length <= KEEP_MAX;
 
 type Plan = {
   keep: string;
@@ -63,6 +66,7 @@ function forgetPlan(sessionId: string) {
   db.query("DELETE FROM settings WHERE key = ?").run(PLAN_KEY + sessionId);
 }
 const nudged = new Map<string, number>();
+const oneLine = (s: string, max: number) => s.replace(/\s+/g, " ").trim().slice(0, max);
 
 /** Delays, in ms (tests shorten them). */
 export const timing = { afterStop: 1500, afterCompact: 1500, giveUp: 5 * 60_000 };
@@ -74,7 +78,6 @@ export function setSender(f: typeof send) {
   send = f;
 }
 
-const oneLine = (s: string, max: number) => s.replace(/\s+/g, " ").trim().slice(0, max);
 
 function markState(id: string, state: "working" | "waiting", message: string | null) {
   db.query("UPDATE sessions SET agent_state = ?, agent_state_at = ?, agent_message = ? WHERE id = ? AND status = 'running'").run(state, now(), message, id);
@@ -85,7 +88,7 @@ function markState(id: string, state: "working" | "waiting", message: string | n
 export function requestCompaction(sessionId: string, keep: string, next: string) {
   const p = plans.get(sessionId);
   if (p?.phase === "compacting") return;
-  keepPlan(sessionId, { keep: oneLine(keep, KEEP_MAX), next: next.trim().slice(0, 4000), phase: "asked", at: now() });
+  keepPlan(sessionId, { keep: keep.trim().slice(0, NOTE_MAX), next: next.trim().slice(0, 4000), phase: "asked", at: now() });
 }
 
 export const compactionAsked = (sessionId: string) => plans.get(sessionId)?.phase === "asked";
@@ -114,7 +117,8 @@ function typeCompact(sessionId: string, p: Plan) {
     // Noted before typing: a restart in between must not type /compact into a compaction already running.
     p.sent = true;
     keepPlan(sessionId, p);
-    send(sessionId, p.keep ? `/compact ${p.keep}` : "/compact").catch((e) => {
+    const keep = oneLine(p.keep, KEEP_MAX);
+    send(sessionId, keep ? `/compact ${keep}` : "/compact").catch((e) => {
       console.error(`[ansai] couldn't start compacting ${sessionId}:`, e instanceof Error ? e.message : e);
       compacted(sessionId, "failed");
     });
@@ -175,8 +179,9 @@ export function compacted(sessionId: string, how: "done" | "failed" | "lost" = "
       : how === "lost"
         ? "ansai: ansai was restarted while your conversation was being compacted, so it can't tell whether that finished."
         : "ansai: the compaction you asked for didn't happen, so your conversation is as it was.";
+  const notes = how !== "failed" && !keepFits(p.keep) ? ` Your notes from before compacting, in full (only their start fit after /compact):\n${p.keep}\n\n` : " ";
   setTimeout(() => {
-    send(sessionId, `${intro} Carry on: ${p.next}`).catch((e) => {
+    send(sessionId, `${intro}${notes}Carry on: ${p.next}`).catch((e) => {
       console.error(`[ansai] couldn't hand ${sessionId} its next step after compacting:`, e instanceof Error ? e.message : e);
       markState(sessionId, "waiting", null);
     });

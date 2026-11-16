@@ -108,16 +108,40 @@ describe("the compact tool", () => {
     expect(taskStatus("t2")).toBe("review");
   });
 
-  test("a long note is cut to what Claude Code still takes as a typed command", async () => {
+  test("a long note is cut to what Claude Code still takes as a typed command, and comes back in full with the next step", async () => {
     agent("c6");
-    await compactTool("c6", { keep: "Keep the plan. ".repeat(400), next: "carry on" });
+    const keep = `${"Keep the plan. ".repeat(60)}\nIds: t523w5g6k18, src/server/late-file.ts`;
+    const r = await compactTool("c6", { keep, next: "carry on" });
+    expect(r.content[0]!.text).toContain(`Your note is ${keep.length} characters`);
     handleHook("claude", "Stop", "c6", {});
     await settle();
     const cmd = typed[0]![1];
     expect(cmd.startsWith("/compact Keep the plan.")).toBe(true);
     expect(cmd.length).toBeLessThanOrEqual("/compact ".length + compaction.KEEP_MAX);
     expect(cmd).not.toContain("\n");
-    compaction.dropCompaction("c6");
+    expect(cmd).not.toContain("t523w5g6k18");
+
+    handleHook("claude", "SessionStart", "c6", { source: "compact" });
+    await settle();
+    expect(typed[1]![1]).toBe(`ansai: your conversation was compacted, as you asked. Your notes from before compacting, in full (only their start fit after /compact):\n${keep}\n\nCarry on: carry on`);
+  });
+
+  test("a note that fits after /compact isn't repeated, and a long one isn't sent back when the compaction didn't happen", async () => {
+    agent("c7");
+    await compactTool("c7", { keep: "x ".repeat(300), next: "go" });
+    handleHook("claude", "Stop", "c7", {});
+    await settle();
+    handleHook("claude", "SessionStart", "c7", { source: "compact" });
+    await settle();
+    expect(typed[1]![1]).toBe("ansai: your conversation was compacted, as you asked. Carry on: go");
+
+    typed.length = 0;
+    await compactTool("c7", { keep: "y ".repeat(400), next: "go" });
+    handleHook("claude", "Stop", "c7", {});
+    await settle();
+    compaction.compacted("c7", "failed");
+    await settle();
+    expect(typed[1]![1]).toBe("ansai: the compaction you asked for didn't happen, so your conversation is as it was. Carry on: go");
   });
 
   test("if the compaction never reports back, the agent still gets its next step", async () => {
