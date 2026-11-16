@@ -5,6 +5,7 @@ import { TerminalView, type TermHandle, type TermStatus } from "../Terminal";
 import { compact, haptic, Icon, Link, StatusPill, TOOL_LABEL, ToolBadge, goBack, isTouch, modelLabel, nav, sessionState, until, useTick } from "../ui";
 import { ChatView } from "../chat";
 import { ShiftBar, canShift } from "../shift";
+import { addFiles, carriesFiles, readClipboard, transferFiles } from "../paste";
 
 type View = "chat" | "terminal";
 const VIEW_KEY = "ansai.view";
@@ -57,6 +58,11 @@ export function SessionPane({ id }: { id: string }) {
   const [compose, setCompose] = useState("");
   const [attachments, setAttachments] = useState<File[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [attachMenu, setAttachMenu] = useState(false);
+  const [dropping, setDropping] = useState(false);
+  const pane = useRef<HTMLDivElement>(null);
+  const onPaste = useRef<(e: ClipboardEvent) => void>(() => {});
+  const onFiles = useRef<(files: File[]) => void>(() => {});
   const [ctx, setCtx] = useState<number | null>(null);
   const [showDock, setShowDock] = useState(isTouch());
   const [menu, setMenu] = useState(false);
@@ -79,6 +85,14 @@ export function SessionPane({ id }: { id: string }) {
         .then(setFetched)
         .catch(() => setMissing(true));
   }, [id]);
+
+  // A paste counts wherever the focus is on this screen: the message box, the terminal, or nothing.
+  useEffect(() => {
+    const fn = (e: ClipboardEvent) => onPaste.current(e);
+    document.addEventListener("paste", fn, true);
+    return () => document.removeEventListener("paste", fn, true);
+  }, []);
+  onPaste.current = onFiles.current = () => {};
 
   if (missing) {
     return (
@@ -144,6 +158,72 @@ export function SessionPane({ id }: { id: string }) {
     }
   };
 
+  // The message box is on screen and this agent reads attached files.
+  const composing = canChat && !closed && (showDock || view === "chat");
+
+  const attach = (picked: File[]) => {
+    if (!picked.length) return;
+    const r = addFiles(attachments, picked);
+    if (r.note) toast(r.note, "error");
+    setAttachments(r.files);
+  };
+
+  /** Files that were pasted or dropped: onto the message when its box is showing, else into the terminal. */
+  const takeFiles = async (picked: File[]) => {
+    if (composing) return attach(picked);
+    // A terminal on its own: save the files and type where they are, as dropping a file on a terminal does.
+    const h = handle.current;
+    if (!h || uploading) return;
+    const r = addFiles([], picked);
+    if (r.note) toast(r.note, "error");
+    if (!r.files.length) return;
+    setUploading(true);
+    try {
+      const uploaded = await api.uploadAttachments(id, r.files);
+      h.paste(uploaded.files.map((f) => f.path).join(" ") + " ");
+      h.focus();
+      toast(uploaded.files.length === 1 ? "Saved — its path is typed in the terminal" : `Saved — ${uploaded.files.length} paths are typed in the terminal`);
+    } catch (e) {
+      toastError(e);
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  onFiles.current = takeFiles;
+
+  onPaste.current = (e) => {
+    if (closed) return;
+    const el = e.target instanceof Element ? e.target : null;
+    // Not while a sheet, a dialog or the search is open over this screen.
+    if (document.querySelector(".scrim")) return;
+    if (el && el !== document.body && el !== document.documentElement && !pane.current?.contains(el)) return;
+    if (el?.closest(".term")) return; // the terminal sorts out its own pastes (Ctrl+V is also its key)
+    const files = transferFiles(e.clipboardData, "paste");
+    if (!files.length) return; // text: the box or the terminal pastes it as before
+    e.preventDefault();
+    e.stopPropagation();
+    takeFiles(files);
+  };
+
+  const pasteFromClipboard = async () => {
+    setAttachMenu(false);
+    try {
+      const got = await readClipboard(navigator.clipboard);
+      if (got.files.length) attach(got.files);
+      else if (got.text) {
+        const t = ta.current;
+        const at = t ? [t.selectionStart, t.selectionEnd] : [compose.length, compose.length];
+        setCompose(compose.slice(0, at[0]) + got.text + compose.slice(at[1]));
+        t?.focus();
+        if (t) requestAnimationFrame(() => grow(t));
+      } else toast("Nothing to paste: the clipboard has no picture or text");
+    } catch {
+      toast("The browser did not let ansai read the clipboard. Allow it for this page, or use Photos and files.", "error");
+    }
+  };
+  const canReadClipboard = typeof navigator !== "undefined" && typeof navigator.clipboard?.read === "function";
+
   const openModel = () => openSheet({ kind: "model", sessionId: id, showTerminal: () => chooseView("terminal") });
 
   const act = async (what: "restart" | "close" | "rename") => {
@@ -181,7 +261,24 @@ export function SessionPane({ id }: { id: string }) {
   );
 
   return (
-    <div class="pane session">
+    <div
+      class={`pane session ${dropping ? "dropping" : ""}`}
+      ref={pane}
+      onDragOver={(e) => {
+        if (closed || !carriesFiles(e.dataTransfer)) return;
+        e.preventDefault();
+        if (!dropping) setDropping(true);
+      }}
+      onDragLeave={(e) => {
+        if (!(e.relatedTarget instanceof Node) || !e.currentTarget.contains(e.relatedTarget)) setDropping(false);
+      }}
+      onDrop={(e) => {
+        setDropping(false);
+        if (closed || !carriesFiles(e.dataTransfer)) return;
+        e.preventDefault();
+        takeFiles(transferFiles(e.dataTransfer, "drop"));
+      }}
+    >
       <header class="topbar session-bar">
         <button class="icon-btn" onClick={() => goBack()} aria-label="Back">
           <Icon name="back" />
@@ -333,7 +430,7 @@ export function SessionPane({ id }: { id: string }) {
         <ChatView s={s} onCtx={setCtx} />
       ) : (
         <div class="term-wrap">
-          <TerminalView sessionId={id} handle={handle} onStatus={setTstatus} onCtrlUsed={() => setCtrl(false)} />
+          <TerminalView sessionId={id} handle={handle} onStatus={setTstatus} onCtrlUsed={() => setCtrl(false)} onFiles={(files) => onFiles.current(files)} />
         </div>
       )}
 
@@ -375,15 +472,32 @@ export function SessionPane({ id }: { id: string }) {
               multiple
               hidden
               onChange={(e) => {
-                const picked = Array.from((e.target as HTMLInputElement).files ?? []);
-                setAttachments((old) => [...old, ...picked].slice(0, 5));
+                attach(Array.from((e.target as HTMLInputElement).files ?? []));
                 (e.target as HTMLInputElement).value = "";
               }}
             />
             {canChat && (
-              <button class="attach-btn" onClick={() => fileInput.current?.click()} aria-label="Attach files or photos" title="Attach files or photos" disabled={uploading}>
-                <Icon name="plus" size={19} />
-              </button>
+              <div class="menu-wrap">
+                <button
+                  class="attach-btn"
+                  onClick={() => (canReadClipboard ? setAttachMenu(!attachMenu) : fileInput.current?.click())}
+                  aria-label="Attach files or photos"
+                  aria-expanded={canReadClipboard ? attachMenu : undefined}
+                  title="Attach files or photos (you can also paste or drop them here)"
+                  disabled={uploading}
+                >
+                  <Icon name="plus" size={19} />
+                </button>
+                {attachMenu && (
+                  <>
+                    <div class="menu-scrim" onClick={() => setAttachMenu(false)} />
+                    <div class="menu up">
+                      <button onClick={() => (setAttachMenu(false), fileInput.current?.click())}>Photos and files</button>
+                      <button onClick={pasteFromClipboard}>Paste from clipboard</button>
+                    </div>
+                  </>
+                )}
+              </div>
             )}
             <textarea
               ref={ta}
@@ -394,8 +508,7 @@ export function SessionPane({ id }: { id: string }) {
               onInput={(e) => {
                 const t = e.target as HTMLTextAreaElement;
                 setCompose(t.value);
-                t.style.height = "auto";
-                t.style.height = Math.min(t.scrollHeight, 160) + "px";
+                grow(t);
               }}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey && !touch) {
@@ -412,6 +525,7 @@ export function SessionPane({ id }: { id: string }) {
             <div class="attachment-list" aria-label="Attachments">
               {attachments.map((f, i) => (
                 <span class="attachment-chip" key={`${f.name}-${i}`}>
+                  <Thumb file={f} />
                   <span>{f.name}</span>
                   <button onClick={() => setAttachments((old) => old.filter((_, j) => j !== i))} aria-label={`Remove ${f.name}`}><Icon name="x" size={13} /></button>
                 </span>
@@ -422,4 +536,22 @@ export function SessionPane({ id }: { id: string }) {
       )}
     </div>
   );
+}
+
+/** The message box grows with what is typed, up to a few lines. */
+function grow(t: HTMLTextAreaElement) {
+  t.style.height = "auto";
+  t.style.height = Math.min(t.scrollHeight, 160) + "px";
+}
+
+/** A small look at an attached picture, so a pasted screenshot is more than a file name. */
+function Thumb({ file }: { file: File }) {
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (!file.type.startsWith("image/")) return;
+    const u = URL.createObjectURL(file);
+    setUrl(u);
+    return () => URL.revokeObjectURL(u);
+  }, [file]);
+  return url ? <img src={url} alt="" /> : null;
 }

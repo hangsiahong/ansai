@@ -75,6 +75,7 @@ Install the Tailscale app on your phone with the same account, open that URL, th
 ## Using it on a phone
 
 - The **compose box** pastes your text into the agent as one block, so multi-line prompts don't send early. The send button presses Enter.
+- **Pictures and files** (Claude Code and Codex): the **+** button attaches photos or files, and so does pasting a screenshot (Ctrl+V), dropping a file on the session, or **+ → Paste from clipboard** on a phone, whose keyboard won't paste a picture into a text box. They are saved on the laptop for the agent to read and removed when the session is closed. Pasted into a terminal with no compose box, the file is saved and its path is typed at the prompt.
 - The **key bar** has esc, tab, ⇧tab (cycles Claude's mode), ctrl (sticky), ^C, arrow keys, ⏎, 1/2/3 for menus, and ⇞/⇟ to scroll.
 - **Swipe** on the terminal to scroll back. Press esc to return to live output.
 - **History** (the clock icon) shows the scrollback as plain text you can select and copy.

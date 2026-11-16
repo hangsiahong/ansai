@@ -5,9 +5,12 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
 import { wsUrl } from "./api";
 import { isTouch } from "./ui";
+import { transferFiles } from "./paste";
 
 export type TermHandle = {
   send: (data: string) => void;
+  /** Type text at the prompt the way a paste does (one paste, not key by key). */
+  paste: (text: string) => void;
   focus: () => void;
   setKeyboard: (on: boolean) => void;
   bumpFont: (delta: number) => void;
@@ -63,6 +66,8 @@ export function TerminalView(props: {
   handle: { current: TermHandle | null };
   onStatus?: (s: TermStatus) => void;
   onCtrlUsed?: () => void;
+  /** Files pasted into the terminal (a copied picture, a copied file). */
+  onFiles?: (files: File[]) => void;
 }) {
   const box = useRef<HTMLDivElement>(null);
 
@@ -88,7 +93,7 @@ export function TerminalView(props: {
 
 function mount(
   el: HTMLDivElement,
-  props: { sessionId: string; handle: { current: TermHandle | null }; onStatus?: (s: TermStatus) => void; onCtrlUsed?: () => void },
+  props: { sessionId: string; handle: { current: TermHandle | null }; onStatus?: (s: TermStatus) => void; onCtrlUsed?: () => void; onFiles?: (files: File[]) => void },
 ): () => void {
   const term = new XTerm({
     fontFamily: '"ansai-mono", ui-monospace, "SF Mono", Menlo, monospace',
@@ -175,6 +180,33 @@ function mount(
     send(d);
   });
   term.onBinary((d) => send(d));
+
+  // Ctrl+V is the terminal's own key (^V), so the browser never pasted on it and a copied
+  // picture went nowhere. Now the browser gets to paste first: a picture or a file is
+  // handed over, and anything else still sends ^V exactly as before.
+  let ctrlV = 0;
+  term.attachCustomKeyEventHandler((e) => {
+    if (!props.onFiles || e.type !== "keydown" || e.key.toLowerCase() !== "v" || !e.ctrlKey || e.shiftKey || e.altKey || e.metaKey) return true;
+    clearTimeout(ctrlV);
+    // Where Ctrl+V is not the browser's paste key (a Mac), no paste follows.
+    ctrlV = window.setTimeout(() => {
+      ctrlV = 0;
+      send("\x16");
+    }, 200);
+    return false;
+  });
+  const onPaste = (e: ClipboardEvent) => {
+    const viaCtrlV = ctrlV !== 0;
+    clearTimeout(ctrlV);
+    ctrlV = 0;
+    const files = props.onFiles ? transferFiles(e.clipboardData, "paste") : [];
+    if (!files.length && !viaCtrlV) return; // a text paste (Ctrl+Shift+V, the menu): the terminal's own
+    e.preventDefault();
+    e.stopPropagation();
+    if (files.length) props.onFiles!(files);
+    else send("\x16");
+  };
+  el.addEventListener("paste", onPaste, true);
   term.onResize(({ cols, rows }) => sendRaw({ r: [cols, rows] }));
 
   let raf = 0;
@@ -223,6 +255,7 @@ function mount(
 
   props.handle.current = {
     send,
+    paste: (text) => term.paste(text),
     focus: () => term.focus(),
     setKeyboard: (on) => {
       if (!ta) return;
@@ -246,6 +279,8 @@ function mount(
 
   return () => {
     disposed = true;
+    clearTimeout(ctrlV);
+    el.removeEventListener("paste", onPaste, true);
     document.removeEventListener("visibilitychange", onVisible);
     ro.disconnect();
     ws?.close();
