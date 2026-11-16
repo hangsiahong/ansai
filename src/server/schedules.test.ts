@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 
 const { db, now } = await import("./db");
-const { deleteSchedule, listSchedules, saveSchedule, scheduleTick, setScheduleEnabled } = await import("./schedules");
+const { deleteSchedule, listSchedules, nextAt, saveSchedule, scheduleTick, setScheduleEnabled } = await import("./schedules");
 const { autopilotTick, setTaskStarter, updateSettings } = await import("./autopilot");
 
 const base = {
@@ -95,5 +95,45 @@ describe("weekly days and manual runs", () => {
     const o = db.query("SELECT scheduled_for FROM schedule_occurrences WHERE schedule_id = ?").get(s.id) as { scheduled_for: number };
     expect(o.scheduled_for).toBeGreaterThanOrEqual(before);
     expect(o.scheduled_for).toBeLessThan(s.next_at);
+  });
+});
+
+// New York clocks go forward on 14 March 2027 (02:00 becomes 03:00) and back on 7 November 2027.
+describe("days the clocks change", () => {
+  const NY = "America/New_York";
+  const at = (iso: string) => Date.parse(iso);
+
+  test("an ordinary day is unchanged", () => {
+    expect(nextAt(at("2027-03-10T17:00:00Z"), "09:00", NY, "daily")).toBe(at("2027-03-11T14:00:00Z"));
+    expect(nextAt(at("2027-03-10T13:59:00Z"), "09:00", NY, "daily")).toBe(at("2027-03-10T14:00:00Z"));
+    expect(nextAt(at("2027-03-12T14:00:00Z"), "09:00", NY, "weekdays", undefined, "2027-03-12")).toBe(at("2027-03-15T13:00:00Z"));
+  });
+
+  test("a weekly run at a time the clocks skip happens right after the jump (it used to throw on every tick)", () => {
+    const lastSunday = at("2027-03-07T07:30:00Z"); // 02:30 EST
+    expect(nextAt(lastSunday, "02:30", NY, "weekly", "Sun", "2027-03-07")).toBe(at("2027-03-14T07:00:00Z")); // 03:00 EDT
+    // and the week after it is back at 02:30
+    expect(nextAt(at("2027-03-14T07:00:00Z"), "02:30", NY, "weekly", "Sun", "2027-03-14")).toBe(at("2027-03-21T06:30:00Z"));
+  });
+
+  test("a daily run at a skipped time isn't dropped for that day", () => {
+    expect(nextAt(at("2027-03-13T07:30:00Z"), "02:30", NY, "daily", undefined, "2027-03-13")).toBe(at("2027-03-14T07:00:00Z"));
+  });
+
+  test("a time that comes twice when clocks go back runs once", () => {
+    const first = nextAt(at("2027-11-06T05:30:00Z"), "01:30", NY, "daily", undefined, "2027-11-06");
+    expect(first).toBe(at("2027-11-07T05:30:00Z")); // the first 01:30 (EDT)
+    expect(nextAt(first, "01:30", NY, "daily", undefined, "2027-11-07")).toBe(at("2027-11-08T06:30:00Z"));
+  });
+
+  test("one schedule that can't run doesn't stop the others", () => {
+    const broken = saveSchedule("p1", null, { ...base, title: "Broken" }) as { id: string };
+    const fine = saveSchedule("p1", null, { ...base, title: "Fine" }) as { id: string };
+    db.query("UPDATE schedules SET next_at=?, timezone='Nowhere/Nope' WHERE id=?").run(now() - 120_000, broken.id);
+    db.query("UPDATE schedules SET next_at=? WHERE id=?").run(now() - 60_000, fine.id);
+    expect(() => scheduleTick()).not.toThrow();
+    const ran = db.query("SELECT schedule_id FROM schedule_occurrences").all() as { schedule_id: string }[];
+    expect(ran.map((r) => r.schedule_id)).toEqual([fine.id]);
+    expect(db.query("SELECT COUNT(*) AS n FROM tasks").get()).toEqual({ n: 1 }); // the broken one left no half-made task
   });
 });

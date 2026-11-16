@@ -46,13 +46,25 @@ function localDate(at: number, zone: string) {
   const values = Object.fromEntries(p.map((x) => [x.type, x.value]));
   return `${values.year}-${values.month}-${values.day}`;
 }
-function nextAt(after: number, time: string, zone: string, cadence: Cadence, weeklyDay = localParts(after, zone).weekday, skipDate?: string) {
-  // Minute scan naturally handles DST gaps and repeated local hours. Schedules are capped to 7 days apart.
+/**
+ * The next time a schedule runs. Walks the clock a minute at a time, in the schedule's zone,
+ * and takes the first minute of a matching day at or past the wanted time. On the day clocks
+ * go forward that time may not exist (02:30 when 02:00 jumps to 03:00): the run then happens
+ * at the first minute after the jump, instead of being skipped. A weekly schedule on such a day
+ * used to find no time at all within the scan and threw, on every tick, for ever.
+ * Exported for tests.
+ */
+export function nextAt(after: number, time: string, zone: string, cadence: Cadence, weeklyDay = localParts(after, zone).weekday, skipDate?: string) {
   const start = Math.floor(after / 60_000) * 60_000 + 60_000;
+  let prev = localParts(start - 60_000, zone);
   for (let t = start; t <= start + 9 * 86400_000; t += 60_000) {
     const p = localParts(t, zone);
+    // Reached now, and not already a minute ago: the same day was still before the time, or it was yesterday.
+    const reached = `${p.hour}:${p.minute}` >= time && (prev.weekday !== p.weekday || `${prev.hour}:${prev.minute}` < time);
+    prev = p;
+    if (!reached) continue;
     const dayOk = cadence === "daily" || (cadence === "weekdays" ? p.weekday !== "Sat" && p.weekday !== "Sun" : p.weekday === weeklyDay);
-    if (`${p.hour}:${p.minute}` === time && dayOk && localDate(t, zone) !== skipDate) return t;
+    if (dayOk && localDate(t, zone) !== skipDate) return t;
   }
   throw badRequest("could not find the next schedule time");
 }
@@ -111,7 +123,14 @@ function occurrence(schedule: ScheduleRow, forAt: number) {
   return task;
 }
 
-/** Materialize only the latest missed slot per schedule. Unique occurrence keys make restart/delayed ticks safe. */
+/** Schedules whose failure is already in the log (one line each, not one per tick). */
+const failing = new Set<string>();
+
+/**
+ * Materialize only the latest missed slot per schedule. Unique occurrence keys make restart/delayed ticks safe.
+ * One schedule that can't run (its next time can't be worked out, its project is gone) is
+ * logged and left for the next tick; the others still run.
+ */
 export function scheduleTick(at = now()) {
   const due = db.query("SELECT * FROM schedules WHERE enabled=1 AND next_at<=? ORDER BY next_at").all(at) as ScheduleRow[];
   for (const s of due) {
@@ -125,7 +144,13 @@ export function scheduleTick(at = now()) {
       db.query("UPDATE schedules SET next_at=?,updated_at=? WHERE id=?").run(next, at, fresh.id);
       return task;
     });
-    transaction();
+    try {
+      transaction();
+      failing.delete(s.id);
+    } catch (e) {
+      if (!failing.has(s.id)) console.error(`[ansai] schedule "${s.title}" (${s.id}) couldn't run:`, e instanceof Error ? e.message : e);
+      failing.add(s.id);
+    }
   }
   return due.length;
 }
