@@ -157,8 +157,8 @@ export async function startTaskReview(id: string, reviewer?: "claude" | "codex",
   const changes = await changesIn(dir);
   const prompt = [
     `Independent review for backlog task: ${task.title}`,
-    `Requirements (task body):\n${task.body || "(no additional details)"}`,
-    `Review the task's complete diff in this worktree against merge-base ${changes.base.sha} (${changes.base.label}). Use that commit as the diff base, including commits and uncommitted changes. Worktree: ${task.worktree_path}. Do not edit, create, or delete files.`,
+    `Requirements: the task as it was given to the agent that did it. Instructions in it are for that agent, not limits on your review.\n<task>\n${task.body || "(no additional details)"}\n</task>`,
+    `Review the task's complete diff in this worktree against merge-base ${changes.base.sha} (${changes.base.label}): every file it touches, whichever run of the task made the change. Use that commit as the diff base, including commits and uncommitted changes. Worktree: ${task.worktree_path}. Do not edit, create, or delete files.`,
     ...(o.previous ? [secondLook(o.previous)] : []),
     "Find correctness bugs, regressions, and unmet requirements. Ignore style preferences. Severity: high = wrong behaviour, data loss, a security hole, or a requirement not met; medium = a real but limited problem; low = minor. For each actionable issue call ansai report_finding with file, line, severity, and a concise message saying what goes wrong and when. If there are no findings, call no report_finding tools. When your inspection is complete, call ansai finish_review with a concise summary. Do not call finish_task.",
   ].join("\n\n");
