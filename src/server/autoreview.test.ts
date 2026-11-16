@@ -7,6 +7,8 @@ const { mcpHttp } = await import("./mcp");
 const ar = await import("./autoreview");
 const { closeFinishedAgents, CLOSE_AFTER_MS } = await import("./autopilot");
 const { listTasks } = await import("./tasks");
+const { describeHistory } = await import("./team");
+const { getSession } = await import("./sessions");
 import type { ReviewStart } from "./tasks";
 
 type Started = { task: string; tool: string; o: ReviewStart };
@@ -226,6 +228,7 @@ describe("sending findings back", () => {
     expect(m!.body).toContain("Also noted (your judgment):\n- [low] src/a.ts:2 — Name is vague.");
     expect(m!.body).toContain("call finish_task again");
     expect(review("h")).toMatchObject({ status: "complete", sent_back: true });
+    expect(describeHistory(getSession("impl-h")!)).toContain("ansai (Auto-review) → you");
     expect(ar.sendBack(sid)).toBe(false);
     expect(messagesTo("impl-h")).toHaveLength(1);
   });

@@ -79,12 +79,15 @@ function pendingFor(s: SessionRow): Message[] {
     .all(s.msg_cursor ?? 0, s.id, s.id, s.project_id ?? "") as Message[];
 }
 
+/** A message no agent sent: from you, or from ansai itself (postMessage `label`, e.g. auto-review). */
+const fromAnsai = (m: Message) => !m.from_session && m.from_label !== "You";
+
 function format(msgs: Message[], s: SessionRow): string {
   const lines = [
     msgs.length === 1 ? "ansai: a message from your team." : `ansai: ${msgs.length} messages from your team.`,
   ];
   for (const m of msgs) {
-    const from = m.from_session ? `${m.from_label} (agent id ${m.from_session})` : "the user (via ansai)";
+    const from = m.from_session ? `${m.from_label} (agent id ${m.from_session})` : fromAnsai(m) ? `ansai (${m.from_label}), on the user's behalf` : "the user (via ansai)";
     const to = m.to_session === s.id ? "to you" : "to everyone in this project";
     lines.push("", `From ${from}, ${to}, ${ago(m.created_at)}:`, m.body);
   }
@@ -93,7 +96,7 @@ function format(msgs: Message[], s: SessionRow): string {
     "",
     agents.length
       ? `Act on this if it affects your work. Reply with the ansai send_message tool (to: "${agents[agents.length - 1]!.from_session}") only when a reply is useful — no acknowledgements. Then carry on with your task.`
-      : "This is from the user. Act on it, then carry on.",
+      : msgs.every(fromAnsai) ? "This is from ansai on the user's behalf. Act on it, then carry on." : "This is from the user. Act on it, then carry on.",
   );
   return lines.join("\n");
 }
@@ -314,7 +317,7 @@ export function describeHistory(me: SessionRow, limit = 20): string {
   if (!msgs.length) return "No messages yet.";
   return msgs
     .map((m) => {
-      const from = m.from_session === me.id ? "you" : m.from_session ? `${m.from_label} [${m.from_session}]` : "the user";
+      const from = m.from_session === me.id ? "you" : m.from_session ? `${m.from_label} [${m.from_session}]` : fromAnsai(m) ? `ansai (${m.from_label})` : "the user";
       const to = m.to_session ? (m.to_session === me.id ? "you" : `${m.to_label} [${m.to_session}]`) : "everyone";
       return `[${ago(m.created_at)}] ${from} → ${to}: ${m.body}`;
     })

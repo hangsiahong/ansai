@@ -20,7 +20,7 @@ function Delivery({ m }: { m: Message }) {
 /** Who sent it, as a short name: the agent's tool + session title, or "You". */
 function Sender({ m, sessions }: { m: Message; sessions: Session[] }) {
   const s = m.from_session ? sessions.find((x) => x.id === m.from_session) : null;
-  if (!m.from_session) return <b>You</b>;
+  if (!m.from_session) return <b>{m.from_label || "You"}</b>; // you, or ansai itself (auto-review)
   return s ? (
     <Link href={`/s/${s.id}`} class="team-who">
       {TOOL_SHORT[s.tool]} · {s.title}
@@ -242,7 +242,7 @@ export function TeamPanel({ projectId }: { projectId: string }) {
           <div class="team-feed" ref={feed}>
             {msgs.map((m) => (
               <div class="team-row">
-                <span class="team-av">{m.from_session ? <ToolBadge tool={senderTool(m, sessions)!} size={26} /> : <span class="you-av">You</span>}</span>
+                <span class="team-av">{m.from_session ? <ToolBadge tool={senderTool(m, sessions)!} size={26} /> : <span class="you-av">{!m.from_label || m.from_label === "You" ? "You" : "ai"}</span>}</span>
                 <div class="team-row-main">
                   <div class="team-meta">
                     <Sender m={m} sessions={sessions} />

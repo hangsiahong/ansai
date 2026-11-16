@@ -145,6 +145,7 @@ function TaskMeta({ task, showProject }: { task: Task; showProject?: boolean }) 
         </span>
       )}
       {task.checks && task.status !== "done" && <ChecksChip checks={task.checks} />}
+      {task.status !== "done" && <ReviewChip task={task} />}
       {!!task.evidence?.length && task.status !== "done" && (
         <span class="tchip proof" title="Screenshots or logs the agent attached as proof">
           <Icon name="eye" size={11} stroke={2.6} /> {task.evidence.length}
@@ -333,6 +334,47 @@ export function Board(p: { tasks: Task[]; showProject?: boolean; addProjectId: s
         </section>
       ))}
     </div>
+  );
+}
+
+/** Where the independent review of a task stands: queued, running, its verdict, or findings back with the agent. */
+export function ReviewChip({ task }: { task: Task }) {
+  const r = task.review;
+  const again = task.auto_review === 2 || (r?.round === 2 && r.status === "running");
+  if (task.auto_review > 0)
+    return (
+      <span class="tchip queued" title="Another agent will review this task's changes">
+        <Icon name="eye" size={11} stroke={2.6} /> {again ? "Re-check queued" : "Review queued"}
+      </span>
+    );
+  if (!r) return null;
+  const who = r.reviewer_tool === "codex" ? "Codex" : "Claude";
+  if (r.status === "running")
+    return (
+      <span class="tchip queued" title={`${who} is reviewing this task's changes`}>
+        <Icon name="refresh" size={11} stroke={2.6} /> {again ? "Re-checking" : "Reviewing"}
+      </span>
+    );
+  if (r.sent_back && r.round === 1 && task.status === "doing")
+    return (
+      <span class="tchip waiting-on" title={`${who}'s findings went back to the agent, which is working on them`}>
+        Fixing review findings
+      </span>
+    );
+  const high = r.findings.filter((f) => f.severity === "high").length;
+  if (r.status === "stopped" && !r.findings.length)
+    return <span class="tchip waiting-on" title={r.summary ?? "The reviewer stopped before finishing"}>Review stopped</span>;
+  if (!r.findings.length)
+    return (
+      <span class="tchip ok" title={r.summary ?? `${who} found nothing to fix`}>
+        <Icon name="check" size={11} stroke={2.8} /> Reviewed
+      </span>
+    );
+  return (
+    <span class={`tchip ${high ? "fail" : "waiting-on"}`} title={r.summary ?? `${who} reported ${r.findings.length} finding(s)`}>
+      {r.findings.length} {r.findings.length === 1 ? "issue" : "issues"}
+      {high ? ` · ${high} serious` : ""}
+    </span>
   );
 }
 

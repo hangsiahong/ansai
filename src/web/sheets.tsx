@@ -513,17 +513,19 @@ function TaskSheet(p: { taskId: string; onClose: () => void }) {
           {!task.project_id && <span class="muted">Choose a project before adding task dependencies.</span>}
         </div>
 
-        {task.status === "review" && task.worktree_path && (
+        {(task.status === "review" || (task.status === "doing" && review?.sent_back)) && task.worktree_path && (
           <div class="field reviewer-section">
             <span>Independent review</span>
+            {task.auto_review > 0 && <p>{task.auto_review === 2 ? "The agent finished its fixes; a second review checks them next." : "Another agent reviews this task's changes next."}</p>}
             {review && <div class="review-summary">
-              <b>{review.status === "complete" ? `${TOOL_LABEL[review.reviewer_tool]} · Review complete` : review.status === "stopped" ? `${TOOL_LABEL[review.reviewer_tool]} · Review stopped early` : `${TOOL_LABEL[review.reviewer_tool]} · Reviewing`}</b>
+              <b>{TOOL_LABEL[review.reviewer_tool]} · {review.round === 2 ? "Second review" : review.round === 1 ? "Automatic review" : "Review"} {review.status === "complete" ? "complete" : review.status === "stopped" ? "stopped early" : "running"}</b>
               {review.summary && <p>{review.summary}</p>}
+              {review.sent_back && <p>{task.status === "doing" ? "Its serious findings went back to the agent, which is working on them. A second review checks the fixes." : "Its serious findings went back to the agent once."}</p>}
               {review.status === "complete" && review.findings.length === 0 && <p>No findings.</p>}
               {review.findings.map((f) => <div class="review-finding"><b class={`severity ${f.severity}`}>{f.severity}</b><code>{f.file}:{f.line}</code><span>{f.message}</span></div>)}
-              {review.findings.length > 0 && <button class="btn primary" disabled={!implementer} title={implementer ? "" : "No running implementation session"} onClick={sendFindings}>Send findings to the implementer</button>}
+              {review.findings.length > 0 && task.status === "review" && <button class={`btn ${review.sent_back ? "" : "primary"}`} disabled={!implementer} title={implementer ? "" : "No running implementation session"} onClick={sendFindings}>{review.sent_back ? "Send findings to the implementer again" : "Send findings to the implementer"}</button>}
             </div>}
-            {!review || review.status !== "running" ? <>
+            {task.status === "review" && task.auto_review === 0 && (!review || review.status !== "running") ? <>
               <select class="select" value={reviewTool} onChange={(e) => setReviewTool((e.target as HTMLSelectElement).value as "claude" | "codex")}>
                 <option value="claude">Claude reviews</option><option value="codex">Codex reviews</option>
               </select>

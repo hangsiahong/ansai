@@ -150,6 +150,13 @@ function AutopilotCard({ project, openTodo }: { project: Project; openTodo: stri
             </label>
             <label class="switch-row inner">
               <span>
+                <b>Second opinion</b>
+                <em>{ap.tool === "codex" ? "Claude" : "Codex"} reviews each finished task; serious problems go back to the agent once</em>
+              </span>
+              <input type="checkbox" class="switch" checked={ap.review !== false} onChange={(e) => set({ review: (e.target as HTMLInputElement).checked })} />
+            </label>
+            <label class="switch-row inner">
+              <span>
                 <b>Time limit per run</b>
                 <em>Then it stops and the task waits in Review</em>
               </span>

@@ -10,6 +10,8 @@ export type Autopilot = {
   effort?: string | null;
   /** Time limit per run, in minutes (null = none). */
   maxMinutes?: number | null;
+  /** The other agent reviews each finished task (undefined = on). */
+  review?: boolean;
 };
 export type Schedule = { id: string; project_id: string; title: string; prompt: string; tool: Exclude<ToolId, "shell">; account_id: string | null; model: string | null; effort: string | null; cadence: "daily" | "weekdays" | "weekly"; local_time: string; timezone: string; next_at: number; enabled: number; occurrences: { id: string; task_id: string; scheduled_for: number; status: string; outcome: string | null; task_status: string; summary: string | null; last_failure: string | null; session_id: string | null }[] };
 export type Project = {
@@ -126,7 +128,10 @@ export type Task = {
   sessions: { id: string; tool: ToolId; title: string; status: string; agent_state: string | null; auto: number }[];
   dependencies?: { id: string; title: string; status: TaskStatus }[];
   blocked_by?: { id: string; title: string; status: TaskStatus }[];
-  review: null | { session_id: string | null; reviewer_tool: "claude" | "codex"; status: "running" | "complete" | "stopped"; summary: string | null; findings: { file: string; line: number; severity: "high" | "medium" | "low"; message: string }[] };
+  /** round: 0 you started it, 1 automatic, 2 re-check after the findings went back to the agent (sent_back). */
+  review: null | { session_id: string | null; reviewer_tool: "claude" | "codex"; status: "running" | "complete" | "stopped"; summary: string | null; findings: { file: string; line: number; severity: "high" | "medium" | "low"; message: string }[]; round: number; sent_back: boolean };
+  /** An automatic review waiting to start: its round; 0 none. */
+  auto_review: number;
   /** The project's checks as run at finish_task; null when it has none or they never ran. */
   checks: TaskChecks | null;
   evidence: { name: string; kind: "image" | "text"; size: number }[];
