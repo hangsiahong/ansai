@@ -1,4 +1,6 @@
 import { Database } from "bun:sqlite";
+import { existsSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
 import { config } from "./config";
 
 export const db = new Database(config.dbPath, { create: true });
@@ -271,9 +273,35 @@ export function setSetting(key: string, value: unknown) {
   db.query("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(key, JSON.stringify(value));
 }
 
+export const backupDir = join(config.dataDir, "backups");
+
+/**
+ * A consistent copy of the whole database in one file, safe to take while ansai is
+ * running (SQLite's VACUUM INTO). `label` says why it was made; returns the file.
+ */
+export function backupDatabase(label: string, at = new Date()): string {
+  mkdirSync(backupDir, { recursive: true });
+  const p2 = (n: number) => String(n).padStart(2, "0");
+  // Local time, so the name matches the clock you remember: 20261116T103000
+  const stamp = `${at.getFullYear()}${p2(at.getMonth() + 1)}${p2(at.getDate())}T${p2(at.getHours())}${p2(at.getMinutes())}${p2(at.getSeconds())}`;
+  let path = join(backupDir, `ansai-${label}-${stamp}.db`);
+  for (let n = 2; existsSync(path); n++) path = join(backupDir, `ansai-${label}-${stamp}-${n}.db`);
+  db.query("VACUUM INTO ?").run(path);
+  return path;
+}
+
 {
   const current = (db.query("PRAGMA user_version").get() as { user_version: number }).user_version;
   if (current < migrations.length) {
+    // An existing database is copied first: a migration that turns out wrong can be undone
+    // by putting the copy back. (A brand-new database has nothing to lose.)
+    if (current > 0) {
+      try {
+        console.log(`[ansai] database backed up before updating it from v${current} to v${migrations.length}: ${backupDatabase(`before-v${current + 1}`)}`);
+      } catch (e) {
+        console.error("[ansai] couldn't back up the database before updating it (carrying on):", e);
+      }
+    }
     // Table rebuilds must not fire ON DELETE actions; FK enforcement can only be toggled outside a transaction.
     db.exec("PRAGMA foreign_keys = OFF");
     for (let v = current; v < migrations.length; v++) {

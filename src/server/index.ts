@@ -49,6 +49,7 @@ import { STATUSES, createTask, deleteTask, getTask, listTasks, runTask, startTas
 import { changesIn, taskDir } from "./changes";
 import { discardTaskWorktree, mergeTaskWorktree } from "./worktrees";
 import { db } from "./db";
+import { startBackupLoop } from "./backup";
 import { WEEKDAYS, deleteSchedule, listSchedules, runScheduleNow, saveSchedule, setScheduleEnabled } from "./schedules";
 import {
   AGENT_TOOLS,
@@ -788,6 +789,7 @@ startHealthLoop();
 startBackgroundTails();
 startAutopilot();
 startRunWatch();
+startBackupLoop();
 // Idle agents get their direct messages typed in (busy Claude sessions get them through hooks).
 setInterval(() => deliverIdle().catch((e) => console.error("[ansai] team delivery:", e)), 2000);
 // Agents on shift get their next prompt instead of waiting for you (Claude mostly through its Stop hook).
