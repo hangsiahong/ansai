@@ -187,7 +187,12 @@ const APPROVAL_ACTIONS: PushAction[] = [
 function push(s: Row, kind: "input" | "done", body: string, actions: PushAction[] = []) {
   if (s.task_id) {
     if (kind === "input") db.query("UPDATE schedule_occurrences SET status='needs_attention', outcome=? WHERE task_id=?").run(body.slice(0, 1000), s.task_id);
-    else db.query("UPDATE schedule_occurrences SET status=CASE WHEN (SELECT summary FROM tasks WHERE id=?) IS NULL THEN 'needs_attention' ELSE 'completed' END, outcome=? WHERE task_id=?").run(s.task_id, body.slice(0, 1000), s.task_id);
+    else {
+      // finish_task already filed the agent's summary as the run's result: keep it, don't replace it with "Finished — your turn.".
+      const summary = (db.query("SELECT summary FROM tasks WHERE id = ?").get(s.task_id) as { summary: string | null } | null)?.summary;
+      if (summary) db.query("UPDATE schedule_occurrences SET status='completed', outcome=? WHERE task_id=?").run(summary.slice(0, 1000), s.task_id);
+      else db.query("UPDATE schedule_occurrences SET status='needs_attention', outcome=? WHERE task_id=?").run(body.slice(0, 1000), s.task_id);
+    }
   }
   if (isWatched(s.id)) return; // you're looking at it already
   const title = kind === "input" ? `Needs you · ${s.title}` : `Done · ${s.title}`;

@@ -98,6 +98,43 @@ describe("weekly days and manual runs", () => {
   });
 });
 
+const { finishTask } = await import("./tasks");
+const { handleHook } = await import("./hooks");
+
+describe("what a scheduled run's history says when its agent's turn ends", () => {
+  /** A scheduled run whose agent is mid-turn on the task. */
+  function working(sid: string) {
+    const s = saveSchedule("p1", null, { ...base, title: `Run ${sid}` }) as { id: string };
+    const task = runScheduleNow("p1", s.id);
+    db.query("UPDATE tasks SET status='doing' WHERE id=?").run(task.id);
+    db.query("UPDATE schedule_occurrences SET status='running', outcome=NULL WHERE task_id=?").run(task.id);
+    db.query(`INSERT INTO sessions (id,project_id,task_id,tool,title,cwd,argv,tmux_name,status,agent_state,created_at,auto)
+      VALUES (?,'p1',?,'claude','Run','/tmp','[]',?,'running','working',0,1)`).run(sid, task.id, `ansai-${sid}`);
+    return task.id;
+  }
+  const occurrence = (taskId: string) => db.query("SELECT status,outcome FROM schedule_occurrences WHERE task_id=?").get(taskId) as { status: string; outcome: string | null };
+
+  test("the summary the agent gave stays as the result, not \"Finished — your turn.\"", () => {
+    const taskId = working("sched-done");
+    finishTask(taskId, "Found 3 stale issues; closed 2 and left a note on the third.");
+    handleHook("claude", "Stop", "sched-done", {});
+    expect(occurrence(taskId)).toEqual({ status: "completed", outcome: "Found 3 stale issues; closed 2 and left a note on the third." });
+  });
+
+  test("a long summary is cut to 1000 characters", () => {
+    const taskId = working("sched-long");
+    finishTask(taskId, "x".repeat(1500));
+    handleHook("claude", "Stop", "sched-long", {});
+    expect(occurrence(taskId)).toEqual({ status: "completed", outcome: "x".repeat(1000) });
+  });
+
+  test("a turn that ends without a summary needs you, and says it finished", () => {
+    const taskId = working("sched-none");
+    handleHook("claude", "Stop", "sched-none", {});
+    expect(occurrence(taskId)).toEqual({ status: "needs_attention", outcome: "Finished — your turn." });
+  });
+});
+
 // New York clocks go forward on 14 March 2027 (02:00 becomes 03:00) and back on 7 November 2027.
 describe("days the clocks change", () => {
   const NY = "America/New_York";
