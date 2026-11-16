@@ -276,6 +276,13 @@ const migrations: string[] = [
   ALTER TABLE tasks ADD COLUMN checks TEXT;
   ALTER TABLE tasks ADD COLUMN evidence TEXT;
   `,
+  // 20: automatic independent review of finished autopilot tasks (autoreview.ts). round: 0 you started it,
+  // 1 first automatic review, 2 re-check after the findings went back to the agent. tasks.auto_review: the round waiting to start.
+  `
+  ALTER TABLE task_reviews ADD COLUMN round INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE task_reviews ADD COLUMN sent_back INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE tasks ADD COLUMN auto_review INTEGER NOT NULL DEFAULT 0;
+  `,
 ];
 
 export function getSetting<T>(key: string, fallback: T): T {

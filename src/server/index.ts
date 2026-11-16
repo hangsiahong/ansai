@@ -433,6 +433,7 @@ const server = Bun.serve<WSData>({
             model: optModel,
             effort: optEffort,
             maxMinutes: v.optional(v.nullable(v.number({ int: true, min: 5, max: 24 * 60 }))),
+            review: optBool,
           }));
         const ap = setProjectAutopilot(req.params.id!, b);
         emit("tasks");

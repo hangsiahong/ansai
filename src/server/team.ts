@@ -157,7 +157,8 @@ export function deliveryNote(target: SessionRow): string {
   return "It's idle, so ansai types it in now.";
 }
 
-export function postMessage(o: { from: SessionRow | null; to?: string | null; projectId?: string | null; body: string }): Message {
+/** `label`: who a message with no sending agent is from (default "You"; ansai's own say so). */
+export function postMessage(o: { from: SessionRow | null; to?: string | null; projectId?: string | null; body: string; label?: string }): Message {
   const body = o.body.trim();
   if (!body) throw badRequest("a message needs some text");
   if (body.length > BODY_MAX) throw badRequest(`keep messages under ${BODY_MAX} characters; share long content as a file path`);
@@ -174,7 +175,7 @@ export function postMessage(o: { from: SessionRow | null; to?: string | null; pr
       `INSERT INTO messages (project_id, from_session, from_label, to_session, to_label, body, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING *`,
     )
-    .get(projectId, o.from?.id ?? null, o.from ? agentLabel(o.from) : "You", target?.id ?? null, target ? agentLabel(target) : null, body, now()) as Message;
+    .get(projectId, o.from?.id ?? null, o.from ? agentLabel(o.from) : (o.label ?? "You"), target?.id ?? null, target ? agentLabel(target) : null, body, now()) as Message;
   emit("messages");
   queueMicrotask(() => void deliverIdle().catch((e) => console.error("[ansai] team delivery:", e)));
   return r;

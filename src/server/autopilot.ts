@@ -10,6 +10,7 @@ import { getTask, projectAutopilot, runTask as startTask, type Autopilot, type T
 import { closeSession } from "./sessions";
 import { scheduleTick, updateOccurrence } from "./schedules";
 import { usesWorktrees } from "./worktrees";
+import { reviewTick } from "./autoreview";
 
 /** How autopilot starts a task (tests swap in a fake that doesn't launch agents). */
 let runTask = startTask;
@@ -53,6 +54,7 @@ export function setProjectAutopilot(projectId: string, raw: Partial<Autopilot>):
     model: raw.model !== undefined ? raw.model || null : sameTool ? (cur.model ?? null) : null,
     effort: raw.effort !== undefined ? raw.effort || null : sameTool ? (cur.effort ?? null) : null,
     maxMinutes: raw.maxMinutes !== undefined ? raw.maxMinutes || null : (cur.maxMinutes ?? null),
+    review: raw.review !== undefined ? !!raw.review : (cur.review ?? true),
   };
   db.query("UPDATE projects SET autopilot = ? WHERE id = ?").run(JSON.stringify(next), projectId);
   emit("projects");
@@ -258,7 +260,8 @@ const SWEEP_MS = 60_000;
  * - finished from its own side: its task is Done, or is in Review with the summary it filed
  *   by calling finish_task. An agent that stopped to ask something has no summary;
  * - not on an active shift, not held for a usage limit, and not an independent reviewer
- *   (those close themselves when they finish).
+ *   (those close themselves when they finish);
+ * - not waiting on an automatic review of its task, which may send it findings to fix.
  * Returns the ids it closed.
  */
 export async function closeFinishedAgents(at = Date.now(), close: (sessionId: string) => Promise<void> = closeSession): Promise<string[]> {
@@ -271,6 +274,8 @@ export async function closeFinishedAgents(at = Date.now(), close: (sessionId: st
          AND (t.status = 'done' OR (t.status = 'review' AND t.summary IS NOT NULL))
          AND s.title NOT LIKE 'Review · %'
          AND NOT EXISTS (SELECT 1 FROM task_reviews r WHERE r.session_id = s.id)
+         AND t.auto_review = 0
+         AND NOT EXISTS (SELECT 1 FROM task_reviews r JOIN sessions rs ON rs.id = r.session_id WHERE r.task_id = t.id AND r.status = 'running' AND rs.status = 'running')
          AND NOT EXISTS (SELECT 1 FROM shifts sh WHERE sh.session_id = s.id AND sh.ended_at IS NULL)`,
     )
     .all(at - CLOSE_AFTER_MS) as { id: string; title: string }[];
@@ -297,7 +302,11 @@ export function startAutopilot(ms = 4000) {
       swept = Date.now();
       closeFinishedAgents().catch((e) => console.error("[ansai] closing finished agents:", e));
     }
-    autopilotTick().catch((e) => console.error("[ansai] autopilot:", e)).finally(() => setTimeout(tick, ms));
+    autopilotTick()
+      .catch((e) => console.error("[ansai] autopilot:", e))
+      .then(() => reviewTick())
+      .catch((e) => console.error("[ansai] auto-review:", e))
+      .finally(() => setTimeout(tick, ms));
   };
   setTimeout(tick, 3000);
 }

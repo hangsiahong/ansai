@@ -390,7 +390,8 @@ export function handleHook(tool: string, event: string, sessionId: string, paylo
     setState(s, "waiting", last || null);
     // On shift the next prompt gets typed in shortly (shifts.nudgeIdle), so the task stays in Doing and no push goes out.
     if (codexTurnEnded(getSession(s.id)!)) return;
-    if (!isTaskReviewer(s.id)) moveTask(s.task_id, "doing", "review");
+    if (isTaskReviewer(s.id)) return; // as with Claude: a reviewer reports through finish_review, not a push
+    moveTask(s.task_id, "doing", "review");
     push(s, "done", last || "Finished — your turn.");
   }
 }

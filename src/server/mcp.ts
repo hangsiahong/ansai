@@ -4,6 +4,7 @@ import { callerAllowed, shownKey } from "./sessionkeys";
 import { getSession } from "./sessions";
 import { JSON_LIMIT, readJson } from "./validate";
 import { createTask, finishTask, finishTaskReview, getTask, reportReviewFinding } from "./tasks";
+import { queueAutoReview, sendBack } from "./autoreview";
 import { claimFiles, deliveryNote, describeAgents, describeHistory, postMessage, releaseFiles, takePending } from "./team";
 import { endShift, shiftView } from "./shifts";
 import { compactionAsked, keepFits, NOTE_MAX, noteToolsListed, requestCompaction } from "./compaction";
@@ -252,7 +253,12 @@ async function runTool(sessionId: string, name: string, args: any) {
     }
     const evidence = await saveEvidence(task.id, picked.files);
     finishTask(task.id, summary, evidence);
-    return text(`${passed}${evidence.length ? `${evidence.length} evidence file${evidence.length > 1 ? "s" : ""} attached. ` : ""}The task is marked ready for the user's review.`);
+    const round = queueAutoReview(task.id, sessionId);
+    const next =
+      round === 1 ? " An independent reviewer (another agent) reads your changes next. If it finds serious problems they come to you as a message: stay ready, and don't start other work in this worktree."
+      : round === 2 ? " A second review checks your fixes next."
+      : "";
+    return text(`${passed}${evidence.length ? `${evidence.length} evidence file${evidence.length > 1 ? "s" : ""} attached. ` : ""}The task is marked ready for the user's review.${next}`);
   }
 
   if (name === "report_finding") {
@@ -269,7 +275,7 @@ async function runTool(sessionId: string, name: string, args: any) {
     const summary = String(args?.summary ?? "").trim();
     if (!summary) return text("A summary is required.", true);
     finishTaskReview(sessionId, summary);
-    return text("Review complete. The task remains in Review for the user.");
+    return text(sendBack(sessionId) ? "Review complete. Your findings went to the agent that did the task; the task remains in Review for the user." : "Review complete. The task remains in Review for the user.");
   }
 
   return text(`Unknown tool ${name}`, true);

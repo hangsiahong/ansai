@@ -37,6 +37,8 @@ export type Task = {
   /** Autopilot retries used, and why the last run stopped early (null if it didn't). */
   attempts: number;
   last_failure: string | null;
+  /** Automatic review waiting to start: its round (autoreview.ts), 0 none. */
+  auto_review: number;
   /** JSON: ChecksState (checks.ts) and Evidence[] (evidence.ts), set at finish_task. */
   checks: string | null;
   evidence: string | null;
@@ -45,7 +47,9 @@ export type Task = {
 };
 
 export type ReviewFinding = { file: string; line: number; severity: "high" | "medium" | "low"; message: string };
-export type TaskReview = { session_id: string | null; reviewer_tool: "claude" | "codex"; status: "running" | "complete" | "stopped"; summary: string | null; findings: ReviewFinding[] };
+export type TaskReview = { session_id: string | null; reviewer_tool: "claude" | "codex"; status: "running" | "complete" | "stopped"; summary: string | null; findings: ReviewFinding[]; round: number; sent_back: boolean };
+/** round: 0 you started it, 1 automatic, 2 re-check after round 1's findings went back (previous: what round 1 said, fix: the agent's summary after). */
+export type ReviewStart = { round?: number; accountId?: string | null; previous?: { findings: ReviewFinding[]; summary: string | null; fix: string | null } };
 
 export type Autopilot = {
   on: boolean;
@@ -57,6 +61,8 @@ export type Autopilot = {
   effort?: string | null;
   /** Time limit per run, in minutes (null = none). */
   maxMinutes?: number | null;
+  /** The other agent reviews each finished task (autoreview.ts). Undefined = on. */
+  review?: boolean;
 };
 
 const isStatus = (s: unknown): s is TaskStatus => typeof s === "string" && (STATUSES as readonly string[]).includes(s);
@@ -101,8 +107,8 @@ export function listTasks() {
   ).all() as ({ task_id: string } & TaskDependency)[];
   const byDependency = new Map<string, TaskDependency[]>();
   for (const d of dependencies) byDependency.set(d.task_id, [...(byDependency.get(d.task_id) ?? []), { id: d.id, title: d.title, status: d.status }]);
-  const reviews = db.query(`SELECT r.*, s.status AS session_status FROM task_reviews r LEFT JOIN sessions s ON s.id = r.session_id`).all() as ({ task_id: string; session_id: string | null; reviewer_tool: "claude" | "codex"; status: "running" | "complete" | "stopped"; summary: string | null; findings: string; session_status: string | null })[];
-  const byReview = new Map(reviews.map((r) => [r.task_id, { session_id: r.session_id, reviewer_tool: r.reviewer_tool, status: r.status === "running" && r.session_status !== "running" ? "stopped" as const : r.status, summary: r.summary, findings: JSON.parse(r.findings) as ReviewFinding[] }]));
+  const reviews = db.query(`SELECT r.*, s.status AS session_status FROM task_reviews r LEFT JOIN sessions s ON s.id = r.session_id`).all() as ({ task_id: string; session_id: string | null; reviewer_tool: "claude" | "codex"; status: "running" | "complete" | "stopped"; summary: string | null; findings: string; round: number; sent_back: number; session_status: string | null })[];
+  const byReview = new Map(reviews.map((r): [string, TaskReview] => [r.task_id, { session_id: r.session_id, reviewer_tool: r.reviewer_tool, status: r.status === "running" && r.session_status !== "running" ? "stopped" : r.status, summary: r.summary, findings: JSON.parse(r.findings) as ReviewFinding[], round: r.round, sent_back: !!r.sent_back }]));
   return rows.map((t) => {
     const deps = byDependency.get(t.id) ?? [];
     return { ...t, plan: t.plan ? (JSON.parse(t.plan) as Plan) : null, checks: liveChecks(t), evidence: parseEvidence(t.evidence), sessions: byTask.get(t.id) ?? [], dependencies: deps, blocked_by: deps.filter((d) => d.status !== "done"), review: byReview.get(t.id) ?? null };
@@ -116,7 +122,7 @@ function liveChecks(t: Task): ChecksState | null {
 }
 
 /** Start a separate, constrained reviewer in the task's existing worktree. */
-export async function startTaskReview(id: string, reviewer?: "claude" | "codex") {
+export async function startTaskReview(id: string, reviewer?: "claude" | "codex", o: ReviewStart = {}) {
   const task = getTask(id);
   if (!task) throw notFound("no such task");
   if (task.status !== "review") throw conflict("the task must be in Review first");
@@ -135,14 +141,31 @@ export async function startTaskReview(id: string, reviewer?: "claude" | "codex")
     `Independent review for backlog task: ${task.title}`,
     `Requirements (task body):\n${task.body || "(no additional details)"}`,
     `Review the task's complete diff in this worktree against merge-base ${changes.base.sha} (${changes.base.label}). Use that commit as the diff base, including commits and uncommitted changes. Worktree: ${task.worktree_path}. Do not edit, create, or delete files.`,
-    "Find correctness bugs, regressions, and unmet requirements. Ignore style preferences. For each actionable issue call ansai report_finding with file, line, severity (high, medium, or low), and a concise message. If there are no findings, call no report_finding tools. When your inspection is complete, call ansai finish_review with a concise summary. Do not call finish_task.",
+    ...(o.previous ? [secondLook(o.previous)] : []),
+    "Find correctness bugs, regressions, and unmet requirements. Ignore style preferences. Severity: high = wrong behaviour, data loss, a security hole, or a requirement not met; medium = a real but limited problem; low = minor. For each actionable issue call ansai report_finding with file, line, severity, and a concise message saying what goes wrong and when. If there are no findings, call no report_finding tools. When your inspection is complete, call ansai finish_review with a concise summary. Do not call finish_task.",
   ].join("\n\n");
   const session = await createSession({ projectId: task.project_id, cwd: dir, tool, title: `Review · ${task.title}`, prompt, taskId: task.id, readOnly: true,
     instructions: "You are an independent code reviewer. You may inspect files and run read-only commands, but must not modify the worktree. Report actionable findings using ansai report_finding, then call ansai finish_review. Do not use finish_task.",
-    onCreated: (sessionId) => db.query(`INSERT INTO task_reviews (task_id, session_id, reviewer_tool, status, summary, findings, updated_at) VALUES (?, ?, ?, 'running', NULL, '[]', ?) ON CONFLICT(task_id) DO UPDATE SET session_id=excluded.session_id, reviewer_tool=excluded.reviewer_tool, status='running', summary=NULL, findings='[]', updated_at=excluded.updated_at`).run(id, sessionId, tool, now()),
+    accountId: o.accountId,
+    onCreated: (sessionId) => {
+      db.query("UPDATE tasks SET auto_review = 0 WHERE id = ?").run(id); // this review is the one that was queued
+      db.query(`INSERT INTO task_reviews (task_id, session_id, reviewer_tool, status, summary, findings, updated_at, round, sent_back) VALUES (?, ?, ?, 'running', NULL, '[]', ?, ?, 0) ON CONFLICT(task_id) DO UPDATE SET session_id=excluded.session_id, reviewer_tool=excluded.reviewer_tool, status='running', summary=NULL, findings='[]', updated_at=excluded.updated_at, round=excluded.round, sent_back=0`).run(id, sessionId, tool, now(), o.round ?? 0);
+    },
   });
   emit("tasks");
   return session;
+}
+
+/** Round 2's brief: what round 1 found and what the agent says it did about it. */
+function secondLook(p: NonNullable<ReviewStart["previous"]>): string {
+  const found = p.findings.slice(0, 30).map((f) => `- [${f.severity}] ${f.file}:${f.line} — ${f.message.replace(/\s+/g, " ").slice(0, 700)}`).join("\n");
+  return [
+    "This is a second review. An earlier review found:",
+    found || "(no findings)",
+    p.summary ? `Its summary: ${p.summary.slice(0, 1500)}` : "",
+    `Those findings went back to the agent, which then reported: ${p.fix ? p.fix.slice(0, 2500) : "(no summary)"}`,
+    "Check each earlier finding: fixed correctly, or rejected with a reason that holds. Report the ones that still stand, again with report_finding, and anything new the changes broke.",
+  ].filter(Boolean).join("\n");
 }
 
 export function reportReviewFinding(sessionId: string, finding: ReviewFinding) {
