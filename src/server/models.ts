@@ -6,6 +6,7 @@ import { badRequest, conflict, notFound } from "./errors";
 import { db } from "./db";
 import { agyModels } from "./agyauth";
 import { captureHistory, getSession, sendText, sessionView, type SessionRow } from "./sessions";
+import { readJsonFile } from "./files";
 
 /**
  * What each agent can be started with: its models and reasoning levels, plus
@@ -40,14 +41,6 @@ const CLAUDE_MODELS: ModelOption[] = [
   { id: "haiku", label: "Haiku" },
 ];
 
-function readJson(path: string): any {
-  try {
-    return JSON.parse(readFileSync(path, "utf8"));
-  } catch {
-    return null;
-  }
-}
-
 /** "claude-opus-5-5" → 505; "claude-sonnet-4-20250514" → 400 (a date isn't a minor version). */
 const claudeVersion = (id: string) => {
   const m = id.match(/^claude-[a-z]+-(\d+)(?:-(\d{1,2})(?!\d))?/);
@@ -71,7 +64,7 @@ export function claudeDefaultEffort(settings: any, model: string, seen: string[]
 }
 
 function claudeChoices(a: AccountRow | null): ModelChoices {
-  const s = readJson(join(a?.dir ?? join(config.home, ".claude"), "settings.json")) ?? {};
+  const s = readJsonFile(join(a?.dir ?? join(config.home, ".claude"), "settings.json")) ?? {};
   const seen = (db.query("SELECT DISTINCT model FROM sessions WHERE tool = 'claude' AND model LIKE 'claude-%'").all() as { model: string }[]).map((r) => r.model);
   const model = typeof s.model === "string" ? s.model : null;
   return {
@@ -87,7 +80,7 @@ function codexChoices(a: AccountRow | null): ModelChoices {
   const home = a?.dir ?? join(config.home, ".codex");
   // A fresh account profile has no cache until Codex runs there once; the main one lists the same models.
   const cache = [join(home, "models_cache.json"), join(config.home, ".codex", "models_cache.json")].find(existsSync);
-  const list = (cache ? readJson(cache)?.models : null) ?? [];
+  const list = (cache ? readJsonFile(cache)?.models : null) ?? [];
   const models: ModelOption[] = (Array.isArray(list) ? list : [])
     .filter((m: any) => typeof m?.slug === "string" && m.visibility !== "hide")
     .map((m: any) => ({
@@ -146,7 +139,7 @@ function savedDefaults(tool: string, accountId: string | null): { path: string; 
 /** The saved-default keys as they are now; a missing file counts as none set. Null if unreadable. */
 function readDefaults(path: string, keys: string[]): Record<string, unknown> | null {
   if (!existsSync(path)) return {};
-  const j = readJson(path);
+  const j = readJsonFile(path);
   if (!j || typeof j !== "object") return null;
   return Object.fromEntries(keys.map((k) => [k, j[k]]));
 }

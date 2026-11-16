@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
-import { cleanEnv } from "./config";
 import { conflict } from "./errors";
+import { git, gitOut, type GitOpts } from "./git";
 import { projectCheckout } from "./worktrees";
 
 /**
@@ -49,23 +49,8 @@ const MAX_FILE_LINES = 2000;
 const MAX_FILE_BYTES = 256 * 1024;
 const MAX_TOTAL_BYTES = 3 * 1024 * 1024;
 
-async function git(dir: string, args: string[]) {
-  const proc = Bun.spawn(["git", "-C", dir, "-c", "core.quotePath=false", ...args], {
-    // Read-only: don't take index.lock, so we never trip up an agent's own git commands.
-    env: cleanEnv({ GIT_OPTIONAL_LOCKS: "0", LC_ALL: "C" }),
-    stdout: "pipe",
-    stderr: "pipe",
-    timeout: 20_000,
-  });
-  const [out, err] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
-  return { code: await proc.exited, out, err: err.trim() };
-}
-
-async function gitOk(dir: string, args: string[]) {
-  const r = await git(dir, args);
-  if (r.code !== 0) throw new Error(`git ${args[0]}: ${r.err || `exit ${r.code}`}`);
-  return r.out;
-}
+// Read-only, so we never trip up an agent's own git commands; paths unquoted and messages in English, so output parses the same everywhere.
+const READ: GitOpts = { readOnly: true, timeout: 20_000, env: { LC_ALL: "C" }, config: { "core.quotePath": "false" } };
 
 /** Undo Git's C-style quoting of unusual path names ("a\tb" → a<TAB>b). */
 function unquote(s: string): string {
@@ -180,16 +165,16 @@ function untrackedFile(dir: string, path: string): FileChange {
 export async function changesIn(dir: string): Promise<Changes> {
   if (!existsSync(dir)) throw conflict(`folder no longer exists: ${dir}`);
   if (!Bun.which("git")) throw conflict("git is not installed");
-  if ((await git(dir, ["rev-parse", "--show-toplevel"])).code !== 0) throw conflict("this folder isn't in a Git repository");
+  if ((await git(dir, ["rev-parse", "--show-toplevel"], READ)).code !== 0) throw conflict("this folder isn't in a Git repository");
 
-  const hasHead = (await git(dir, ["rev-parse", "--verify", "-q", "HEAD"])).code === 0;
-  const branchOut = await git(dir, ["symbolic-ref", "-q", "--short", "HEAD"]);
-  const branch = branchOut.code === 0 ? branchOut.out.trim() : null;
+  const hasHead = (await git(dir, ["rev-parse", "--verify", "-q", "HEAD"], READ)).code === 0;
+  const branchOut = await git(dir, ["symbolic-ref", "-q", "--short", "HEAD"], READ);
+  const branch = branchOut.code === 0 ? branchOut.stdout : null;
 
-  const [gitDir, commonDir] = (await gitOk(dir, ["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"])).trim().split("\n");
+  const [gitDir, commonDir] = (await gitOut(dir, ["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"], READ)).trim().split("\n");
   const worktree = !!gitDir && !!commonDir && realpathSync(gitDir) !== realpathSync(commonDir);
 
-  let base: Changes["base"] = { label: "last commit", sha: hasHead ? (await gitOk(dir, ["rev-parse", "HEAD"])).trim() : EMPTY_TREE };
+  let base: Changes["base"] = { label: "last commit", sha: hasHead ? (await gitOut(dir, ["rev-parse", "HEAD"], READ)).trim() : EMPTY_TREE };
   if (!hasHead) base.label = "empty repository";
   if (worktree && hasHead) {
     // Compare against where this branch left the project's branch: for a task's worktree that
@@ -197,24 +182,24 @@ export async function changesIn(dir: string): Promise<Changes> {
     // repository's main checkout (a bare repository has none: the last commit it is).
     let against = await projectCheckout(dir);
     if (!against) {
-      const list = await gitOk(dir, ["worktree", "list", "--porcelain"]);
+      const list = await gitOut(dir, ["worktree", "list", "--porcelain"], READ);
       const main = list.split("\n\n")[0] ?? "";
       against = { path: "", branch: main.match(/^branch refs\/heads\/(.+)$/m)?.[1] ?? null, head: main.match(/^HEAD ([0-9a-f]+)$/m)?.[1] ?? null };
     }
     const ref = against.branch ?? against.head;
     if (ref) {
-      const mb = await git(dir, ["merge-base", "HEAD", ref]);
-      if (mb.code === 0 && mb.out.trim()) base = { label: against.branch ?? "main checkout", sha: mb.out.trim() };
+      const mb = await git(dir, ["merge-base", "HEAD", ref], READ);
+      if (mb.code === 0 && mb.stdout) base = { label: against.branch ?? "main checkout", sha: mb.stdout };
     }
   }
 
   const diffArgs = ["diff", "--no-color", "--no-ext-diff", "--no-textconv", "-M", "--src-prefix=a/", "--dst-prefix=b/", "--relative"];
   const [patchOut, untrackedOut, dirtyOut, logOut] = await Promise.all([
-    gitOk(dir, [...diffArgs, base.sha, "--", "."]),
-    gitOk(dir, ["ls-files", "--others", "--exclude-standard", "-z", "--", "."]),
-    hasHead ? gitOk(dir, ["diff", "--name-only", "--relative", "-z", "HEAD", "--", "."]) : Promise.resolve(""),
+    gitOut(dir, [...diffArgs, base.sha, "--", "."], READ),
+    gitOut(dir, ["ls-files", "--others", "--exclude-standard", "-z", "--", "."], READ),
+    hasHead ? gitOut(dir, ["diff", "--name-only", "--relative", "-z", "HEAD", "--", "."], READ) : Promise.resolve(""),
     worktree && hasHead && base.label !== "last commit"
-      ? gitOk(dir, ["log", "--format=%H%x1f%s%x1f%ct", "-n", "50", `${base.sha}..HEAD`])
+      ? gitOut(dir, ["log", "--format=%H%x1f%s%x1f%ct", "-n", "50", `${base.sha}..HEAD`], READ)
       : Promise.resolve(""),
   ]);
 
@@ -257,8 +242,8 @@ export async function changesIn(dir: string): Promise<Changes> {
 export async function taskDir(task: { worktree_path: string | null }, projectPath: string): Promise<string> {
   if (!task.worktree_path) return projectPath;
   // A project inside a monorepo works in the matching subfolder of the worktree.
-  const root = await git(projectPath, ["rev-parse", "--show-toplevel"]);
+  const root = await git(projectPath, ["rev-parse", "--show-toplevel"], READ);
   if (root.code !== 0) return task.worktree_path;
-  const sub = relative(realpathSync(root.out.trim()), realpathSync(projectPath));
+  const sub = relative(realpathSync(root.stdout), realpathSync(projectPath));
   return sub ? join(task.worktree_path, sub) : task.worktree_path;
 }

@@ -5,7 +5,8 @@ import { appendFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const { db, now } = await import("./db");
-const { addUsage, eachLine, newScan, runDeadline, scanTokens, sessionTokens } = await import("./runs");
+const { addUsage, newScan, runDeadline, scanTokens, sessionTokens } = await import("./runs");
+const { eachLine } = await import("./files");
 const { enforceRunLimits } = await import("./limits");
 const { setViewer } = await import("./viewers");
 
@@ -63,7 +64,7 @@ describe("counting a long log a slice at a time", () => {
   };
   const read = async (path: string, slice: number, from = 0) => {
     const got: string[] = [];
-    const end = await eachLine(path, from, (line) => got.push(line.toString("utf8")), slice);
+    const end = (await eachLine(path, from, (line) => got.push(line.toString("utf8")), { slice })) ?? from;
     return { got, end };
   };
 

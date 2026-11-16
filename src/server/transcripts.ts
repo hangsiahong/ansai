@@ -1,10 +1,10 @@
 import { existsSync, readdirSync, statSync } from "node:fs";
-import { open } from "node:fs/promises";
 import { basename, join } from "node:path";
 import type { ServerWebSocket } from "bun";
 import { config } from "./config";
 import { db } from "./db";
 import { emit } from "./events";
+import { eachLine } from "./files";
 import { getAccount } from "./accounts";
 import { getSession, type SessionRow } from "./sessions";
 import { createTask, setPlan } from "./tasks";
@@ -494,13 +494,19 @@ class ChatTail {
       }
       const upserts: ChatItem[] = [];
       // A read that starts mid-file starts mid-line: that first piece is skipped.
-      const end = await eachLine(want, start, size, start !== this.offset, (line, at) => {
-        if (!line.trim()) return;
-        try {
-          if (s.tool === "claude") parseClaude(line, this.st, upserts);
-          else parseCodex(line, this.st, upserts, `${at}`);
-        } catch {}
-      });
+      const end = await eachLine(
+        want,
+        start,
+        (bytes, at) => {
+          const line = bytes.toString("utf8");
+          if (!line.trim()) return;
+          try {
+            if (s.tool === "claude") parseClaude(line, this.st, upserts);
+            else parseCodex(line, this.st, upserts, `${at}`);
+          } catch {}
+        },
+        { end: size, skipFirst: start !== this.offset },
+      );
       if (end === null) return; // no complete line yet
       const firstLoad = this.offset === 0;
       this.offset = end;
@@ -602,63 +608,6 @@ class ChatTail {
       // Running agents keep a (slow) background tail for plans and task tracking.
       if (getSession(this.sessionId)?.status !== "running") tails.delete(this.sessionId);
     }, 60_000);
-  }
-}
-
-const READ_SLICE = 1024 * 1024;
-
-/**
- * Hand every complete line of `path` between `start` and `size` to `onLine`, with the
- * line's place in the file. Returns the place just past the last complete line, or null
- * when there is none yet.
- *
- * The file is read through one small buffer, a slice at a time. Reading the whole stretch
- * at once (as this used to) took a buffer as big as the stretch, up to 12 MB for a long
- * log, and after a restart every running agent's log is read that way within the same
- * second: the buffers alone added 49 MB with four agents, before any of them was freed.
- */
-export async function eachLine(
-  path: string,
-  start: number,
-  size: number,
-  skipFirst: boolean,
-  onLine: (line: string, at: number) => void,
-  slice = READ_SLICE,
-): Promise<number | null> {
-  if (size <= start) return null;
-  const fh = await open(path, "r");
-  try {
-    const scratch = Buffer.allocUnsafe(Math.min(slice, size - start));
-    let carry: Buffer | null = null; // the start of a line that ran past the end of a slice
-    let lineAt = start; // where the next line starts in the file
-    let at = start; // the next byte to read
-    let skip = skipFirst;
-    let any = false;
-    while (at < size) {
-      const { bytesRead } = await fh.read(scratch, 0, Math.min(scratch.length, size - at), at);
-      if (!bytesRead) break; // the file got shorter under us
-      const chunk = scratch.subarray(0, bytesRead);
-      let pos = 0;
-      for (;;) {
-        const nl = chunk.indexOf(10, pos);
-        if (nl === -1) break;
-        if (skip) skip = false;
-        else {
-          const piece = chunk.subarray(pos, nl);
-          onLine((carry ? Buffer.concat([carry, piece]) : piece).toString("utf8"), lineAt);
-          any = true;
-        }
-        carry = null;
-        pos = nl + 1;
-        lineAt = at + pos;
-      }
-      // The buffer is reused for the next slice, so what's left of this one is copied out.
-      if (pos < bytesRead && !skip) carry = carry ? Buffer.concat([carry, chunk.subarray(pos)]) : Buffer.from(chunk.subarray(pos));
-      at += bytesRead;
-    }
-    return any ? lineAt : null;
-  } finally {
-    await fh.close();
   }
 }
 

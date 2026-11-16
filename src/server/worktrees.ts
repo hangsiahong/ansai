@@ -1,34 +1,25 @@
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import { join, relative, resolve } from "node:path";
-import { config, cleanEnv } from "./config";
+import { config } from "./config";
 import { db } from "./db";
 import { emit } from "./events";
 import { conflict } from "./errors";
+import { git, type GitOpts } from "./git";
 
 type WorktreeTask = { id: string; title: string; worktree_path: string | null; worktree_branch: string | null };
 type Worktree = { path: string; branch: string; cwd: string; /** What a fresh worktree was given, for the agent's first prompt. */ notes: string[] };
 
 const pending = new Map<string, Promise<Worktree | null>>();
 
-async function git(args: string[]) {
-  const proc = Bun.spawn(["git", ...args], {
-    env: cleanEnv(),
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
-  return { code: await proc.exited, stdout: stdout.trim(), stderr: stderr.trim() };
-}
-
 async function ensure(task: WorktreeTask, projectPath: string): Promise<Worktree | null> {
   if (!Bun.which("git")) return null;
   const canonicalProject = realpathSync(projectPath);
-  const rootResult = await git(["-C", canonicalProject, "rev-parse", "--show-toplevel"]);
+  const rootResult = await git(canonicalProject, ["rev-parse", "--show-toplevel"]);
   // Keep non-Git projects working as they did before task worktrees existed.
   if (rootResult.code !== 0) return null;
   // A repo with no commits yet has nothing to branch from; use the project folder.
-  if ((await git(["-C", canonicalProject, "rev-parse", "--verify", "-q", "HEAD"])).code !== 0) return null;
+  if ((await git(canonicalProject, ["rev-parse", "--verify", "-q", "HEAD"])).code !== 0) return null;
 
   const repoRoot = resolve(rootResult.stdout);
   const projectSubdir = relative(repoRoot, canonicalProject);
@@ -42,10 +33,10 @@ async function ensure(task: WorktreeTask, projectPath: string): Promise<Worktree
   if (path && branch && !existsSync(path)) {
     // The folder was removed (git worktree remove, rm -rf). Check the task's branch out
     // again so committed work carries on, or start over if the branch is gone too.
-    await git(["-C", repoRoot, "worktree", "prune"]);
-    const hasBranch = (await git(["-C", repoRoot, "rev-parse", "--verify", "-q", `refs/heads/${branch}`])).code === 0;
+    await git(repoRoot, ["worktree", "prune"]);
+    const hasBranch = (await git(repoRoot, ["rev-parse", "--verify", "-q", `refs/heads/${branch}`])).code === 0;
     if (hasBranch) {
-      const restored = await git(["-C", repoRoot, "worktree", "add", path, branch]);
+      const restored = await git(repoRoot, ["worktree", "add", path, branch]);
       if (restored.code !== 0) throw conflict(`could not restore task worktree: ${restored.stderr || restored.stdout}`);
       // A checkout has committed files only: give it .env and node_modules again, as a new one gets.
       notes = await provision(repoRoot, path);
@@ -64,7 +55,7 @@ async function ensure(task: WorktreeTask, projectPath: string): Promise<Worktree
     branch = `ansai/${task.id}`;
     if (existsSync(path)) throw conflict(`worktree path already exists: ${path}`);
 
-    const created = await git(["-C", repoRoot, "worktree", "add", "-b", branch, path, "HEAD"]);
+    const created = await git(repoRoot, ["worktree", "add", "-b", branch, path, "HEAD"]);
     if (created.code !== 0) throw new Error(`could not create task worktree: ${created.stderr || created.stdout}`);
 
     db.query("UPDATE tasks SET worktree_path = ?, worktree_branch = ? WHERE id = ?").run(path, branch, task.id);
@@ -90,9 +81,9 @@ const MAX_LINKS = 20;
  */
 async function keepIgnored(path: string, rels: string[]) {
   const visible = [];
-  for (const rel of rels) if ((await git(["-C", path, "check-ignore", "-q", "--no-index", rel])).code !== 0) visible.push(rel);
+  for (const rel of rels) if ((await git(path, ["check-ignore", "-q", "--no-index", rel])).code !== 0) visible.push(rel);
   if (!visible.length) return;
-  const common = await git(["-C", path, "rev-parse", "--path-format=absolute", "--git-common-dir"]);
+  const common = await git(path, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
   if (common.code !== 0) return;
   const file = join(common.stdout, "info", "exclude");
   try {
@@ -113,7 +104,7 @@ async function keepIgnored(path: string, rels: string[]) {
 async function provision(repoRoot: string, path: string): Promise<string[]> {
   const notes: string[] = [];
   // --directory lists an ignored folder once ("node_modules/") instead of every file inside it.
-  const ls = await git(["-C", repoRoot, "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"]);
+  const ls = await git(repoRoot, ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"]);
   if (ls.code === 0) {
     const entries = ls.stdout.split("\0").filter(Boolean);
     const envs = entries.filter((e) => !e.endsWith("/") && ENV_FILE.test(e)).slice(0, MAX_ENV_FILES);
@@ -144,7 +135,7 @@ async function provision(repoRoot: string, path: string): Promise<string[]> {
         `${linked.join(", ")} ${linked.length === 1 ? "is a link" : "are links"} to the project folder's installed dependencies, so you can build and test right away. They are shared: don't reinstall or upgrade packages there unless the task needs it.`,
       );
   }
-  const dirty = await git(["-C", repoRoot, "status", "--porcelain", "--untracked-files=normal"]);
+  const dirty = await git(repoRoot, ["status", "--porcelain", "--untracked-files=normal"]);
   const n = dirty.code === 0 && dirty.stdout ? dirty.stdout.split("\n").length : 0;
   if (n)
     notes.push(
@@ -166,7 +157,7 @@ export async function usesWorktrees(projectPath: string): Promise<boolean> {
   if (Bun.which("git")) {
     try {
       const dir = realpathSync(projectPath);
-      yes = (await git(["-C", dir, "rev-parse", "--show-toplevel"])).code === 0 && (await git(["-C", dir, "rev-parse", "--verify", "-q", "HEAD"])).code === 0;
+      yes = (await git(dir, ["rev-parse", "--show-toplevel"])).code === 0 && (await git(dir, ["rev-parse", "--verify", "-q", "HEAD"])).code === 0;
     } catch {}
   }
   worktreeProjects.set(projectPath, { at: Date.now(), yes });
@@ -184,17 +175,13 @@ export function ensureTaskWorktree(task: WorktreeTask, projectPath: string): Pro
 
 // ------------------------------------------------------------ merge & clean up
 
-type TaskRef = { id: string; title: string; summary: string | null; worktree_path: string | null; worktree_branch: string | null };
+const MINUTE: GitOpts = { timeout: 60_000 };
 
-async function gitIn(dir: string, args: string[], timeout = 60_000) {
-  const proc = Bun.spawn(["git", "-C", dir, ...args], { env: cleanEnv(), stdout: "pipe", stderr: "pipe", timeout });
-  const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
-  return { code: await proc.exited, stdout: stdout.trim(), stderr: stderr.trim() };
-}
+type TaskRef = { id: string; title: string; summary: string | null; worktree_path: string | null; worktree_branch: string | null };
 
 /** Any folder of the worktree's repository to run `git worktree`/`git branch` from: the first entry of `git worktree list` (it may be bare). */
 async function mainCheckout(worktree: string): Promise<{ path: string; branch: string | null }> {
-  const list = await gitIn(worktree, ["worktree", "list", "--porcelain"]);
+  const list = await git(worktree, ["worktree", "list", "--porcelain"], MINUTE);
   if (list.code !== 0) throw conflict(`git: ${list.stderr}`);
   const first = list.stdout.split("\n\n")[0] ?? "";
   const path = first.match(/^worktree (.+)$/m)?.[1];
@@ -233,20 +220,20 @@ export async function projectCheckout(dir: string): Promise<Checkout | null> {
     )
     .get(dir, dir) as { path: string } | null;
   if (!row || !existsSync(row.path)) return null;
-  const top = await gitIn(row.path, ["rev-parse", "--show-toplevel"]);
+  const top = await git(row.path, ["rev-parse", "--show-toplevel"], MINUTE);
   if (top.code !== 0) return null;
   // The same repository, and not the task's worktree itself.
   const [mine, theirs, here] = await Promise.all([
-    gitIn(dir, ["rev-parse", "--path-format=absolute", "--git-common-dir"]),
-    gitIn(top.stdout, ["rev-parse", "--path-format=absolute", "--git-common-dir"]),
-    gitIn(dir, ["rev-parse", "--show-toplevel"]),
+    git(dir, ["rev-parse", "--path-format=absolute", "--git-common-dir"], MINUTE),
+    git(top.stdout, ["rev-parse", "--path-format=absolute", "--git-common-dir"], MINUTE),
+    git(dir, ["rev-parse", "--show-toplevel"], MINUTE),
   ]);
   if (mine.code !== 0 || theirs.code !== 0 || here.code !== 0 || real(mine.stdout) !== real(theirs.stdout) || real(here.stdout) === real(top.stdout)) return null;
   return checkoutAt(top.stdout);
 }
 
 async function checkoutAt(path: string): Promise<Checkout> {
-  const [ref, head] = await Promise.all([gitIn(path, ["symbolic-ref", "-q", "HEAD"]), gitIn(path, ["rev-parse", "--verify", "-q", "HEAD"])]);
+  const [ref, head] = await Promise.all([git(path, ["symbolic-ref", "-q", "HEAD"], MINUTE), git(path, ["rev-parse", "--verify", "-q", "HEAD"], MINUTE)]);
   return { path, branch: ref.code === 0 && ref.stdout.startsWith("refs/heads/") ? ref.stdout.slice("refs/heads/".length) : null, head: head.code === 0 ? head.stdout : null };
 }
 
@@ -258,7 +245,7 @@ async function checkoutAt(path: string): Promise<Checkout> {
 async function mergeTarget(wt: string): Promise<Checkout> {
   const own = await projectCheckout(wt);
   if (own) return own;
-  const list = await gitIn(wt, ["worktree", "list", "--porcelain"]);
+  const list = await git(wt, ["worktree", "list", "--porcelain"], MINUTE);
   if (list.code !== 0) throw conflict(`git: ${list.stderr}`);
   const first = list.stdout.split("\n\n")[0] ?? "";
   const path = first.match(/^worktree (.+)$/m)?.[1];
@@ -279,7 +266,7 @@ const CUT_OFF = "This task's worktree is cut off from its project: the project f
  * repairs the link from that side; it refuses a repository the worktree isn't from.
  */
 async function connected(wt: string): Promise<boolean> {
-  const probe = () => gitIn(wt, ["rev-parse", "--git-dir"]);
+  const probe = () => git(wt, ["rev-parse", "--git-dir"], MINUTE);
   const first = await probe();
   if (first.code === 0) return true;
   // Anything else (git timed out, a permissions complaint) says nothing about the link: carry
@@ -287,7 +274,7 @@ async function connected(wt: string): Promise<boolean> {
   if (!/not a git repository|gitfile does not point/i.test(first.stderr)) return true;
   for (const p of db.query("SELECT path FROM projects").all() as { path: string }[]) {
     if (!existsSync(p.path)) continue;
-    if ((await gitIn(p.path, ["worktree", "repair", wt])).code === 0 && (await probe()).code === 0) return true;
+    if ((await git(p.path, ["worktree", "repair", wt], MINUTE)).code === 0 && (await probe()).code === 0) return true;
   }
   return false;
 }
@@ -336,12 +323,12 @@ async function closeAll(sessions: OpenSession[], close: (sessionId: string) => P
  * exist and be connected to its repository.
  */
 async function unsavedWork(wt: string, branch: string): Promise<string | null> {
-  const status = await gitIn(wt, ["status", "--porcelain"]);
+  const status = await git(wt, ["status", "--porcelain"], MINUTE);
   if (status.code !== 0) throw conflict(`git: ${status.stderr}`);
   if (status.stdout) return "this task's worktree has uncommitted changes; merge or discard it first";
   const tips = ["HEAD"];
-  if ((await gitIn(wt, ["rev-parse", "--verify", "-q", `refs/heads/${branch}`])).code === 0) tips.push(`refs/heads/${branch}`);
-  const unmerged = await gitIn(wt, ["rev-list", "--count", ...tips, "--not", `--exclude=${branch}`, "--branches", "--remotes"]);
+  if ((await git(wt, ["rev-parse", "--verify", "-q", `refs/heads/${branch}`], MINUTE)).code === 0) tips.push(`refs/heads/${branch}`);
+  const unmerged = await git(wt, ["rev-list", "--count", ...tips, "--not", `--exclude=${branch}`, "--branches", "--remotes"], MINUTE);
   if (unmerged.code !== 0) throw conflict(`git: ${unmerged.stderr}`);
   if (unmerged.stdout !== "0") return "this task's branch has unmerged commits; merge or discard it first";
   return null;
@@ -420,9 +407,9 @@ export async function discardTaskWorktree(task: TaskRef) {
     return forget(task.id);
   }
   const { path: main } = await mainCheckout(task.worktree_path);
-  const rm = await gitIn(main, ["worktree", "remove", "--force", task.worktree_path]);
+  const rm = await git(main, ["worktree", "remove", "--force", task.worktree_path], MINUTE);
   if (rm.code !== 0) throw conflict(`couldn't remove the worktree: ${rm.stderr}`);
-  await gitIn(main, ["branch", "-D", task.worktree_branch]);
+  await git(main, ["branch", "-D", task.worktree_branch], MINUTE);
   forget(task.id);
 }
 
@@ -468,7 +455,7 @@ export async function mergeTaskWorktree(task: TaskRef, o: { close?: (sessionId: 
     throw conflict(`${CUT_OFF} There is nothing to merge into until the folder is back where it was, or added to ansai where it is now. The task's files are still in ${wt}.`);
   const main = await mergeTarget(wt);
   if (!main.branch) throw conflict(`the project folder (${main.path}) isn't on a branch (detached HEAD), so there's nothing to merge into`);
-  const dirty = await gitIn(main.path, ["status", "--porcelain", "--untracked-files=no"]);
+  const dirty = await git(main.path, ["status", "--porcelain", "--untracked-files=no"], MINUTE);
   if (dirty.stdout) {
     const n = dirty.stdout.split("\n").length;
     throw conflict(`the project folder has uncommitted changes in ${n} file${n === 1 ? "" : "s"}; commit or stash them first, then merge`);
@@ -478,41 +465,41 @@ export async function mergeTaskWorktree(task: TaskRef, o: { close?: (sessionId: 
   // agent left the worktree on anything else (a detached HEAD, a branch of its own),
   // its newest commits and the WIP commit below would be on that instead: left out of
   // the merge and then deleted.
-  const head = await gitIn(wt, ["symbolic-ref", "-q", "HEAD"]);
+  const head = await git(wt, ["symbolic-ref", "-q", "HEAD"], MINUTE);
   if (head.code !== 0 || head.stdout !== `refs/heads/${branch}`) {
     if (head.code > 1) throw conflict(`git: ${head.stderr}`);
-    const at = (await gitIn(wt, ["rev-parse", "--short", "HEAD"])).stdout;
+    const at = (await git(wt, ["rev-parse", "--short", "HEAD"], MINUTE)).stdout;
     const where = head.code === 0 ? `is on branch ${head.stdout.replace(/^refs\/heads\//, "")}, not ${branch},` : `isn't on a branch (detached HEAD${at ? ` at ${at}` : ""}),`;
     throw conflict(`the task's worktree ${where} so merging would leave its latest work behind. Ask the agent to put its work on ${branch} and switch back to that branch, then merge again.`);
   }
   // Same for a repository nested in the worktree that the agent already committed as a pointer.
-  const base = await gitIn(wt, ["merge-base", `refs/heads/${main.branch}`, `refs/heads/${branch}`]);
-  const committed = await gitIn(wt, ["diff-tree", "-r", "--raw", "-z", "--no-renames", base.code === 0 ? base.stdout : `refs/heads/${main.branch}`, `refs/heads/${branch}`]);
+  const base = await git(wt, ["merge-base", `refs/heads/${main.branch}`, `refs/heads/${branch}`], MINUTE);
+  const committed = await git(wt, ["diff-tree", "-r", "--raw", "-z", "--no-renames", base.code === 0 ? base.stdout : `refs/heads/${main.branch}`, `refs/heads/${branch}`], MINUTE);
   if (committed.code !== 0) throw conflict(`git: ${committed.stderr}`);
   const pointers = newGitlinks(committed.stdout);
   if (pointers.length) throw nestedRepository(pointers);
 
   // 1. Whatever the agent didn't commit becomes one commit on its branch.
-  const pending = await gitIn(wt, ["status", "--porcelain"]);
+  const pending = await git(wt, ["status", "--porcelain"], MINUTE);
   let wip = false;
   if (pending.stdout) {
-    const add = await gitIn(wt, ["add", "-A"]);
+    const add = await git(wt, ["add", "-A"], MINUTE);
     if (add.code !== 0) {
       // Nothing was staged (git add is all or nothing). The usual cause is a nested
       // repository with no commits yet (`git init`), which Git lists as a folder.
-      const others = await gitIn(wt, ["ls-files", "--others", "--exclude-standard", "-z"]);
+      const others = await git(wt, ["ls-files", "--others", "--exclude-standard", "-z"], MINUTE);
       const repos = others.stdout.split("\0").filter((p) => p.endsWith("/")).map((p) => p.slice(0, -1));
       throw repos.length ? nestedRepository(repos) : conflict(`couldn't stage the task's work: ${add.stderr || add.stdout}`);
     }
-    const index = await gitIn(wt, ["diff-index", "--cached", "--raw", "-z", "--no-renames", "HEAD"]);
+    const index = await git(wt, ["diff-index", "--cached", "--raw", "-z", "--no-renames", "HEAD"], MINUTE);
     const repos = newGitlinks(index.stdout);
     if (index.code !== 0 || repos.length) {
-      await gitIn(wt, ["reset", "-q"]);
+      await git(wt, ["reset", "-q"], MINUTE);
       throw repos.length ? nestedRepository(repos) : conflict(`git: ${index.stderr}`);
     }
-    const c = await gitIn(wt, ["commit", "-q", "-m", `WIP: ${task.title}`, "-m", "Uncommitted work, committed by ansai before merging."]);
+    const c = await git(wt, ["commit", "-q", "-m", `WIP: ${task.title}`, "-m", "Uncommitted work, committed by ansai before merging."], MINUTE);
     if (c.code !== 0) {
-      await gitIn(wt, ["reset", "-q"]);
+      await git(wt, ["reset", "-q"], MINUTE);
       throw conflict(`couldn't commit the task's work: ${c.stderr || c.stdout}`);
     }
     wip = true;
@@ -525,7 +512,7 @@ export async function mergeTaskWorktree(task: TaskRef, o: { close?: (sessionId: 
   try {
     ({ sha, staged } = await squash(main.path, main.branch, branch, task, open.length > 0));
   } catch (e) {
-    if (wip) await gitIn(wt, ["reset", "-q", "HEAD~1"]);
+    if (wip) await git(wt, ["reset", "-q", "HEAD~1"], MINUTE);
     throw e;
   }
 
@@ -562,12 +549,12 @@ function nestedRepository(paths: string[]) {
 
 /** `agentOpen`: a session is still open on the task, so a conflict can be handed back to it. */
 async function squash(mainPath: string, mainBranch: string, branch: string, task: TaskRef, agentOpen: boolean): Promise<{ sha: string; staged: string[] }> {
-  const ahead = await gitIn(mainPath, ["rev-list", "--count", `${mainBranch}..${branch}`]);
+  const ahead = await git(mainPath, ["rev-list", "--count", `${mainBranch}..${branch}`], MINUTE);
   if (ahead.code === 0 && ahead.stdout === "0") throw conflict(`nothing to merge: ${branch} has no commits that ${mainBranch} doesn't have`);
-  const sq = await gitIn(mainPath, ["merge", "--squash", branch]);
+  const sq = await git(mainPath, ["merge", "--squash", branch], MINUTE);
   if (sq.code !== 0) {
-    const conflicted = (await gitIn(mainPath, ["diff", "--name-only", "--diff-filter=U"])).stdout.split("\n").filter(Boolean);
-    await gitIn(mainPath, ["reset", "--merge"]);
+    const conflicted = (await git(mainPath, ["diff", "--name-only", "--diff-filter=U"], MINUTE)).stdout.split("\n").filter(Boolean);
+    await git(mainPath, ["reset", "--merge"], MINUTE);
     const fix = agentOpen
       ? `Ask the agent to rebase ${branch} on ${mainBranch}, then merge again.`
       : `No agent is open on this task: pick its last session back up (or run the task again), ask it to rebase ${branch} on ${mainBranch}, then merge again.`;
@@ -577,13 +564,13 @@ async function squash(mainPath: string, mainBranch: string, branch: string, task
         : `git merge failed: ${sq.stderr || sq.stdout}`,
     );
   }
-  const staged = (await gitIn(mainPath, ["diff", "--cached", "--name-only"])).stdout.split("\n").filter(Boolean);
+  const staged = (await git(mainPath, ["diff", "--cached", "--name-only"], MINUTE)).stdout.split("\n").filter(Boolean);
   if (!staged.length) throw conflict(`nothing to merge: ${mainBranch} already has these changes`);
   const msg = [task.title, task.summary?.trim() ?? "", `ansai task ${task.id} (branch ${branch})`].filter(Boolean);
-  const commit = await gitIn(mainPath, ["commit", "-q", ...msg.flatMap((m) => ["-m", m])]);
+  const commit = await git(mainPath, ["commit", "-q", ...msg.flatMap((m) => ["-m", m])], MINUTE);
   if (commit.code !== 0) {
-    await gitIn(mainPath, ["reset", "--merge"]);
+    await git(mainPath, ["reset", "--merge"], MINUTE);
     throw conflict(`couldn't commit the merge: ${commit.stderr || commit.stdout}`);
   }
-  return { sha: (await gitIn(mainPath, ["rev-parse", "HEAD"])).stdout, staged };
+  return { sha: (await git(mainPath, ["rev-parse", "HEAD"], MINUTE)).stdout, staged };
 }

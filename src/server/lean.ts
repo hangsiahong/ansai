@@ -1,6 +1,6 @@
-import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getSetting, setSetting } from "./db";
+import { readJsonFile } from "./files";
 
 /**
  * Lean startup, per project and on unless you turn it off: a Claude agent ansai
@@ -21,14 +21,6 @@ export function setLean(projectId: string, on: boolean) {
   setSetting(`lean:${projectId}`, on);
 }
 
-function readJson(path: string): any {
-  try {
-    return JSON.parse(readFileSync(path, "utf8"));
-  } catch {
-    return null;
-  }
-}
-
 /**
  * Installed plugins that describe themselves as a chat channel (the "channel"
  * keyword every official one carries: telegram, discord, imessage, fakechat), as
@@ -37,12 +29,12 @@ function readJson(path: string): any {
  */
 export function channelPlugins(configDir: string): string[] {
   const out = new Set<string>();
-  const installed = readJson(join(configDir, "plugins", "installed_plugins.json"))?.plugins;
+  const installed = readJsonFile(join(configDir, "plugins", "installed_plugins.json"))?.plugins;
   if (!installed || typeof installed !== "object") return [];
   for (const [id, entries] of Object.entries(installed)) {
     for (const e of Array.isArray(entries) ? entries : []) {
       if (typeof e?.installPath !== "string") continue;
-      const keywords = readJson(join(e.installPath, ".claude-plugin", "plugin.json"))?.keywords;
+      const keywords = readJsonFile(join(e.installPath, ".claude-plugin", "plugin.json"))?.keywords;
       if (Array.isArray(keywords) && keywords.includes("channel")) out.add(id);
     }
   }

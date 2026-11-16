@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { config } from "./config";
 import { db, getSetting, now, setSetting } from "./db";
@@ -9,6 +9,7 @@ import { badRequest, conflict, notFound } from "./errors";
 import { heldUntil } from "./holds";
 import { fetchClaudeLimits, loginRejected, prune, scanClaude, scanCodex, storedLimits, tokenSummary, type TokenSummary } from "./usage";
 import { agyModels, agySignedIn, agySignInHint } from "./agyauth";
+import { readJsonFile } from "./files";
 
 export type AgentTool = "claude" | "codex" | "agy";
 export const AGENT_TOOLS: AgentTool[] = ["claude", "codex", "agy"];
@@ -92,10 +93,10 @@ function carryClaudeTrust(dir: string, cwd: string) {
   if (folder === H) return; // Claude only trusts the home folder for one session at a time
   const path = join(dir, ".claude.json");
   if (!existsSync(path)) return; // not signed in yet; the login flow comes first
-  const prof = readJson(path);
+  const prof = readJsonFile(path);
   if (!prof || typeof prof !== "object") return; // unreadable (mid-write?): leave it alone
   if (prof.projects?.[folder]?.hasTrustDialogAccepted === true) return;
-  if (!claudeTrusts(readJson(join(H, ".claude.json")), folder)) return;
+  if (!claudeTrusts(readJsonFile(join(H, ".claude.json")), folder)) return;
   prof.projects = { ...prof.projects, [folder]: { ...CLAUDE_PROJECT_DEFAULTS, ...prof.projects?.[folder], hasTrustDialogAccepted: true } };
   const tmp = `${path}.ansai-${process.pid}`;
   try {
@@ -218,14 +219,6 @@ type Info = {
   login_problem?: LoginProblem | null;
 };
 
-function readJson(path: string): any {
-  try {
-    return JSON.parse(readFileSync(path, "utf8"));
-  } catch {
-    return null;
-  }
-}
-
 function jwtClaims(token: unknown): any {
   if (typeof token !== "string") return null;
   try {
@@ -248,8 +241,8 @@ function limit(id: string, label: string, pct: unknown, resetsAt: number | null)
 
 function claudeInfo(a: AccountRow): Info {
   const dir = a.dir ?? join(H, ".claude");
-  const state = readJson(a.dir ? join(a.dir, ".claude.json") : join(H, ".claude.json")) ?? {};
-  const creds = readJson(join(dir, ".credentials.json"))?.claudeAiOauth ?? null;
+  const state = readJsonFile(a.dir ? join(a.dir, ".claude.json") : join(H, ".claude.json")) ?? {};
+  const creds = readJsonFile(join(dir, ".credentials.json"))?.claudeAiOauth ?? null;
   const oa = state.oauthAccount ?? {};
   const tier = String(creds?.rateLimitTier ?? oa.organizationRateLimitTier ?? "").match(/(\d+x)$/)?.[1];
   const base = oa.planDisplayName ?? (creds?.subscriptionType ? cap(String(creds.subscriptionType)) : null);
@@ -314,7 +307,7 @@ function claudeInfo(a: AccountRow): Info {
 
 function codexInfo(a: AccountRow): Info {
   const home = a.dir ?? join(H, ".codex");
-  const auth = readJson(join(home, "auth.json"));
+  const auth = readJsonFile(join(home, "auth.json"));
   const claims = jwtClaims(auth?.tokens?.id_token);
   const oa = claims?.["https://api.openai.com/auth"] ?? {};
   const plan = auth?.auth_mode === "chatgpt" || oa.chatgpt_plan_type ? (oa.chatgpt_plan_type ? cap(String(oa.chatgpt_plan_type)) : "ChatGPT") : auth?.OPENAI_API_KEY ? "API key" : null;

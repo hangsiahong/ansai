@@ -1,5 +1,6 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { gitSync } from "./git";
 
 /**
  * The web app, built ahead of time.
@@ -93,27 +94,15 @@ export function webRoutes(dist: WebDist) {
 
 // ----------------------------------------------------------------------- finding the build
 
-/** Output of a git command run in `dir`, or null when it fails (no git, not a repository, …). */
-function git(dir: string, args: string[], bin = "git"): string | null {
-  try {
-    const env = { ...process.env, GIT_OPTIONAL_LOCKS: "0" } as Record<string, string | undefined>;
-    for (const k of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"]) delete env[k]; // a caller's repository, not this one
-    const r = Bun.spawnSync([bin, "-C", dir, ...args], { stdout: "pipe", stderr: "ignore", stdin: "ignore", env });
-    return r.exitCode === 0 ? r.stdout.toString().trim() : null;
-  } catch {
-    return null;
-  }
-}
-
 /** The full commit a checkout (or git worktree, or release folder) is on; null if it can't be told. */
 export function commitOf(dir: string, bin = "git"): string | null {
-  const sha = git(dir, ["rev-parse", "HEAD"], bin);
+  const sha = gitSync(dir, ["rev-parse", "HEAD"], { bin, readOnly: true });
   return sha && /^[0-9a-f]{40,64}$/.test(sha) ? sha : null;
 }
 
 /** Whether tracked files differ from the commit: then a build of that commit isn't what this folder holds. */
 export function hasChanges(dir: string, bin = "git"): boolean {
-  const out = git(dir, ["status", "--porcelain", "--untracked-files=no"], bin);
+  const out = gitSync(dir, ["status", "--porcelain", "--untracked-files=no"], { bin, readOnly: true });
   return out === null || out !== "";
 }
 

@@ -1,5 +1,6 @@
 import { db, getSetting, now, setSetting } from "./db";
 import { shiftView, type ShiftView } from "./shifts";
+import { git } from "./git";
 
 /**
  * "While you were away": what the agents got done since you last looked.
@@ -46,19 +47,6 @@ export function markSeen(at = now()) {
   setSetting(SEEN_KEY, at);
 }
 
-async function git(cwd: string, args: string[]): Promise<string> {
-  const p = Bun.spawn(["git", "-C", cwd, ...args], {
-    stdout: "pipe",
-    stderr: "ignore",
-    stdin: "ignore",
-    env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
-  });
-  const timer = setTimeout(() => p.kill(), 4000);
-  const out = await new Response(p.stdout).text();
-  clearTimeout(timer);
-  return (await p.exited) === 0 ? out : "";
-}
-
 const parseLog = (out: string): DigestCommit[] =>
   out
     .split("\n")
@@ -71,13 +59,15 @@ const parseLog = (out: string): DigestCommit[] =>
 /** Commits on the checked-out branch since `since`, plus ones on task branches that haven't landed there. */
 async function projectCommits(path: string, since: number) {
   const after = `--since=@${Math.floor(since / 1000)}`;
-  const [branch, onHead, elsewhere] = await Promise.all([
-    git(path, ["rev-parse", "--abbrev-ref", "HEAD"]),
-    git(path, ["log", "HEAD", after, "--no-merges", "--format=%h%x09%ct%x09%s", "-n", "500"]),
-    git(path, ["log", "--branches", "--not", "HEAD", after, "--no-merges", "--format=%h", "-n", "500"]),
-  ]);
+  const opts = { readOnly: true, timeout: 4000 };
+  const [b, onHead, elsewhere] = (
+    await Promise.all([
+      git(path, ["rev-parse", "--abbrev-ref", "HEAD"], opts),
+      git(path, ["log", "HEAD", after, "--no-merges", "--format=%h%x09%ct%x09%s", "-n", "500"], opts),
+      git(path, ["log", "--branches", "--not", "HEAD", after, "--no-merges", "--format=%h", "-n", "500"], opts),
+    ])
+  ).map((r) => (r.code === 0 ? r.stdout : ""));
   const commits = parseLog(onHead);
-  const b = branch.trim();
   return {
     branch: b && b !== "HEAD" ? b : null,
     count: commits.length,

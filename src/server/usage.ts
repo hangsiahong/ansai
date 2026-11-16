@@ -1,6 +1,7 @@
 import { existsSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { db, now } from "./db";
+import { eachLine } from "./files";
 
 /**
  * Token usage comes from each CLI's own local logs (Claude Code transcripts,
@@ -26,36 +27,6 @@ const upsertLimits = db.query(
 );
 
 const SLICE = 4 * 1024 * 1024;
-
-/**
- * Read complete lines from `offset` in fixed slices, yielding to the event loop
- * between slices so terminals stay responsive while gigabytes of logs are scanned.
- * Returns the offset just past the last complete line.
- */
-async function readNewLines(path: string, offset: number, marker: string, onLine: (line: string, at: number) => void): Promise<number> {
-  const file = Bun.file(path);
-  const size = file.size;
-  let pos = offset; // file offset of buf[0]
-  let buf: Buffer = Buffer.alloc(0);
-  let read = offset;
-  while (read < size) {
-    const chunk = Buffer.from(await file.slice(read, Math.min(read + SLICE, size)).arrayBuffer());
-    read += chunk.length;
-    buf = buf.length ? Buffer.concat([buf, chunk]) : chunk;
-    let start = 0;
-    for (;;) {
-      const nl = buf.indexOf(10, start);
-      if (nl === -1) break;
-      const line = buf.subarray(start, nl);
-      if (line.indexOf(marker) !== -1) onLine(line.toString("utf8"), pos + start);
-      start = nl + 1;
-    }
-    buf = buf.subarray(start);
-    pos += start;
-    await Bun.sleep(1); // let sockets breathe
-  }
-  return pos;
-}
 
 async function scanTree(
   accountId: string,
@@ -83,7 +54,15 @@ async function scanTree(
     if (st.size === offset) continue;
     if (st.size < offset) offset = 0; // rewritten; event keys dedupe re-reads
     const lines: [string, string][] = [];
-    const end = await readNewLines(path, offset, marker, (line, at) => lines.push([line, `${relative(root, path)}:${at}`]));
+    const end =
+      (await eachLine(
+        path,
+        offset,
+        (line, at) => {
+          if (line.indexOf(marker) !== -1) lines.push([line.toString("utf8"), `${relative(root, path)}:${at}`]);
+        },
+        { slice: SLICE },
+      )) ?? offset;
     db.transaction(() => {
       for (const [line, key] of lines) {
         try {

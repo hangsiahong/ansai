@@ -1,6 +1,7 @@
 import { db, getSetting, now, setSetting } from "./db";
 import { badRequest, conflict, notFound } from "./errors";
 import { emit } from "./events";
+import { git } from "./git";
 import { notify } from "./push";
 import { getSession, readyToType, sendText, sessionView, type SessionRow } from "./sessions";
 import { shouldType, takeForTyping } from "./team";
@@ -185,14 +186,11 @@ export function endShift(sessionId: string, reason: EndReason, summary?: string 
 async function buildReport(s: SessionRow, from: number, to: number): Promise<ShiftReport> {
   const LIMIT = 12;
   try {
-    const p = Bun.spawn(
-      ["git", "-C", s.cwd, "log", `--since=@${Math.floor(from / 1000)}`, `--until=@${Math.ceil(to / 1000)}`, "--format=%h%x09%s", "-n", "200"],
-      { stdout: "pipe", stderr: "ignore", stdin: "ignore", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } },
-    );
-    const timer = setTimeout(() => p.kill(), 5000);
-    const out = await new Response(p.stdout).text();
-    clearTimeout(timer);
-    const lines = out.split("\n").filter(Boolean);
+    const { stdout } = await git(s.cwd, ["log", `--since=@${Math.floor(from / 1000)}`, `--until=@${Math.ceil(to / 1000)}`, "--format=%h%x09%s", "-n", "200"], {
+      readOnly: true,
+      timeout: 5000,
+    });
+    const lines = stdout.split("\n").filter(Boolean);
     const commits = lines.slice(0, LIMIT).map((l) => {
       const [sha, ...rest] = l.split("\t");
       return { sha: sha!, subject: rest.join("\t") };

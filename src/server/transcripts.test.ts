@@ -3,7 +3,8 @@ import { appendFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const { db } = await import("./db");
-const { eachLine, pollRunningTails, subscribeChat, tailOf, touchedFiles, unsubscribeChat } = await import("./transcripts");
+const { pollRunningTails, subscribeChat, tailOf, touchedFiles, unsubscribeChat } = await import("./transcripts");
+const { eachLine } = await import("./files");
 
 type Item = { id: string; k: string; text?: string; name?: string; title?: string; result?: string; error?: boolean; done?: boolean };
 const sessions: string[] = [];
@@ -223,7 +224,7 @@ describe("reading a log a slice at a time", () => {
   };
   const read = async (path: string, start: number, skipFirst: boolean, slice: number, size = statSync(path).size) => {
     const got: [string, number][] = [];
-    const end = await eachLine(path, start, size, skipFirst, (line, at) => got.push([line, at]), slice);
+    const end = await eachLine(path, start, (line, at) => got.push([line.toString("utf8"), at]), { end: size, skipFirst, slice });
     return { got, end };
   };
 
@@ -295,7 +296,7 @@ describe("reading a log a slice at a time", () => {
     const path = file("long", Array.from({ length: count }, (_, n) => line(n)).join("\n") + "\n");
     let next = 0;
     let wrong = 0;
-    const end = await eachLine(path, 0, statSync(path).size, false, (l) => void (JSON.parse(l).n === next++ || wrong++), 64 * 1024);
+    const end = await eachLine(path, 0, (l) => void (JSON.parse(l.toString("utf8")).n === next++ || wrong++), { slice: 64 * 1024 });
     expect(next).toBe(count);
     expect(wrong).toBe(0);
     expect(end).toBe(statSync(path).size);
