@@ -767,6 +767,16 @@ function BacklogSettings() {
         </span>
         <input type="checkbox" class="switch" checked={st.closeFinished} onChange={(e) => save({ closeFinished: (e.target as HTMLInputElement).checked })} />
       </label>
+      <label class="switch-row">
+        <span class="tile red">
+          <Icon name="alert" size={16} />
+        </span>
+        <span class="switch-text">
+          <b>ansai checks itself</b>
+          <em>Every 10 minutes, look for signs ansai misbehaved and add a task for each to its own backlog. At most 3 a day.</em>
+        </span>
+        <input type="checkbox" class="switch" checked={st.doctor} onChange={(e) => save({ doctor: (e.target as HTMLInputElement).checked })} />
+      </label>
     </div>
   );
 }

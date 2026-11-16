@@ -60,6 +60,7 @@ import { changesIn, taskDir } from "./changes";
 import { discardTaskWorktreeClosingAgents, mergeTaskWorktree } from "./worktrees";
 import { db } from "./db";
 import { startBackupLoop } from "./backup";
+import { doctorView, startDoctor } from "./doctor";
 import { PAGE_PATHS, findWebDist, webRoutes } from "./webdist";
 import { WEEKDAYS, deleteSchedule, listSchedules, runScheduleNow, saveSchedule, setScheduleEnabled } from "./schedules";
 import {
@@ -183,6 +184,8 @@ function snapshot(t: Topic): string {
 
 // ------------------------------------------------------------------- server
 
+// First, so the doctor sees every error logged from here on.
+startDoctor();
 writeTmuxConf();
 writeHookFiles();
 ensureDefaultAccounts();
@@ -417,10 +420,12 @@ const server = Bun.serve<WSData>({
     "/api/settings": {
       GET: guard(() => json(getSettings())),
       PUT: guard(async (req) => {
-        const b = await parseBody(req, v.object({ autopilotMax: v.optional(v.number({ int: true, min: 1, max: 6 })), trackSessions: optBool, closeFinished: optBool }));
+        const b = await parseBody(req, v.object({ autopilotMax: v.optional(v.number({ int: true, min: 1, max: 6 })), trackSessions: optBool, closeFinished: optBool, doctor: optBool }));
         return json(updateSettings(b));
       }),
     },
+    // `?now=1` also runs the checks now, without filing anything.
+    "/api/doctor": { GET: guard(async (req) => json(await doctorView(new URL(req.url).searchParams.get("now") === "1"))) },
     "/api/projects/:id/shift": {
       PUT: guard(async (req) => {
         if (!getProject(req.params.id!)) throw notFound("no such project");
