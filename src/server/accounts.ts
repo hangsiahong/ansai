@@ -6,6 +6,7 @@ import { emit } from "./events";
 import { notify } from "./push";
 import { renewClaudeLogin } from "./renew";
 import { badRequest, conflict, notFound } from "./errors";
+import { heldUntil } from "./holds";
 import { fetchClaudeLimits, loginRejected, prune, scanClaude, scanCodex, storedLimits, tokenSummary, type TokenSummary } from "./usage";
 import { agyModels, agySignedIn, agySignInHint } from "./agyauth";
 
@@ -379,6 +380,8 @@ export type AccountView = AccountRow & {
   login_problem: LoginProblem | null;
   running: number;
   usage: { limits: Limit[]; limits_at: number | null; tokens: TokenSummary; note: string | null };
+  /** At its usage limit: autopilot starts nothing new on it until then (holds.ts). */
+  held_until?: number | null;
 };
 
 let cache: { at: number; list: AccountView[] } | null = null;
@@ -387,7 +390,12 @@ const invalidate = () => {
   emit("accounts");
 };
 
+/** Accounts with what is known about them. The limit hold is read fresh: it changes the moment a run stops. */
 export function listAccounts(): AccountView[] {
+  return cachedAccounts().map((a) => ({ ...a, held_until: heldUntil(a.id) }));
+}
+
+function cachedAccounts(): AccountView[] {
   if (cache && now() - cache.at < 10_000) return cache.list;
   const rows = db.query("SELECT * FROM accounts ORDER BY tool, dir IS NOT NULL, created_at").all() as AccountRow[];
   const running = db

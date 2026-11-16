@@ -8,6 +8,7 @@ import { notify } from "./push";
 import { isWatched } from "./viewers";
 import { dropClaims, editWarning, getPlaybook, takePending, wakes } from "./team";
 import { compacted, compactionRunning, contextNudge, dropCompaction, startCompaction } from "./compaction";
+import { dropHold, holdNote, holdRun, promptedWhileHeld } from "./holds";
 import { clearStartup, getSession, sessionView, type AgySaw } from "./sessions";
 import { claudeStop, codexTurnEnded, endShift, shiftView, shiftWorked } from "./shifts";
 
@@ -229,16 +230,25 @@ const PASSING_FAILURES = new Set(["overloaded", "server_error", "max_output_toke
 function turnFailed(s: Row, payload: any) {
   const error = typeof payload?.error === "string" ? payload.error : "unknown";
   const why = STOP_FAILURES[error] ?? `the API returned an error (${clip(error.replace(/_/g, " "), 60)})`;
+  const onShift = !!shiftView(s.id)?.active;
   // A shift would type the next prompt straight into the same error, twice, and then report "ran out of work".
-  if (!PASSING_FAILURES.has(error) && shiftView(s.id)?.active) endShift(s.id, "error");
-  setState(s, "waiting", `Stopped: ${why}`);
+  if (!PASSING_FAILURES.has(error) && onShift) endShift(s.id, "error");
+  const reviewer = isTaskReviewer(s.id);
+  // A usage limit or a server error is something ansai can wait out for an autopilot run
+  // (holds.ts): it then says when it carries on, instead of asking for you.
+  const auto = !!(db.query("SELECT auto FROM sessions WHERE id = ?").get(s.id) as { auto: number } | null)?.auto;
+  const hold = holdRun(s.id, error, auto && !!s.task_id && !reviewer && !onShift);
+  setState(s, "waiting", hold ? `Stopped: ${why}. ${holdNote(hold)}` : `Stopped: ${why}`);
   if (shiftView(s.id)?.active) return; // a passing error: the shift's next prompt is the retry
-  if (isTaskReviewer(s.id)) return;
+  if (reviewer) return;
   if (s.task_id) {
     const r = db.query("UPDATE tasks SET status = 'review', last_failure = ?, updated_at = ? WHERE id = ? AND status = 'doing'").run(why, now(), s.task_id);
     if (r.changes) emit("tasks");
   }
-  push(s, "input", `Stopped before finishing: ${why}.`);
+  if (!hold) push(s, "input", `Stopped before finishing: ${why}.`);
+  // Told once: a limit ansai keeps trying against would otherwise buzz every 15 minutes.
+  else if (!hold.tries && !isWatched(s.id))
+    notify("input", { title: `Waiting · ${s.title}`, body: `It stopped: ${why}. ${holdNote(hold)}; nothing is needed from you.`, url: `/s/${s.id}`, tag: `s-${s.id}` }).catch(() => {});
 }
 
 /**
@@ -284,6 +294,7 @@ export function handleHook(tool: string, event: string, sessionId: string, paylo
       case "UserPromptSubmit": {
         // /compact isn't a prompt: PreCompact covers it, and queued team messages must not ride along into it.
         if (typeof payload?.prompt === "string" && /^\/compact\b/.test(payload.prompt.trim())) return;
+        promptedWhileHeld(s.id); // you took over a run that was waiting for its limit: ansai won't type into it later
         if (!isTaskReviewer(s.id)) moveTask(s.task_id, "review", "doing");
         setState(s, "working");
         const msgs = reads ? takePending(s.id) : null;
@@ -346,6 +357,7 @@ export function handleHook(tool: string, event: string, sessionId: string, paylo
           setState(s, "waiting");
           return;
         }
+        dropHold(s.id); // a turn that ended normally: whatever stopped it before is over
         turnEnded(s, s.agent_state);
         return;
       }
@@ -461,6 +473,7 @@ export function onExited(id: string, code: number | null, how: ExitHow = "exited
   if (!s) return;
   dropClaims(id);
   dropCompaction(id);
+  dropHold(id, true);
 
   // If the process disappeared before finish_task (or a turn-complete hook),
   // release the task from Doing so it cannot look active forever or block the

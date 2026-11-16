@@ -2,7 +2,8 @@ import { db, getSetting, setSetting } from "./db";
 import { emit } from "./events";
 import { notFound } from "./errors";
 import { getProject } from "./projects";
-import { AGENT_TOOLS, checkAgySignIn } from "./accounts";
+import { AGENT_TOOLS, checkAgySignIn, resolveAccount, type AccountRow } from "./accounts";
+import { heldUntil, isHeld, resumeHeld, when } from "./holds";
 import { agySignInHint } from "./agyauth";
 import { notify } from "./push";
 import { getTask, projectAutopilot, runTask as startTask, type Autopilot, type Task } from "./tasks";
@@ -88,6 +89,15 @@ function openRun(t: Task): { fresh: boolean } | null {
   return s ? { fresh: s.created_at >= t.updated_at } : null;
 }
 
+/** The account a task would run on (null: none, or one that is gone; starting the task says so). */
+function usedAccount(tool: string, accountId: string | null | undefined): AccountRow | null {
+  try {
+    return resolveAccount(tool, accountId);
+  } catch {
+    return null;
+  }
+}
+
 /** Queued tasks waiting for you to close the agent an earlier run left open; you hear about each once. */
 const heldForOpenAgent = new Set<string>();
 function holdForOpenAgent(t: Task) {
@@ -102,22 +112,40 @@ function holdForOpenAgent(t: Task) {
   }).catch(() => {});
 }
 
+/** Accounts at their usage limit whose queued tasks are waiting; you hear about each wait once. */
+const heldForLimit = new Map<string, number>();
+function holdForLimit(t: Task, a: AccountRow, until: number) {
+  if (heldForLimit.get(a.id) === until) return;
+  heldForLimit.set(a.id, until);
+  console.warn(`[ansai] autopilot is holding "${t.title}": ${a.id} is at its usage limit until ${new Date(until).toISOString()}`);
+  notify("input", {
+    title: `Autopilot is waiting · ${a.name}`,
+    body: `This ${a.tool} account is at its usage limit, so queued tasks that use it stay queued and start again ${when(until)}. Tasks on other accounts keep going. To use it sooner, message the agent that stopped.`,
+    url: t.project_id ? `/p/${t.project_id}` : "/",
+    tag: `limit-${a.id}`,
+  }).catch(() => {});
+}
+
 export async function autopilotTick() {
   if (ticking) return;
   ticking = true;
   try {
     const { autopilotMax } = getSettings();
+    // First the runs whose wait is over (a usage limit that reset, a server error): they take their slots back.
+    await resumeHeld();
     // Count active autopilot sessions, including agents that stopped to ask you
     // something (in review, but they haven't called finish_task yet). Not agy: it has
     // no finish_task to call, so a turn that ended is all it will ever say.
     const active = db
       .query(
-        `SELECT s.project_id, s.auto, t.worktree_path FROM sessions s JOIN tasks t ON t.id = s.task_id
+        `SELECT s.id, s.project_id, s.auto, t.worktree_path FROM sessions s JOIN tasks t ON t.id = s.task_id
          WHERE s.status = 'running' AND s.tool != 'shell'
            AND (t.status = 'doing' OR (t.status = 'review' AND t.summary IS NULL AND s.auto = 1 AND s.tool != 'agy'))`,
       )
-      .all() as { project_id: string | null; auto: number; worktree_path: string | null }[];
-    let running = active.filter((a) => a.auto).length;
+      .all() as { id: string; project_id: string | null; auto: number; worktree_path: string | null }[];
+    // A run waiting for its account's usage limit to reset gives its slot to tasks on other
+    // accounts (it still keeps a folder it shares with other tasks, below).
+    let running = active.filter((a) => a.auto && !isHeld(a.id)).length;
     // Non-Git projects keep using the shared project directory, so serialize
     // those tasks as before. In a Git project a queued task gets its own worktree,
     // so a session in the project folder (e.g. one you're chatting with) doesn't hold it up.
@@ -155,6 +183,14 @@ export async function autopilotTick() {
         continue;
       }
       heldForSignIn.delete(t.id);
+      // At its usage limit, every task started on this account would stop at once: they wait for the reset.
+      const account = usedAccount(tool, accountId);
+      const until = account ? heldUntil(account.id) : null;
+      if (account && until) {
+        holdForLimit(t, account, until);
+        continue;
+      }
+      if (account) heldForLimit.delete(account.id);
       // Marking the task Doing here used to happen for ANY open agent: a Review task sent back
       // to the queue while its old agent was still open went to Doing with nobody working on it,
       // and held an autopilot slot for good.

@@ -141,6 +141,8 @@ export type Account = {
   login_expires_at?: number | null;
   login_problem?: "expired" | "rejected" | null;
   running: number;
+  /** At its usage limit: autopilot starts nothing new on this account until then. */
+  held_until?: number | null;
   usage: null | {
     limits: UsageLimit[];
     limits_at: number | null;

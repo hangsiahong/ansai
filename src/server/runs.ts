@@ -1,4 +1,4 @@
-import { db } from "./db";
+import { db, getSetting, setSetting } from "./db";
 
 /**
  * Bounds for unattended work: how long an autopilot run may take (a project
@@ -21,13 +21,23 @@ export function runLimitMinutes(projectId: string | null): number | null {
   }
 }
 
+/**
+ * Time a run spent waiting for its account's usage limit to reset (holds.ts). It doesn't
+ * count toward the time limit: a run held for three hours would otherwise be stopped the
+ * moment it carried on.
+ */
+const PAUSED = "run-paused:";
+export const pausedMs = (sessionId: string) => getSetting<number>(PAUSED + sessionId, 0);
+export const addPaused = (sessionId: string, ms: number) => setSetting(PAUSED + sessionId, pausedMs(sessionId) + Math.max(0, ms));
+export const dropPaused = (sessionId: string) => void db.query("DELETE FROM settings WHERE key = ?").run(PAUSED + sessionId);
+
 /** When a running autopilot run must stop by: only while its task is in Doing and its project has a limit. */
-export function runDeadline(s: { auto: number; status: string; project_id: string | null; task_id: string | null; created_at: number }): number | null {
+export function runDeadline(s: { id?: string; auto: number; status: string; project_id: string | null; task_id: string | null; created_at: number }): number | null {
   if (!s.auto || s.status !== "running" || !s.task_id) return null;
   const m = runLimitMinutes(s.project_id);
   if (!m) return null;
   const t = db.query("SELECT status FROM tasks WHERE id = ?").get(s.task_id) as { status: string } | null;
-  return t?.status === "doing" ? s.created_at + m * 60_000 : null;
+  return t?.status === "doing" ? s.created_at + m * 60_000 + (s.id ? pausedMs(s.id) : 0) : null;
 }
 
 // ------------------------------------------------------------------ tokens

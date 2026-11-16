@@ -80,6 +80,13 @@ function Schedules({ projectId }: { projectId: string }) {
   </details>;
 }
 
+/** "03:10", or "Nov 18, 20:00" when that isn't today. */
+function resetTime(ms: number): string {
+  const d = new Date(ms);
+  const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return d.toDateString() === new Date().toDateString() ? time : `${d.toLocaleDateString([], { month: "short", day: "numeric" })}, ${time}`;
+}
+
 function AutopilotCard({ project, openTodo }: { project: Project; openTodo: string[] }) {
   const ap: Autopilot = project.autopilot ?? { on: false, tool: "claude", accountId: null, yolo: false };
   const customLimit = ap.maxMinutes != null && !RUN_LIMITS.some(([minutes]) => minutes === ap.maxMinutes) ? ap.maxMinutes : null;
@@ -87,7 +94,10 @@ function AutopilotCard({ project, openTodo }: { project: Project; openTodo: stri
   // Signed out, agy can't take tasks: autopilot holds them in the queue (server), and says so here.
   // (useStore keeps its first selector, so the selector mustn't read props.)
   const accounts = useStore((st) => st.accounts);
-  const agyAccount = ap.tool !== "agy" ? null : (accounts.find((a) => a.id === ap.accountId) ?? accounts.find((a) => a.tool === "agy" && a.is_default) ?? null);
+  const account = accounts.find((a) => a.id === ap.accountId) ?? accounts.find((a) => a.tool === ap.tool && a.is_default) ?? null;
+  const agyAccount = ap.tool !== "agy" ? null : account;
+  // At its usage limit, the account's queued tasks wait for the reset (server); the run that hit it carries on then.
+  const heldUntil = account?.held_until && account.held_until > Date.now() ? account.held_until : null;
   const queueAll = async () => {
     try {
       await Promise.all(openTodo.map((tid) => api.updateTask(tid, { queued: true })));
@@ -121,6 +131,12 @@ function AutopilotCard({ project, openTodo }: { project: Project; openTodo: stri
                 agy isn't signed in, so autopilot keeps its tasks queued; they start once it is.{" "}
                 {/* The server's advice: sign in, or unlock the desktop keyring when that's what's wrong. */}
                 {agyAccount.usage?.note?.replace(/^Signed out\.\s*/, "") || "Run `agy` in a terminal on the laptop to sign in."}
+              </p>
+            )}
+            {heldUntil && (
+              <p class="warn-text small">
+                This account is at its usage limit, so autopilot keeps its tasks queued until about {resetTime(heldUntil)}. Pick another account to
+                carry on now.
               </p>
             )}
             <AccountPicker tool={ap.tool} value={ap.accountId} onChange={(v) => set({ accountId: v })} />
