@@ -3,7 +3,7 @@ import { appendFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const { db } = await import("./db");
-const { subscribeChat, tailOf, touchedFiles, unsubscribeChat } = await import("./transcripts");
+const { eachLine, pollRunningTails, subscribeChat, tailOf, touchedFiles, unsubscribeChat } = await import("./transcripts");
 
 type Item = { id: string; k: string; text?: string; name?: string; title?: string; result?: string; error?: boolean; done?: boolean };
 const sessions: string[] = [];
@@ -210,5 +210,118 @@ describe("context size", () => {
       { type: "user", uuid: "u2", timestamp: ts, isCompactSummary: true, message: { role: "user", content: "This session is being continued…" } },
     ];
     expect(await ctxOf(compacted)).toBe(15_226);
+  });
+});
+
+// A log is read through a small buffer, a slice at a time (reading a long one whole took
+// a 12 MB buffer per running agent, all in the second after a restart).
+describe("reading a log a slice at a time", () => {
+  const file = (name: string, text: string | Buffer) => {
+    const path = join(process.env.ANSAI_HOME!, `eachline-${name}-${crypto.randomUUID()}.txt`);
+    writeFileSync(path, text);
+    return path;
+  };
+  const read = async (path: string, start: number, skipFirst: boolean, slice: number, size = statSync(path).size) => {
+    const got: [string, number][] = [];
+    const end = await eachLine(path, start, size, skipFirst, (line, at) => got.push([line, at]), slice);
+    return { got, end };
+  };
+
+  test("the lines and their places are the same whatever the slice size", async () => {
+    const text = 'first\n\n{"k":"second line, a longer one"}\nthird\n';
+    const path = file("sizes", text);
+    const whole = await read(path, 0, false, 1024 * 1024);
+    expect(whole.got).toEqual([
+      ["first", 0],
+      ["", 6],
+      ['{"k":"second line, a longer one"}', 7],
+      ["third", 41],
+    ]);
+    expect(whole.end).toBe(text.length);
+    for (const slice of [1, 2, 3, 5, 7, 16, 40, 41, 42]) expect(await read(path, 0, false, slice)).toEqual(whole);
+  });
+
+  test("a character cut in two by a slice comes out whole", async () => {
+    const text = "ភាសាខ្មែរ 🙂 ok\nnext é\n";
+    const path = file("utf8", text);
+    for (const slice of [1, 2, 3, 4, 5, 64]) {
+      const { got, end } = await read(path, 0, false, slice);
+      expect(got.map((g) => g[0])).toEqual(["ភាសាខ្មែរ 🙂 ok", "next é"]);
+      expect(end).toBe(Buffer.byteLength(text));
+    }
+  });
+
+  test("a last line still being written is left for next time", async () => {
+    const path = file("partial", "done\nhalf writ");
+    const first = await read(path, 0, false, 4);
+    expect(first.got).toEqual([["done", 0]]);
+    expect(first.end).toBe(5);
+    appendFileSync(path, "ten\n");
+    expect((await read(path, first.end!, false, 4)).got).toEqual([["half written", 5]]);
+  });
+
+  test("nothing complete yet: nothing is handed over", async () => {
+    expect(await read(file("none", "no newline here"), 0, false, 4)).toEqual({ got: [], end: null });
+    expect(await read(file("empty", ""), 0, false, 4)).toEqual({ got: [], end: null });
+    // Starting mid-line with only that line's end in reach: skipped, so still nothing.
+    expect(await read(file("tail", "abcdef\n"), 3, true, 2)).toEqual({ got: [], end: null });
+  });
+
+  test("a read that starts mid-file skips the piece of a line it lands in", async () => {
+    const path = file("mid", "aaaa\nbbbb\ncccc\n");
+    for (const slice of [1, 3, 100]) {
+      const { got, end } = await read(path, 2, true, slice);
+      expect(got).toEqual([
+        ["bbbb", 5],
+        ["cccc", 10],
+      ]);
+      expect(end).toBe(15);
+    }
+  });
+
+  test("it stops at the size it was given, and at a file that got shorter", async () => {
+    const path = file("size", "one\ntwo\nthree\n");
+    expect((await read(path, 0, false, 3, 8)).got).toEqual([
+      ["one", 0],
+      ["two", 4],
+    ]);
+    expect((await read(path, 0, false, 3, 500)).got.length).toBe(3); // told it was longer than it is
+  });
+
+  test("a long log is read without ever holding more than a slice of it", async () => {
+    // 3 MB of lines, far more than the 64 KB buffer: every line still arrives, in order.
+    const line = (n: number) => JSON.stringify({ n, pad: "x".repeat(900) });
+    const count = 3000;
+    const path = file("long", Array.from({ length: count }, (_, n) => line(n)).join("\n") + "\n");
+    let next = 0;
+    let wrong = 0;
+    const end = await eachLine(path, 0, statSync(path).size, false, (l) => void (JSON.parse(l).n === next++ || wrong++), 64 * 1024);
+    expect(next).toBe(count);
+    expect(wrong).toBe(0);
+    expect(end).toBe(statSync(path).size);
+  });
+});
+
+describe("following running agents nobody is watching", () => {
+  test("each one's log is read, one after the other", async () => {
+    const ts = "2026-01-02T03:04:05.000Z";
+    const ids = [0, 1, 2].map(() => `transcript-test-bg-${crypto.randomUUID()}`);
+    for (const [n, id] of ids.entries()) {
+      const path = join(process.env.ANSAI_HOME!, `${id}.jsonl`);
+      const edit = { type: "assistant", uuid: `e${n}`, timestamp: ts, message: { model: "claude-opus-5-5", content: [{ type: "tool_use", id: `t${n}`, name: "Edit", input: { file_path: `/tmp/transcript-project/file-${n}.ts`, old_string: "a", new_string: "b" } }] } };
+      writeFileSync(path, JSON.stringify(edit) + "\n");
+      db.query(
+        `INSERT INTO sessions (id, tool, title, cwd, argv, tmux_name, status, created_at, transcript)
+         VALUES (?, 'claude', 'Background', '/tmp/transcript-project', '[]', ?, 'running', ?, ?)`,
+      ).run(id, `tmux-${id}`, Date.now(), path);
+      sessions.push(id);
+    }
+    const pass = pollRunningTails();
+    await pollRunningTails(); // a pass already under way: this one steps aside at once
+    await pass;
+    for (const [n, id] of ids.entries()) {
+      expect(tailOf(id)!.offset).toBeGreaterThan(0);
+      expect(touchedFiles(db.query("SELECT * FROM sessions WHERE id = ?").get(id) as never)).toEqual([`file-${n}.ts`]);
+    }
   });
 });

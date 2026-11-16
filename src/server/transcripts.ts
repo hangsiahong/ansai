@@ -1,4 +1,5 @@
 import { existsSync, readdirSync, statSync } from "node:fs";
+import { open } from "node:fs/promises";
 import { basename, join } from "node:path";
 import type { ServerWebSocket } from "bun";
 import { config } from "./config";
@@ -491,26 +492,18 @@ class ChatTail {
         start = size - MAX_FIRST_READ;
         this.truncated = true;
       }
-      const buf = Buffer.from(await file.slice(start, size).arrayBuffer());
-      let from = 0;
-      if (start !== this.offset) from = buf.indexOf(10) + 1; // skip partial first line
-      const lastNl = buf.lastIndexOf(10);
-      if (lastNl < from) return;
       const upserts: ChatItem[] = [];
-      let pos = from;
-      while (pos <= lastNl) {
-        const nl = buf.indexOf(10, pos);
-        const line = buf.subarray(pos, nl).toString("utf8");
-        const key = `${start + pos}`;
-        pos = nl + 1;
-        if (!line.trim()) continue;
+      // A read that starts mid-file starts mid-line: that first piece is skipped.
+      const end = await eachLine(want, start, size, start !== this.offset, (line, at) => {
+        if (!line.trim()) return;
         try {
           if (s.tool === "claude") parseClaude(line, this.st, upserts);
-          else parseCodex(line, this.st, upserts, key);
+          else parseCodex(line, this.st, upserts, `${at}`);
         } catch {}
-      }
+      });
+      if (end === null) return; // no complete line yet
       const firstLoad = this.offset === 0;
-      this.offset = start + lastNl + 1;
+      this.offset = end;
       const changed = this.apply(upserts);
       if (!firstLoad && changed.length) this.broadcast({ t: "items", items: changed });
       if (firstLoad) for (const ws of this.subs) this.sendInit(ws);
@@ -612,6 +605,63 @@ class ChatTail {
   }
 }
 
+const READ_SLICE = 1024 * 1024;
+
+/**
+ * Hand every complete line of `path` between `start` and `size` to `onLine`, with the
+ * line's place in the file. Returns the place just past the last complete line, or null
+ * when there is none yet.
+ *
+ * The file is read through one small buffer, a slice at a time. Reading the whole stretch
+ * at once (as this used to) took a buffer as big as the stretch, up to 12 MB for a long
+ * log, and after a restart every running agent's log is read that way within the same
+ * second: the buffers alone added 49 MB with four agents, before any of them was freed.
+ */
+export async function eachLine(
+  path: string,
+  start: number,
+  size: number,
+  skipFirst: boolean,
+  onLine: (line: string, at: number) => void,
+  slice = READ_SLICE,
+): Promise<number | null> {
+  if (size <= start) return null;
+  const fh = await open(path, "r");
+  try {
+    const scratch = Buffer.allocUnsafe(Math.min(slice, size - start));
+    let carry: Buffer | null = null; // the start of a line that ran past the end of a slice
+    let lineAt = start; // where the next line starts in the file
+    let at = start; // the next byte to read
+    let skip = skipFirst;
+    let any = false;
+    while (at < size) {
+      const { bytesRead } = await fh.read(scratch, 0, Math.min(scratch.length, size - at), at);
+      if (!bytesRead) break; // the file got shorter under us
+      const chunk = scratch.subarray(0, bytesRead);
+      let pos = 0;
+      for (;;) {
+        const nl = chunk.indexOf(10, pos);
+        if (nl === -1) break;
+        if (skip) skip = false;
+        else {
+          const piece = chunk.subarray(pos, nl);
+          onLine((carry ? Buffer.concat([carry, piece]) : piece).toString("utf8"), lineAt);
+          any = true;
+        }
+        carry = null;
+        pos = nl + 1;
+        lineAt = at + pos;
+      }
+      // The buffer is reused for the next slice, so what's left of this one is copied out.
+      if (pos < bytesRead && !skip) carry = carry ? Buffer.concat([carry, chunk.subarray(pos)]) : Buffer.from(chunk.subarray(pos));
+      at += bytesRead;
+    }
+    return any ? lineAt : null;
+  } finally {
+    await fh.close();
+  }
+}
+
 const tails = new Map<string, ChatTail>();
 
 /** The tail following a session's log, if there is one. Exported for tests. */
@@ -631,16 +681,31 @@ export async function subscribeChat(sessionId: string, ws: Sub) {
 
 /** Follow every running Claude/Codex session in the background (every 3 s) so tasks show live plans. */
 export function startBackgroundTails(ms = 3000) {
-  setInterval(() => {
+  setInterval(() => void pollRunningTails(), ms);
+}
+
+let passing = false;
+/**
+ * One pass over every running session nobody is watching, one log at a time. After a
+ * restart each of them is a first read (up to 12 MB of log), and parsing four at once
+ * left four logs' worth of leftovers in memory together. A pass still reading when the
+ * next is due makes that one skip. Exported for tests.
+ */
+export async function pollRunningTails() {
+  if (passing) return;
+  passing = true;
+  try {
     const running = db.query("SELECT id FROM sessions WHERE status = 'running' AND tool IN ('claude', 'codex')").all() as { id: string }[];
     const ids = new Set(running.map((r) => r.id));
     for (const { id } of running) {
       let tail = tails.get(id);
       if (!tail) tails.set(id, (tail = new ChatTail(id)));
-      if (!tail.subs.size) tail.poll();
+      if (!tail.subs.size) await tail.poll(); // poll() catches its own errors
     }
     for (const [id, tail] of tails) if (!ids.has(id) && !tail.subs.size && !tail.timer) tails.delete(id);
-  }, ms);
+  } finally {
+    passing = false;
+  }
 }
 
 /** Files a running agent has edited, most recent first (paths relative to its working folder when inside it). */

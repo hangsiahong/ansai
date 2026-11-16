@@ -4,7 +4,7 @@ A private control room for coding agents running on your laptop. You can start a
 Claude Code, Codex, Antigravity (`agy`) or a shell in any project from your phone or desktop,
 keep a backlog per project, switch between accounts, and get a push when an agent needs you.
 
-- **One Bun process** (about 60 MB of RAM), using Bun's built-in terminal support, `bun:sqlite` and WebSockets. No Docker, no database server.
+- **One Bun process** (about 100 MB of RAM at rest, around 150 MB once the app is open and agents are running), using Bun's built-in terminal support, `bun:sqlite` and WebSockets. No Docker, no database server.
 - **Agents live in tmux** (socket `ansai`), which runs in its own systemd scope, so agents keep running when the browser disconnects or ansai is restarted or updated. Attach from a laptop terminal with `tmux -L ansai attach -t ansai-<id>` and detach with Ctrl-Alt-d.
 - **Private by default.** The server listens only on the laptop (127.0.0.1). Remote access goes through `tailscale serve`, so only your own Tailscale devices can reach it. Requests must come from the machine owner's Tailscale login, or from this laptop itself. Unknown hosts, cross-site requests and Tailscale Funnel (public) traffic are rejected.
 
