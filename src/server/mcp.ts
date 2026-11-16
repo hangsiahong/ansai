@@ -5,6 +5,7 @@ import { JSON_LIMIT, readJson } from "./validate";
 import { createTask, finishTask, finishTaskReview, getTask, reportReviewFinding } from "./tasks";
 import { claimFiles, deliveryNote, describeAgents, describeHistory, postMessage, releaseFiles, takePending } from "./team";
 import { endShift, shiftView } from "./shifts";
+import { compactionAsked, noteToolsListed, requestCompaction } from "./compaction";
 
 /**
  * A tiny MCP server (streamable HTTP, JSON responses, no SSE) that every agent
@@ -97,6 +98,24 @@ const TOOLS = [
     inputSchema: { type: "object", properties: { summary: { type: "string" } }, required: ["summary"] },
   },
   {
+    name: "compact",
+    description:
+      "Compact your own conversation into a summary (Claude Code's /compact) at a moment you choose, so long work stays fast and cheap and you can keep going without the user. ansai tells you when your conversation is getting long. " +
+      "Pick a good stopping point: a piece of work finished and saved or committed, before you start the next. Never mid-edit or mid-investigation, and not when you're about to finish (just finish). " +
+      "After calling it, end your turn with a one-line note of where you are. ansai then compacts the conversation and sends `next` back to you as your next prompt.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        keep: {
+          type: "string",
+          description: "What the summary must keep: your task and its acceptance criteria, decisions made and why, files changed, what's verified, open problems, ids and paths you'll need.",
+        },
+        next: { type: "string", description: "What you'll do right after, sent back to you as your next prompt. Leave it empty only if you're waiting for the user." },
+      },
+      required: ["keep"],
+    },
+  },
+  {
     name: "finish_task",
     description:
       "Mark the backlog task you were given as ready for the user's review, with a 2-3 sentence summary of what changed and how to verify it. Only call this when the task is actually done.",
@@ -185,6 +204,19 @@ function runTool(sessionId: string, name: string, args: any) {
     return text("Shift ended. Your summary is saved for the user. You can stop now.");
   }
 
+  if (name === "compact") {
+    if (s.tool !== "claude") return text("Only Claude agents can be compacted this way; your CLI compacts its own conversation when it needs to.", true);
+    const keep = String(args?.keep ?? "").trim();
+    if (!keep) return text("Say what the summary must keep (task, decisions, files changed, what's verified, open problems).", true);
+    const next = String(args?.next ?? "").trim();
+    const again = compactionAsked(s.id);
+    requestCompaction(s.id, keep, next);
+    return text(
+      `${again ? "Updated. " : ""}Compaction queued. Finish this step, then end your turn now with a one-line note of where you are. ` +
+        (next ? `ansai compacts the conversation and then sends you: “${next}”` : "ansai compacts the conversation; you then wait for the user."),
+    );
+  }
+
   if (name === "finish_task") {
     if (db.query("SELECT 1 FROM sessions WHERE id = ? AND title LIKE 'Review · %'").get(sessionId) || db.query("SELECT 1 FROM task_reviews WHERE session_id = ?").get(sessionId)) return text("Reviewers must call finish_review; this does not finish the backlog task.", true);
     if (!s.task_id || !getTask(s.task_id)) return text("This session wasn't started from a backlog task — just tell the user you're done.");
@@ -233,6 +265,7 @@ function handle(sessionId: string, msg: Rpc): object | null {
     case "ping":
       return reply({});
     case "tools/list":
+      noteToolsListed(sessionId); // it has the compact tool (see compaction.ts)
       return reply({ tools: TOOLS });
     case "tools/call":
       return reply(callTool(sessionId, String(msg.params?.name ?? ""), msg.params?.arguments ?? {}));

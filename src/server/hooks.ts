@@ -7,6 +7,7 @@ import { emit } from "./events";
 import { notify } from "./push";
 import { isWatched } from "./viewers";
 import { dropClaims, editWarning, getPlaybook, takePending, wakes } from "./team";
+import { compacted, contextNudge, dropCompaction, startCompaction } from "./compaction";
 import { clearStartup, getSession, sessionView } from "./sessions";
 import { claudeStop, codexTurnEnded, shiftView, shiftWorked } from "./shifts";
 
@@ -40,6 +41,7 @@ function hookSettings() {
       PreToolUse: entry("PreToolUse", { matcher: "*" }),
       PostToolUse: entry("PostToolUse", { matcher: "*", speaks: true }),
       Notification: entry("Notification"),
+      PreCompact: entry("PreCompact"),
       Stop: entry("Stop", { speaks: true }),
     },
   };
@@ -188,6 +190,18 @@ function push(s: Row, kind: "input" | "done", body: string, actions: PushAction[
 export type HookReply = { hookSpecificOutput?: { hookEventName: string; additionalContext: string }; decision?: "block"; reason?: string };
 const context = (event: string, text: string): HookReply => ({ hookSpecificOutput: { hookEventName: event, additionalContext: text } });
 
+/** Claude compactions that Claude started itself, mid-turn (PreCompact trigger "auto"). */
+const autoCompacting = new Set<string>();
+
+/** The agent finished its turn and waits for you: its task goes to Review and you get a push. */
+function turnEnded(s: Row, was: string | null) {
+  setState(s, "waiting");
+  if (!isTaskReviewer(s.id)) {
+    moveTask(s.task_id, "doing", "review");
+    if (was === "working" || was === "needs-input") push(s, "done", "Finished — your turn.");
+  }
+}
+
 /**
  * `reads`: Claude reads this hook's reply (the hooks file marks those commands with r=1).
  * Agents started with an older hooks file send their output to /dev/null, so anything
@@ -212,10 +226,25 @@ export function handleHook(tool: string, event: string, sessionId: string, paylo
         const model = typeof payload?.model === "string" ? payload.model : null;
         if (model)
           db.query("UPDATE sessions SET model = ?, effort = CASE WHEN COALESCE(model, '') = ? THEN effort END WHERE id = ?").run(model, model, s.id);
+        if (payload?.source === "compact") {
+          const autoTrigger = autoCompacting.delete(s.id);
+          const mine = compacted(s.id); // one the agent asked ansai for
+          if (mine?.continues) return void setState(s, "working", "Picking up after compacting");
+          if (mine) return void turnEnded(s, "working"); // it said it would wait for you
+          if (autoTrigger) return; // Claude's own, mid-turn: it carries on by itself
+        }
         setState(s, "waiting");
         return;
       }
+      case "PreCompact": {
+        // Yours (/compact), the agent's (ansai typed it), or Claude's own near its limit: all take a minute.
+        if (payload?.trigger === "auto") autoCompacting.add(s.id);
+        setState(s, "working", "Compacting the conversation");
+        return;
+      }
       case "UserPromptSubmit": {
+        // /compact isn't a prompt: PreCompact covers it, and queued team messages must not ride along into it.
+        if (typeof payload?.prompt === "string" && /^\/compact\b/.test(payload.prompt.trim())) return;
         if (!isTaskReviewer(s.id)) moveTask(s.task_id, "review", "doing");
         setState(s, "working");
         const msgs = reads ? takePending(s.id) : null;
@@ -233,7 +262,7 @@ export function handleHook(tool: string, event: string, sessionId: string, paylo
         const file = payload?.tool_input?.file_path ?? payload?.tool_input?.notebook_path;
         const full = typeof file === "string" && EDITS.has(String(payload?.tool_name)) ? getSession(s.id) : null;
         const warn = full ? editWarning(full, file) : null;
-        const text = [warn, msgs].filter(Boolean).join("\n\n");
+        const text = [warn, msgs, contextNudge(s.id)].filter(Boolean).join("\n\n");
         return text ? context(event, text) : undefined;
       }
       case "Notification": {
@@ -257,6 +286,9 @@ export function handleHook(tool: string, event: string, sessionId: string, paylo
           if (s.agent_state !== "working") setState(s, "working");
           return context(event, msgs);
         }
+        // The agent asked to be compacted (the compact tool): let the turn end, compact, then hand it its next step.
+        // Before the shift's keep-going, which would never let the turn end.
+        if (reads && startCompaction(s.id)) return;
         // On shift: Claude gets its next prompt and continues in the same turn.
         const keepGoing = reads ? claudeStop(getSession(s.id)!) : null;
         if (keepGoing) {
@@ -268,12 +300,7 @@ export function handleHook(tool: string, event: string, sessionId: string, paylo
           setState(s, "waiting");
           return;
         }
-        const was = s.agent_state;
-        setState(s, "waiting");
-        if (!isTaskReviewer(s.id)) {
-          moveTask(s.task_id, "doing", "review");
-          if (was === "working" || was === "needs-input") push(s, "done", "Finished — your turn.");
-        }
+        turnEnded(s, s.agent_state);
         return;
       }
     }
@@ -358,6 +385,7 @@ export function onExited(id: string, code: number | null, how: ExitHow = "exited
   const s = db.query("SELECT id, title, tool, task_id, agent_state, status, auto FROM sessions WHERE id = ?").get(id) as Row | null;
   if (!s) return;
   dropClaims(id);
+  dropCompaction(id);
 
   // If the process disappeared before finish_task (or a turn-complete hook),
   // release the task from Doing so it cannot look active forever or block the

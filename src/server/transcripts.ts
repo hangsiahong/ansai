@@ -630,3 +630,8 @@ export function unsubscribeChat(sessionId: string, ws: Sub) {
   tail.subs.delete(ws);
   if (!tail.subs.size) tail.stopSoon();
 }
+
+/** A running agent's current context size in tokens (from its log, followed every few seconds), or null. */
+export function contextSize(sessionId: string): number | null {
+  return tails.get(sessionId)?.st.context ?? null;
+}

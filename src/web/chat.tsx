@@ -292,7 +292,8 @@ function WorkingRow({ s }: { s: Session }) {
     <div class="working-row">
       <ToolBadge tool={s.tool} size={22} />
       <span>
-        {TOOL_SHORT[s.tool]} is working<span class="dots" />
+        {s.agent_message ? `${TOOL_SHORT[s.tool]} · ${s.agent_message}` : `${TOOL_SHORT[s.tool]} is working`}
+        <span class="dots" />
       </span>
       <button class="btn sm ghost" onClick={() => press(s.id, ["Escape"])}>
         <Icon name="stop" size={13} /> Stop
@@ -419,7 +420,7 @@ function CompactCard({ s, ctx, busy, onCompact, onDismiss }: { s: Session; ctx: 
       </div>
       <div class="lc-body strong">Every reply re-reads all of it, so each turn costs more than the last.</div>
       <p class="lc-hint">
-        Claude Code compacts by itself only when it nears the model's limit, which on big models is far past this. Compact now to keep going for less, or start a new session for unrelated work.
+        ansai tells the agent when it's this long, and the agent compacts itself at a good stopping point, so autopilot runs keep going without you. Compact now if you'd rather not wait, or start a new session for unrelated work.
       </p>
       <div class="lc-actions two">
         <button class="btn primary" onClick={() => api.send(s.id, "/compact", true).then(onCompact).catch(toastError)}>
@@ -587,7 +588,7 @@ export function ChatView({ s, onCtx }: { s: Session; onCtx?: (tokens: number | n
           {running && st.cls === "attn" && !pendingQuestion && !s.startup?.message && <ApprovalCard s={s} />}
           {pendingQuestion && <QuestionCard s={s} t={pendingQuestion} />}
           {running && st.cls === "working" && <WorkingRow s={s} />}
-          {running && ctx !== null && (compacting !== null || (st.cls === "turn" && ctx >= CTX_LONG && !nudgeOff)) && (
+          {running && ctx !== null && ((compacting !== null && st.cls !== "working") || (compacting === null && st.cls === "turn" && ctx >= CTX_LONG && !nudgeOff)) && (
             <CompactCard s={s} ctx={ctx} busy={compacting !== null} onCompact={() => setCompacting(ctx)} onDismiss={() => setNudgeOff(true)} />
           )}
           {s.status === "exited" && <div class="chat-note">{TOOL_LABEL[s.tool]} exited.</div>}
