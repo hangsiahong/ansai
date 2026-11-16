@@ -31,6 +31,8 @@ jobs:
         run: bun run typecheck
       - name: Tests
         run: bun test
+      - name: Build the web app (the smoke test then runs against it, as it does in a release)
+        run: bun scripts/build-web.ts "dist/web/$(git rev-parse HEAD)"
       - name: Install a browser for the smoke test
         run: bunx playwright-core install --with-deps chromium
       - name: Browser smoke test (phone and desktop sizes)

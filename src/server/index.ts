@@ -1,4 +1,7 @@
 import type { Server, ServerWebSocket, Subprocess } from "bun";
+// Importing the page costs nothing by itself (measured: under 1 MB, and nothing is bundled
+// yet). Bun bundles it on the first request to a route that uses it, so with a prebuilt app
+// (see ./webdist) `index` is simply never put on a route.
 import index from "../web/index.html";
 import swPath from "../web/public/sw.js" with { type: "file" };
 import manifestPath from "../web/public/manifest.webmanifest" with { type: "file" };
@@ -6,7 +9,7 @@ import iconSvgPath from "../web/public/icon.svg" with { type: "file" };
 import icon192Path from "../web/public/icon-192.png" with { type: "file" };
 import icon512Path from "../web/public/icon-512.png" with { type: "file" };
 import { mkdir } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { basename, join, resolve } from "node:path";
 
 import { config, cleanEnv } from "./config";
 import { authorize, deviceList, setAllowedDevices, tailscaleStatus } from "./auth";
@@ -54,6 +57,7 @@ import { changesIn, taskDir } from "./changes";
 import { discardTaskWorktreeClosingAgents, mergeTaskWorktree } from "./worktrees";
 import { db } from "./db";
 import { startBackupLoop } from "./backup";
+import { PAGE_PATHS, findWebDist, webRoutes } from "./webdist";
 import { WEEKDAYS, deleteSchedule, listSchedules, runScheduleNow, saveSchedule, setScheduleEnabled } from "./schedules";
 import {
   AGENT_TOOLS,
@@ -187,6 +191,14 @@ setTimeout(() => {
   }
 }, 0);
 
+// The web app: the files a release built for this commit if there are any, else Bun's own HTML
+// import, which bundles the app inside this process on the first page load (and is what
+// `bun run dev` needs for hot reload). Like the HTML import before it, the page and its files
+// are not behind `guard`: they hold no data, and everything the app asks for is.
+const prebuilt = config.dev ? null : findWebDist(resolve(import.meta.dir, "../.."), config.webDist);
+if (prebuilt) console.log(`[ansai] web app: ${prebuilt.note}`);
+const pageRoutes = prebuilt?.dist ? webRoutes(prebuilt.dist) : Object.fromEntries(PAGE_PATHS.map((p) => [p, index]));
+
 const server = Bun.serve<WSData>({
   hostname: config.hostname,
   port: config.port,
@@ -195,14 +207,7 @@ const server = Bun.serve<WSData>({
   maxRequestBodySize: MAX_BODY,
 
   routes: allowMethods({
-    "/": index,
-    "/p/*": index,
-    "/backlog": index,
-    "/projects": index,
-    "/accounts": index,
-    "/system": index,
-    "/s/*": index,
-    "/crash-test": index, // a page that fails on purpose, to see (and test) the error screen
+    ...pageRoutes,
     "/sw.js": asset(swPath, "text/javascript", "no-cache"),
     "/manifest.webmanifest": asset(manifestPath, "application/manifest+json"),
     "/icon.svg": asset(iconSvgPath, "image/svg+xml"),

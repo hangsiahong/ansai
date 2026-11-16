@@ -29,6 +29,9 @@ export const config = {
   // Loopback only. Remote access goes through `tailscale serve`, never a public bind.
   hostname: "127.0.0.1",
   dev: !!process.env.ANSAI_DEV,
+  // A folder with the built web app (what scripts/build-web.ts writes), used instead of
+  // dist/web/<commit>. For tests; a release never sets it.
+  webDist: process.env.ANSAI_WEB_DIST || "",
   shell: loginShell(),
   projectRoots: (process.env.ANSAI_ROOTS || join(home, "projects"))
     .split(":")

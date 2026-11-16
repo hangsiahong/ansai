@@ -4,7 +4,7 @@ A private control room for coding agents running on your laptop. You can start a
 Claude Code, Codex, Antigravity (`agy`) or a shell in any project from your phone or desktop,
 keep a backlog per project, switch between accounts, and get a push when an agent needs you.
 
-- **One Bun process** (about 100 MB of RAM at rest, around 150 MB once the app is open and agents are running), using Bun's built-in terminal support, `bun:sqlite` and WebSockets. No Docker, no database server.
+- **One Bun process** (about 100 MB of RAM at rest, more with agents running; a release builds the web app ahead of time, so opening it adds no memory), using Bun's built-in terminal support, `bun:sqlite` and WebSockets. No Docker, no database server.
 - **Agents live in tmux** (socket `ansai`), which runs in its own systemd scope, so agents keep running when the browser disconnects or ansai is restarted or updated. Attach from a laptop terminal with `tmux -L ansai attach -t ansai-<id>` and detach with Ctrl-Alt-d.
 - **Private by default.** The server listens only on the laptop (127.0.0.1). Remote access goes through `tailscale serve`, so only your own Tailscale devices can reach it. Requests must come from the machine owner's Tailscale login, or from this laptop itself. Unknown hosts, cross-site requests and Tailscale Funnel (public) traffic are rejected.
 
@@ -30,12 +30,22 @@ never reach the running service. A commit goes live when you release it:
 ./scripts/release.sh <commit>           # release that commit: also the way back to an older one
 ```
 
-A release runs the checks on exactly that commit in a throwaway folder (typecheck, tests,
-browser smoke test), copies the database to `~/.ansai/backups`, moves the release folder to
-the commit, restarts the service and waits until it answers. If the new version doesn't come
-up, it puts the previous commit back and restarts again. A plain
+A release runs the checks on exactly that commit in a throwaway folder (typecheck, tests, a
+build of the web app, browser smoke test against that build), copies the database to
+`~/.ansai/backups`, moves the release folder to the commit, builds the web app into
+`dist/web/<commit>` there, restarts the service and waits until it answers. If the new version
+doesn't come up, it puts the previous commit back and restarts again. A plain
 `systemctl --user restart ansai` restarts the released version and picks up nothing new.
 `--skip-checks` skips the checks when you have to go back fast.
+
+The service hands out the files of that build instead of bundling the web app inside its own
+process on the first page load, which would keep about 30 MB of memory for as long as it runs.
+It looks for the build by the commit it is running, and only when no tracked file has been
+edited since that commit, so a build is never the wrong version: going back to an older commit
+finds that commit's build, or none, and with none the service bundles the app itself, as
+before (so does a build that failed, which doesn't stop the release). Builds of other commits are removed, except the one that was live, so going back is
+quick. Running from a working folder (`bun run dev`, `bun start`, the tests, `bun run smoke`)
+works as before, and `bun scripts/build-web.ts <folder>` makes a build by hand.
 
 `./scripts/install-service.sh --dev` runs the service straight from this folder instead, as
 ansai used to: every restart then ships whatever is in it. The installer keeps the unit file
@@ -60,6 +70,7 @@ Install the Tailscale app on your phone with the same account, open that URL, th
 | `ANSAI_SCAN_DEPTH` | `4` | |
 | `ANSAI_ALLOWED_LOGINS` | | extra Tailscale logins allowed besides the owner |
 | `ANSAI_HOME` | `~/.ansai` | database and tmux config |
+| `ANSAI_WEB_DIST` | | a folder holding a built web app, served instead of `dist/web/<commit>` (for tests) |
 
 ## Using it on a phone
 

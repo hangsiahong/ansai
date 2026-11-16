@@ -13,11 +13,17 @@
 #
 # What it does, in order:
 #   1. runs the checks on exactly that commit, in a throwaway folder: typecheck, tests,
-#      browser smoke test
+#      a build of the web app, and the browser smoke test against that build
 #   2. copies the database to ~/.ansai/backups/ansai-before-release-<time>.db
-#   3. moves the release folder to the commit and installs its packages
+#   3. moves the release folder to the commit, installs its packages and builds the web
+#      app into dist/web/<commit> there, so the service hands out those files instead of
+#      bundling the app inside its own process (about 30 MB of memory). Builds of other
+#      commits are removed, except the one that was live, so going back stays quick. A
+#      build that fails doesn't stop the release: the service then bundles the app itself
+#      on the first page load, as it used to
 #   4. restarts the service and waits until it answers
 #   5. if it doesn't come up, moves back to the commit that was live and restarts again
+#      (its build is still there; the service finds it by the commit)
 #
 # Agents keep running through all of it: they live in tmux, not in the service.
 set -euo pipefail
@@ -51,7 +57,7 @@ for arg in "$@"; do
     --status) MODE=status ;;
     --prepare) MODE=prepare; CHECKS=0 ;; # used by install-service.sh: fill the folder, nothing else
     --skip-checks) CHECKS=0 ;;
-    -h|--help) sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*) die "unknown option $arg (see --help)" ;;
     *) TARGET="$arg" ;;
   esac
@@ -122,6 +128,36 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Builds the web app for $COMMIT into <folder>/dist/web/<commit>, where the service looks for it
+# by the commit it runs. It never stops a release: with no build the service bundles the page
+# itself, as it used to. scripts/build-web.ts builds aside and moves the result into place only
+# when it is complete, so a failure leaves nothing half-written. A build that is already there
+# is kept: the commit is the same, and the service may be reading it right now.
+build_web() { # folder; prints ok or failed on the line the caller started
+  local out="$1/dist/web/$COMMIT" log
+  if [ -f "$out/index.html" ]; then say "already built"; return 0; fi
+  log="$(mktemp "${TMPDIR:-/tmp}/ansai-web-build.XXXXXX")"
+  if (cd "$1" && timeout 180 bun scripts/build-web.ts "$out") >"$log" 2>&1; then
+    say "ok"
+  else
+    say "failed. The release goes on, and the service bundles the page itself on first load (more memory):"
+    tail -n 15 "$log" | sed 's/^/      /' >&2
+  fi
+  rm -f "$log"
+}
+
+# Keeps the builds of the commit being released and of the one that was live (the way back);
+# removes the rest of dist/web. Only direct children of that one folder are ever touched.
+prune_web() {
+  local web="$RELEASE/dist/web" d
+  [ -d "$RELEASE/.git" ] && [ -d "$web" ] && [ ! -L "$web" ] || return 0
+  for d in "$web"/*; do
+    [ -d "$d" ] && [ ! -L "$d" ] || continue
+    case "${d##*/}" in "$COMMIT"|"$PREV") continue ;; esac
+    rm -rf -- "$d"
+  done
+}
+
 if [ "$CHECKS" = 1 ]; then
   say "Checking $(short "$COMMIT")  $(subject "$COMMIT")"
   CHECK="$(mktemp -d "${TMPDIR:-/tmp}/ansai-release-check.XXXXXX")"
@@ -142,7 +178,8 @@ if [ "$CHECKS" = 1 ]; then
   step packages bun install --frozen-lockfile
   step typecheck bun run typecheck
   step tests bun test
-  step "smoke test" bun run smoke
+  printf '  %-12s' "web build"; build_web "$CHECK/ansai"
+  step "smoke test" bun run smoke # uses the build above: it is what goes live
   cleanup; CHECK=""
 elif [ "$MODE" = release ]; then
   say "Skipping the checks, as asked."
@@ -153,6 +190,8 @@ install_packages() { (cd "$RELEASE" && bun install --frozen-lockfile >/dev/null 
 if [ "$MODE" = prepare ]; then
   git -C "$RELEASE" checkout --quiet --detach "$COMMIT"
   install_packages || die "couldn't install packages in $RELEASE"
+  printf 'Building the web app: '; build_web "$RELEASE"
+  prune_web
   say "Release folder $RELEASE is at $(short "$COMMIT")  $(subject "$COMMIT")"
   exit 0
 fi
@@ -216,6 +255,8 @@ roll_back() { # why
 say "Releasing $(short "$COMMIT")  $(subject "$COMMIT")"
 git -C "$RELEASE" checkout --quiet --detach "$COMMIT"
 install_packages || roll_back "its packages couldn't be installed"
+printf 'Building the web app: '; build_web "$RELEASE"
+prune_web
 systemctl --user restart "$SERVICE" || roll_back "systemd couldn't restart the service"
 healthy || roll_back "$WHY"
 

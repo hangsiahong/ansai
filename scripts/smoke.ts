@@ -10,6 +10,11 @@
  * also opens a page that fails on purpose and checks the error screen shows up instead of
  * a blank page. Exits 1 on the first thing that doesn't work, and keeps a screenshot.
  *
+ * The web app is served the way the real service serves it: from the build a release makes
+ * (dist/web/<commit>, see scripts/build-web.ts) when there is one for the commit under test,
+ * else bundled by the server itself. The test says which, and checks the page really came
+ * from there. ANSAI_WEB_DIST=<folder> points it at a build folder directly.
+ *
  * ANSAI_SMOKE_SHOTS=<folder> also saves a picture of the error screen at each size.
  * Browser: $ANSAI_SMOKE_BROWSER (a path), else Playwright's own download
  * (`bunx playwright-core install chromium`), else a Chrome/Chromium found on this machine.
@@ -20,6 +25,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { chromium, type Browser, type Page } from "playwright-core";
+import { findWebDist } from "../src/server/webdist";
 
 const repo = resolve(import.meta.dir, "..");
 const scratch = mkdtempSync(join(tmpdir(), "ansai-smoke-"));
@@ -62,9 +68,13 @@ let log = "";
 // The agent that runs this may itself be an ansai session: its own ids must not reach the test server.
 const env: Record<string, string> = {};
 for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !k.startsWith("ANSAI_")) env[k] = v;
+// Whether there is a prebuilt web app for this commit is decided by the server's own code, so the
+// test expects exactly what the server will do, and then checks that it did it.
+const webDist = process.env.ANSAI_WEB_DIST ?? "";
+const web = findWebDist(repo, webDist);
 const server = spawn(process.execPath, [join(repo, "src/server/index.ts")], {
   cwd: repo,
-  env: { ...env, ANSAI_HOME: join(scratch, "home"), ANSAI_PORT: String(port), ANSAI_TMUX_SOCKET: socket, ANSAI_ROOTS: scratch },
+  env: { ...env, ...(webDist ? { ANSAI_WEB_DIST: webDist } : {}), ANSAI_HOME: join(scratch, "home"), ANSAI_PORT: String(port), ANSAI_TMUX_SOCKET: socket, ANSAI_ROOTS: scratch },
   stdio: ["ignore", "pipe", "pipe"],
 });
 server.stdout!.on("data", (d) => (log += d));
@@ -88,6 +98,19 @@ try {
     await Bun.sleep(200);
   }
 
+  say(web.dist ? "web app: prebuilt (the page must load from /_app/)" : "web app: no prebuilt build for this commit (the server builds the page itself)");
+  const html = await (await fetch(`${base}/`)).text();
+  const script = /<script[^>]*\ssrc="([^"]+)"/.exec(html)?.[1];
+  check(script, "the page doesn't load a script");
+  if (web.dist) {
+    check(script.startsWith("/_app/"), `there is a prebuilt build (${web.note}) but the page loads its script from ${script}, not from /_app/`);
+    const file = await fetch(base + script);
+    check(file.ok && file.headers.get("cache-control")?.includes("immutable"), `${script} answered ${file.status}, cache-control ${file.headers.get("cache-control")}`);
+    check(log.includes("serving the prebuilt web app"), `ansai didn't say it serves the prebuilt build:\n${log}`);
+  } else {
+    check(!script.startsWith("/_app/"), `no prebuilt build was expected, but the page loads its script from ${script}`);
+  }
+
   say("add a project, a task and a shell session");
   const dir = join(scratch, "demo");
   mkdirSync(dir);
@@ -108,6 +131,11 @@ try {
     page.setDefaultTimeout(10_000);
     const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(e.message));
+    const appFiles: { name: string; status: number }[] = []; // what the browser fetched from /_app/
+    page.on("response", (r) => {
+      const u = new URL(r.url());
+      if (u.pathname.startsWith("/_app/")) appFiles.push({ name: u.pathname.slice("/_app/".length), status: r.status() });
+    });
     const tap = (target: ReturnType<Page["locator"]>) => (size.hasTouch ? target.tap() : target.click());
     const main = page.locator('nav[aria-label="Main"]');
     const noCrash = async (where: string) => {
@@ -124,6 +152,11 @@ try {
       await page.locator(".pane.now").waitFor();
       await page.getByText("Smoke test shell").first().waitFor();
       await noCrash("Now");
+      if (web.dist) {
+        check(appFiles.some((f) => f.name.endsWith(".js")) && appFiles.some((f) => f.name.endsWith(".css")), `the browser didn't load the app's script and styles from /_app/: ${JSON.stringify(appFiles)}`);
+      } else {
+        check(!appFiles.length, `no prebuilt build was expected, but the browser loaded from /_app/: ${JSON.stringify(appFiles)}`);
+      }
 
       say("open the session");
       await tap(page.getByText("Smoke test shell").first());
@@ -131,6 +164,8 @@ try {
       await page.locator(".pane.session").waitFor();
       await page.locator(".pane.session .xterm, .pane.session .chat").first().waitFor();
       await noCrash("The session");
+      check(appFiles.every((f) => f.status === 200), `a file from /_app/ was not found: ${JSON.stringify(appFiles.filter((f) => f.status !== 200))}`);
+      if (appFiles.length) console.log(`    ${appFiles.length} files from /_app/ loaded fine: ${appFiles.map((f) => f.name.split(".").pop()).join(", ")}`);
 
       say("open the task from the backlog");
       await page.goto(base + "/backlog");
