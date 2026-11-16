@@ -172,3 +172,108 @@ export const CLAUDE_WORKING = `
 ────────────────────────────────────────────────────────────
   ⏵⏵ bypass permissions on (shift+tab to cycle) ·
 `;
+
+// Antigravity CLI (agy) 1.5.9. It has no hooks, so its screen is all ansai has to go on.
+/** Antigravity CLI 1.5.9 at its prompt (the box holds a greyed-out hint, not typed text). */
+export const AGY_IDLE = `
+────────────────────────────────────────────────────────────
+> Auto mode: edits & safe commands auto-approved (shift+...
+────────────────────────────────────────────────────────────
+? for shortcuts               auto · Gemini 3.8 Flash · high
+`;
+
+/** Antigravity with text typed into its box: the footer loses its "? for shortcuts". */
+export const AGY_DRAFT = `
+────────────────────────────────────────────────────────────
+> Run the shell command: sleep 12
+────────────────────────────────────────────────────────────
+                              auto · Gemini 3.8 Flash · high
+`;
+
+/** Antigravity mid-turn: the box stays on screen, and the footer says "esc to cancel". Its spinner can sit still for many seconds. */
+export const AGY_WORKING = `
+─────────────────────────────────────────────────────────
+> Run the shell command: sleep 12
+⣾  Generating...
+────────────────────────────────────────────────────────────
+>
+────────────────────────────────────────────────────────────
+esc to cancel                 auto · Gemini 3.8 Flash · high
+`;
+
+/** The same on a 38-column (phone) screen: the footer keeps only "esc to cancel". */
+export const AGY_WORKING_NARROW = `
+───────────────────────────────────
+> Run the shell command: sleep 12
+⢿  Generating...
+──────────────────────────────────────
+>
+──────────────────────────────────────
+esc to cancel
+`;
+
+/** Antigravity after its turn ended (100 columns). */
+export const AGY_DONE = `
+
+● Ran (sleep 4) (ctrl+o to expand)
+
+  5
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+>
+────────────────────────────────────────────────────────────────────────────────────────────────────
+? for shortcuts                                                       auto · Gemini 3.8 Flash · high
+`;
+
+/** Antigravity asking to run a command: the box is gone (the "> ..." under the upper rule is your old prompt), the footer still says "esc to cancel". */
+export const AGY_ASK = `
+
+─────────────────────────────────────────────────────────
+> Run the shell command: touch probe2.txt
+
+● Ran (touch probe2.txt) (ctrl+o to expand)
+
+Command
+────────────────────────────────────────────────────────────
+
+Requesting permission for:
+   touch probe2.txt
+
+Run this command?
+> 1. Yes, run command
+  2. Yes, and always allow in this conversation for commands
+that start with 'touch'
+  3. Yes, and always allow for commands that start with
+'touch' (Persist to settings.json)
+  4. No, cancel
+
+  ↑/↓ Navigate · tab Amend · ctrl+g edit/expand command
+esc to cancel                        Gemini 3.8 Flash · high
+`;
+
+/** Antigravity after Esc stopped its turn (here: the approval was refused). */
+export const AGY_INTERRUPTED = `
+
+─────────────────────────────────────────────────────────
+> Run the shell command: touch probe2.txt
+
+● Ran (touch probe2.txt) (ctrl+o to expand)
+
+  ⎿  Interrupted · What should Antigravity CLI do instead?
+────────────────────────────────────────────────────────────
+>
+────────────────────────────────────────────────────────────
+? for shortcuts                      Gemini 3.8 Flash · high
+`;
+
+/** Idle on a 38-column screen, after an interrupted turn. */
+export const AGY_IDLE_NARROW = `
+
+● Ran (touch...) (ctrl+o to expand)
+
+  ⎿  Interrupted · What should Antigra
+──────────────────────────────────────
+>
+──────────────────────────────────────
+? for shortcuts
+`;

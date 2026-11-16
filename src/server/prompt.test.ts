@@ -3,7 +3,7 @@
 // The screens are real captures (see test-screens.ts).
 import { describe, expect, test } from "bun:test";
 
-const { atPrompt, claudeRewound } = await import("./sessions");
+const { agyScreen, atPrompt, claudeRewound } = await import("./sessions");
 const s = await import("./test-screens");
 
 describe("is the agent's input box on screen?", () => {
@@ -45,9 +45,35 @@ describe("is the agent's input box on screen?", () => {
     expect(atPrompt("codex", picker)).toBe(false);
   });
 
+  test("Antigravity: at its prompt, with text in it, mid-turn, and on a narrow screen", () => {
+    expect(atPrompt("agy", s.AGY_IDLE)).toBe(true);
+    expect(atPrompt("agy", s.AGY_DRAFT)).toBe(true);
+    expect(atPrompt("agy", s.AGY_WORKING)).toBe(true);
+    expect(atPrompt("agy", s.AGY_IDLE_NARROW)).toBe(true);
+  });
+
+  test("Antigravity: not while it asks for permission (your old prompt under a rule isn't its box)", () => {
+    expect(atPrompt("agy", s.AGY_ASK)).toBe(false);
+    expect(atPrompt("agy", "")).toBe(false);
+  });
+
   test("tools ansai has no screen for are never held", () => {
-    expect(atPrompt("agy", "anything")).toBe(true);
     expect(atPrompt("shell", "")).toBe(true);
+  });
+
+  test("Antigravity's screen says whether a turn is running, over, or waiting on a question", () => {
+    expect(agyScreen(s.AGY_WORKING)).toEqual({ state: "working" });
+    expect(agyScreen(s.AGY_WORKING_NARROW)).toEqual({ state: "working" });
+    expect(agyScreen(s.AGY_IDLE)).toEqual({ state: "idle", interrupted: false });
+    expect(agyScreen(s.AGY_DRAFT)).toEqual({ state: "idle", interrupted: false });
+    expect(agyScreen(s.AGY_DONE)).toEqual({ state: "idle", interrupted: false });
+    expect(agyScreen(s.AGY_INTERRUPTED)).toEqual({ state: "idle", interrupted: true });
+    expect(agyScreen(s.AGY_IDLE_NARROW)).toEqual({ state: "idle", interrupted: true });
+    expect(agyScreen(s.AGY_ASK)).toEqual({ state: "ask", prompt: "Run this command? touch probe2.txt", approval: true });
+    // Text typed on a screen too narrow for a footer: the box is the last thing on it.
+    expect(agyScreen(s.AGY_DRAFT.trimEnd().split("\n").slice(0, -1).join("\n"))).toEqual({ state: "idle", interrupted: false });
+    expect(agyScreen("")).toEqual({ state: "unknown" });
+    expect(agyScreen("$ ls\nREADME.md")).toEqual({ state: "unknown" });
   });
 
   test("the rewind check still reads the same box", () => {

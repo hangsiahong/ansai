@@ -10,7 +10,7 @@ import { getProject, touchProject } from "./projects";
 import { emit } from "./events";
 import { shiftView } from "./shifts";
 import { accountEnv, getAccount, refreshAccountsSoon, resolveAccount, type AccountRow } from "./accounts";
-import { codexScreen, onExited, playbookNote, startupScreen, withHooks, type HookOpts } from "./hooks";
+import { agySaw, codexScreen, onExited, playbookNote, startupScreen, withHooks, type HookOpts } from "./hooks";
 import { isLean } from "./lean";
 
 // ---------------------------------------------------------------- tmux plumbing
@@ -540,6 +540,100 @@ function codexStopped(r: Pick<SessionRow, "id" | "tmux_name" | "agent_state_at">
 }
 const CODEX_QUIET_MS = 10_000;
 
+/** What Antigravity's screen says about its turn. */
+export type AgySaw =
+  | { state: "working" }
+  | { state: "idle"; interrupted: boolean }
+  /** `approval`: its own "Requesting permission" question, where Enter allows and Esc refuses. */
+  | { state: "ask"; prompt: string; approval: boolean }
+  | { state: "unknown" };
+
+/**
+ * Read an Antigravity CLI screen (checked against 1.5.9, 38 to 100 columns wide):
+ * - Its input box is a "> " line between two rules at the bottom, with one footer line under
+ *   it. While a turn runs the footer starts with "esc to cancel"; at rest it doesn't. The
+ *   spinner can sit still for many seconds mid-turn, so a quiet screen says nothing.
+ * - A question replaces the box with a numbered menu ("> 1. Yes, run command"), and the
+ *   footer still says "esc to cancel".
+ * Your earlier prompts are shown as "> text" under a rule too, so only a box with nothing
+ * but its footer below it counts.
+ */
+export function agyScreen(screen: string): AgySaw {
+  const lines = screen.split("\n").map((l) => l.trimEnd());
+  while (lines.length && !lines[lines.length - 1]!.trim()) lines.pop();
+  const rules = lines.flatMap((l, i) => (/^─{20,}$/.test(l) ? [i] : []));
+  const [top, bottom] = rules.length >= 2 ? (rules.slice(-2) as [number, number]) : [-1, -1];
+  const below = lines.length - 1 - bottom; // a footer with nothing to say is a blank line, dropped above
+  const box = top >= 0 && /^>(\s|$)/.test(lines[top + 1] ?? "") && below <= 2;
+  const cancel = lines.slice(-2).some((l) => /^\s*esc to cancel\b/.test(l));
+  if (box) {
+    if (cancel) return { state: "working" };
+    const above = lines.slice(0, top).findLast((l) => l.trim()) ?? "";
+    return { state: "idle", interrupted: /^\s*⎿\s+Interrupted\b/.test(above) };
+  }
+  const ask = lines.findLastIndex((l) => /^Requesting permission for:/.test(l));
+  if (ask >= 0 && lines.slice(ask).some((l) => /^>\s*\d+\.\s/.test(l))) {
+    const after = lines.slice(ask + 1).map((l) => l.trim()).filter(Boolean);
+    const question = after.find((l) => l.endsWith("?")) ?? "Antigravity asks for permission.";
+    const detail = after[0] && after[0] !== question ? after[0] : "";
+    return { state: "ask", prompt: `${question} ${detail}`.trim().slice(0, 200), approval: true };
+  }
+  if (cancel && lines.slice(-4).some((l) => /↑\/↓ Navigate/.test(l))) return { state: "ask", prompt: "Antigravity is asking you something.", approval: false };
+  return { state: "unknown" };
+}
+
+/** How long agy's box must show no turn before the turn counts as over (a screen caught mid-redraw). */
+const AGY_SETTLE_MS = 3000;
+/** The same for an agy that ansai never saw working: it may not have started on its first prompt yet. */
+const AGY_MISSED_MS = 10_000;
+const agyIdleSince = new Map<string, number>();
+
+/**
+ * agy has no hooks and no MCP, so it never said anything: its session had no state, and
+ * a task it was given stayed in Doing for good, holding an autopilot slot. Its screen
+ * says enough: working, asking for permission, or back at its prompt (the turn is over).
+ */
+export async function watchAgyScreens(at = Date.now()) {
+  const rows = db.query("SELECT id, tmux_name, agent_state, argv FROM sessions WHERE tool = 'agy' AND status = 'running'").all() as Pick<
+    SessionRow,
+    "id" | "tmux_name" | "agent_state" | "argv"
+  >[];
+  for (const id of agyIdleSince.keys()) if (!rows.some((r) => r.id === id)) agyIdleSince.delete(id);
+  for (const r of rows) {
+    if (startup.has(r.id)) continue; // the trust or sign-in screen; watchStartupScreens owns it
+    const cap = await tmux(["capture-pane", "-p", "-t", r.tmux_name]);
+    if (cap.code !== 0 || startupDialog("agy", cap.out)) continue;
+    const saw = agyScreen(cap.out);
+    if (saw.state !== "idle") agyIdleSince.delete(r.id);
+    if (saw.state === "unknown") continue;
+    // A menu you opened yourself (no turn was running) isn't the agent asking.
+    if (saw.state === "ask" && !saw.approval && r.agent_state !== "working" && r.agent_state !== "needs-input") continue;
+    if (saw.state !== "idle" || r.agent_state === "waiting") {
+      agySaw(r.id, saw);
+      continue;
+    }
+    // Started on a prompt (-i) and at rest with no state: its whole turn went by unseen (ansai was down).
+    const missed = r.agent_state === null && launchedWithPrompt(r.argv);
+    if (r.agent_state === null && !missed) {
+      agySaw(r.id, saw); // opened without a prompt: it waits for you
+      continue;
+    }
+    const since = agyIdleSince.get(r.id) ?? at;
+    agyIdleSince.set(r.id, since);
+    if (at - since < (missed ? AGY_MISSED_MS : AGY_SETTLE_MS)) continue;
+    agyIdleSince.delete(r.id);
+    agySaw(r.id, saw, missed);
+  }
+}
+
+function launchedWithPrompt(argv: string): boolean {
+  try {
+    return (JSON.parse(argv) as string[]).includes("-i");
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Claude (and Codex) show a few screens before they run hooks (so before ansai hears from it):
  * the folder-trust question, the bypass-mode warning, first-run setup. Spot them on
@@ -550,8 +644,9 @@ async function watchStartupScreens() {
   const rows = db
     .query(
       // Sessions with an entry are checked whatever their state, so a dialog that went away is forgotten promptly.
+      // So is agy: no hook ever takes over from this watcher, and it can ask you to sign in again later.
       `SELECT id, tool, account_id, tmux_name, cwd, agent_state FROM sessions WHERE tool IN ('claude', 'codex', 'agy') AND status = 'running'
-         AND (agent_state IS NULL OR agent_state = 'needs-input' OR id IN (SELECT value FROM json_each(?)))`,
+         AND (agent_state IS NULL OR agent_state = 'needs-input' OR tool = 'agy' OR id IN (SELECT value FROM json_each(?)))`,
     )
     .all(JSON.stringify([...startup.keys()])) as Pick<SessionRow, "id" | "tool" | "account_id" | "tmux_name" | "cwd" | "agent_state">[];
   for (const r of rows) {
@@ -628,12 +723,17 @@ export function claudeRewound(screen: string): boolean {
  *   every menu replaces the box.
  * - Codex's box is a "› " line near the bottom with its status lines under it. A menu's
  *   focused row is "› 1. …" and its last line says "enter … esc …".
+ * - Antigravity: see agyScreen.
  * Other tools have no known screen, so nothing is held for them.
  */
 export function atPrompt(tool: ToolId, screen: string): boolean {
   if (tool === "claude") {
     const box = claudeBox(screen);
     return !!box && box.below <= 5;
+  }
+  if (tool === "agy") {
+    const saw = agyScreen(screen).state;
+    return saw === "working" || saw === "idle";
   }
   if (tool !== "codex") return true;
   if (CODEX_ASK.test(screen)) return false;
@@ -647,7 +747,7 @@ export function atPrompt(tool: ToolId, screen: string): boolean {
 
 /** Read the agent's screen and say whether its input box is showing (false when the pane can't be read). */
 export async function promptShowing(s: Pick<SessionRow, "tool" | "tmux_name">): Promise<boolean> {
-  if (s.tool !== "claude" && s.tool !== "codex") return true;
+  if (s.tool !== "claude" && s.tool !== "codex" && s.tool !== "agy") return true;
   const cap = await tmux(["capture-pane", "-p", "-t", s.tmux_name]);
   return cap.code === 0 && atPrompt(s.tool, cap.out);
 }
@@ -786,6 +886,7 @@ export function startReconcileLoop(ms = 2000) {
     reconcile()
       .then(() => watchCodexScreens())
       .then(watchStartupScreens)
+      .then(() => watchAgyScreens())
       .then(() => watchRewinds())
       .catch((e) => console.error("reconcile:", e))
       .finally(() => setTimeout(tick, ms));

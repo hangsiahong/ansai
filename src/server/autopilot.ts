@@ -108,12 +108,13 @@ export async function autopilotTick() {
   try {
     const { autopilotMax } = getSettings();
     // Count active autopilot sessions, including agents that stopped to ask you
-    // something (in review, but they haven't called finish_task yet).
+    // something (in review, but they haven't called finish_task yet). Not agy: it has
+    // no finish_task to call, so a turn that ended is all it will ever say.
     const active = db
       .query(
         `SELECT s.project_id, s.auto, t.worktree_path FROM sessions s JOIN tasks t ON t.id = s.task_id
          WHERE s.status = 'running' AND s.tool != 'shell'
-           AND (t.status = 'doing' OR (t.status = 'review' AND t.summary IS NULL AND s.auto = 1))`,
+           AND (t.status = 'doing' OR (t.status = 'review' AND t.summary IS NULL AND s.auto = 1 AND s.tool != 'agy'))`,
       )
       .all() as { project_id: string | null; auto: number; worktree_path: string | null }[];
     let running = active.filter((a) => a.auto).length;

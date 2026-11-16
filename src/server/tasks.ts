@@ -289,7 +289,8 @@ export async function handoff(task: Task, dir: string | null): Promise<string> {
   return ["This task was worked on before, in this same worktree. Pick up from there rather than starting over:", ...lines].join("\n");
 }
 
-function taskPrompt(task: Task & { notes?: string[]; handoff?: string }): string {
+/** `tools`: the agent has ansai's own tools (MCP). agy doesn't, and went looking for them for minutes when told to call one. */
+export function taskPrompt(task: Task & { notes?: string[]; handoff?: string }, tools = true): string {
   return [
     `Backlog task: ${task.title}`,
     task.worktree_path
@@ -301,8 +302,12 @@ function taskPrompt(task: Task & { notes?: string[]; handoff?: string }): string
     [
       "How to work this task:",
       "- First check it is clear. If it is ambiguous or needs a decision from me, ask me before changing anything, and wait for my answer.",
-      "- Keep to this task. Record unrelated problems you notice with the ansai add_task tool instead of fixing them now.",
-      "- When it is done, call the ansai finish_task tool with a 2-3 sentence summary, then tell me how to verify it.",
+      tools
+        ? "- Keep to this task. Record unrelated problems you notice with the ansai add_task tool instead of fixing them now."
+        : "- Keep to this task. List unrelated problems you notice at the end instead of fixing them now.",
+      tools
+        ? "- When it is done, call the ansai finish_task tool with a 2-3 sentence summary, then tell me how to verify it."
+        : "- When it is done, stop and tell me in 2-3 sentences what changed and how to verify it.",
     ].join("\n"),
   ]
     .filter(Boolean)
@@ -341,7 +346,7 @@ export async function runTask(
       projectId: task.project_id,
       cwd: worktree?.cwd,
       tool: o.tool,
-      prompt: taskPrompt(launchTask),
+      prompt: taskPrompt(launchTask, o.tool !== "agy"),
       title: task.title,
       yolo: o.yolo,
       model: o.model,

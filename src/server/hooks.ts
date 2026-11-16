@@ -8,7 +8,7 @@ import { notify } from "./push";
 import { isWatched } from "./viewers";
 import { dropClaims, editWarning, getPlaybook, takePending, wakes } from "./team";
 import { compacted, compactionRunning, contextNudge, dropCompaction, startCompaction } from "./compaction";
-import { clearStartup, getSession, sessionView } from "./sessions";
+import { clearStartup, getSession, sessionView, type AgySaw } from "./sessions";
 import { claudeStop, codexTurnEnded, endShift, shiftView, shiftWorked } from "./shifts";
 
 const EDITS = new Set(["Edit", "MultiEdit", "Write", "NotebookEdit"]);
@@ -375,6 +375,32 @@ export function codexScreen(id: string, prompt: string | null) {
     push(s, "input", prompt, APPROVAL_ACTIONS);
   } else if (!prompt && s.agent_state === "needs-input") {
     setState(s, "working");
+  }
+}
+
+/**
+ * agy has no hooks at all: the reconciler reports what its screen shows (sessions.watchAgyScreens).
+ * `missed`: it sits at its prompt and ansai never saw the turn it was started on.
+ */
+export function agySaw(id: string, saw: AgySaw, missed = false) {
+  const s = db.query("SELECT id, title, tool, task_id, agent_state, status FROM sessions WHERE id = ?").get(id) as Row | null;
+  if (!s || s.status !== "running") return;
+  if (saw.state === "ask") {
+    if (s.agent_state === "needs-input") return;
+    setState(s, "needs-input", saw.prompt);
+    push(s, "input", saw.prompt, saw.approval ? APPROVAL_ACTIONS : []);
+  } else if (saw.state === "working") {
+    if (s.agent_state === "working") return;
+    if (!isTaskReviewer(s.id)) moveTask(s.task_id, "review", "doing"); // you gave it more to do
+    setState(s, "working");
+  } else if (saw.state === "idle") {
+    if (s.agent_state === "waiting") return;
+    if (s.agent_state === null && !missed) return void setState(s, "waiting");
+    if (saw.interrupted) {
+      // You stopped it (Esc), so there's nothing to tell you; its task still stops holding its place.
+      setState(s, "waiting", "Interrupted");
+      if (!isTaskReviewer(s.id)) moveTask(s.task_id, "doing", "review");
+    } else turnEnded(s, s.agent_state ?? "working");
   }
 }
 

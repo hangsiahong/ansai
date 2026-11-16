@@ -301,3 +301,99 @@ describe("Codex, which only says when a turn ends", () => {
     expect(getSession("c")!).toMatchObject({ agent_state: "waiting", agent_message: null });
   });
 });
+
+describe("Antigravity, which says nothing at all", () => {
+  const task = (status: string) => db.query("INSERT INTO tasks (id, project_id, title, status, created_at, updated_at) VALUES ('t1', 'yp1', 'T', ?, 0, 0)").run(status);
+  const taskStatus = () => (db.query("SELECT status FROM tasks WHERE id = 't1'").get() as { status: string }).status;
+  const TRUST = ["Accessing workspace:", "", "/home/you/project", "", "Do you trust the contents of this project?", "", "Antigravity CLI requires permission to read, edit, and execute files here.", "", "> Yes, I trust this folder", "  No, exit", "", "  ↑/↓ Navigate · enter Confirm", "                 auto · Gemini 3.8 Flash · high"].join("\n");
+
+  test("its turn ends when its screen says so, and its task leaves Doing", async () => {
+    task("doing");
+    agent("g", { tool: "agy", state: null, task: "t1" });
+    const t0 = Date.now();
+    screens.set("ansai-g", screen.AGY_WORKING);
+    await sessions.watchAgyScreens(t0);
+    expect(getSession("g")!.agent_state).toBe("working");
+    await sessions.watchAgyScreens(t0 + 60_000); // its spinner can sit still for a minute: still working
+    expect(getSession("g")!.agent_state).toBe("working");
+    screens.set("ansai-g", screen.AGY_DONE);
+    await sessions.watchAgyScreens(t0 + 62_000); // seen once: could be a screen caught mid-redraw
+    expect(getSession("g")!.agent_state).toBe("working");
+    expect(taskStatus()).toBe("doing");
+    await sessions.watchAgyScreens(t0 + 66_000);
+    expect(getSession("g")!.agent_state).toBe("waiting");
+    expect(taskStatus()).toBe("review");
+  });
+
+  test("a glimpse of its prompt in the middle of a turn doesn't end the turn", async () => {
+    task("doing");
+    agent("g", { tool: "agy", state: "working", task: "t1" });
+    const t0 = Date.now();
+    screens.set("ansai-g", screen.AGY_DONE);
+    await sessions.watchAgyScreens(t0);
+    screens.set("ansai-g", screen.AGY_WORKING);
+    await sessions.watchAgyScreens(t0 + 2000);
+    screens.set("ansai-g", screen.AGY_DONE);
+    await sessions.watchAgyScreens(t0 + 4000); // counted from here, not from the first glimpse
+    expect(getSession("g")!.agent_state).toBe("working");
+    expect(taskStatus()).toBe("doing");
+  });
+
+  test("a prompt you give it afterwards puts its task back in Doing", async () => {
+    task("review");
+    agent("g", { tool: "agy", state: "waiting", task: "t1" });
+    screens.set("ansai-g", screen.AGY_WORKING_NARROW);
+    await sessions.watchAgyScreens();
+    expect(getSession("g")!.agent_state).toBe("working");
+    expect(taskStatus()).toBe("doing");
+  });
+
+  test("its permission question shows as Needs you; refusing it ends the turn as interrupted", async () => {
+    task("doing");
+    agent("g", { tool: "agy", state: "working", task: "t1" });
+    const t0 = Date.now();
+    screens.set("ansai-g", screen.AGY_ASK);
+    await sessions.watchAgyScreens(t0);
+    expect(getSession("g")!).toMatchObject({ agent_state: "needs-input", agent_message: "Run this command? touch probe2.txt" });
+    expect(taskStatus()).toBe("doing");
+    screens.set("ansai-g", screen.AGY_INTERRUPTED);
+    await sessions.watchAgyScreens(t0 + 2000);
+    await sessions.watchAgyScreens(t0 + 6000);
+    expect(getSession("g")!).toMatchObject({ agent_state: "waiting", agent_message: "Interrupted" });
+    expect(taskStatus()).toBe("review");
+  });
+
+  test("one opened without a prompt just waits for you", async () => {
+    task("doing");
+    agent("g", { tool: "agy", state: null, task: "t1" });
+    screens.set("ansai-g", screen.AGY_IDLE);
+    await sessions.watchAgyScreens();
+    await sessions.watchAgyScreens(Date.now() + 60_000);
+    expect(getSession("g")!.agent_state).toBe("waiting");
+    expect(taskStatus()).toBe("doing"); // nothing ran, so nothing finished
+  });
+
+  test("a first turn that went by while ansai was down still ends", async () => {
+    task("doing");
+    agent("g", { tool: "agy", state: null, task: "t1" });
+    db.query("UPDATE sessions SET argv = ? WHERE id = 'g'").run(JSON.stringify(["agy", "-i", "do the task"]));
+    const t0 = Date.now();
+    screens.set("ansai-g", screen.AGY_DONE);
+    await sessions.watchAgyScreens(t0);
+    await sessions.watchAgyScreens(t0 + 4000); // it may not have started on its prompt yet
+    expect(getSession("g")!.agent_state).toBeNull();
+    await sessions.watchAgyScreens(t0 + 12_000);
+    expect(getSession("g")!.agent_state).toBe("waiting");
+    expect(taskStatus()).toBe("review");
+  });
+
+  test("its folder-trust question and a shell under it are left alone", async () => {
+    agent("g", { tool: "agy", state: null });
+    screens.set("ansai-g", TRUST);
+    await sessions.watchAgyScreens();
+    expect(getSession("g")!.agent_state).toBeNull();
+    screens.set("ansai-g", "$ ls\nREADME.md\n$ ");
+    await sessions.watchAgyScreens();
+    expect(getSession("g")!.agent_state).toBeNull();
+  });
+});
