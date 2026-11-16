@@ -2,7 +2,7 @@ import type { ComponentChildren } from "preact";
 import { useEffect, useState } from "preact/hooks";
 import { api, type SystemHistory, type SystemNow, type SystemPoint, type SystemProcs, type SystemRange, type SystemSample, type SystemSettings, type SystemThresholds } from "./api";
 import { toast, toastError, useStore } from "./store";
-import { Empty, Icon, Link, ToolBadge, goBack } from "./ui";
+import { Empty, Icon, Link, Tile, ToolBadge, goBack } from "./ui";
 
 // ------------------------------------------------------------------ helpers
 
@@ -76,9 +76,7 @@ function Card(p: { icon: string; title: string; sub?: string; tone: string; chil
   return (
     <article class="sys-card">
       <header>
-        <span class={`tile sm ${p.tone}`}>
-          <Icon name={p.icon} size={14} />
-        </span>
+        <Tile icon={p.icon} tone={p.tone} size="sm" />
         <h3>{p.title}</h3>
         {p.sub && <span class="sys-sub">{p.sub}</span>}
       </header>
@@ -663,9 +661,7 @@ export function SystemRow() {
       </div>
       <div class="panel" style={{ "--sep": "66px" }}>
         <Link href="/system" class="cell">
-          <span class={`tile lg ${tone}`}>
-            <Icon name={top ? "alert" : "cpu"} size={19} />
-          </span>
+          <Tile icon={top ? "alert" : "cpu"} tone={tone} size="lg" />
           <span class="cell-main">
             <span class="cell-title">{top ? `${top.title}${h.issues.length > 1 ? ` (+${h.issues.length - 1} more)` : ""}` : "Running fine"}</span>
             <span class="cell-sub">{bits}</span>

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { api, STATUS_LABEL, TASK_STATUSES, type DeviceList, type ModelPick, type SelfRelease, type Settings, type Task, type ToolId } from "./api";
 import { confirmDialog, getState, openSheet, patchTaskLocal, refreshProjects, setTheme, toast, toastCleanup, toastError, useStore, type ThemePref } from "./store";
-import { AGENTS, Icon, Sheet, StatusPill, TOOL_LABEL, TOOL_SHORT, ToolBadge, ago, compact, nav, shortPath, until } from "./ui";
+import { AGENTS, Icon, Sheet, StatusPill, Tile, TOOL_LABEL, TOOL_SHORT, ToolBadge, ago, compact, nav, shortPath, until } from "./ui";
 import { AccountPicker } from "./accounts";
 import { NotifyPanel } from "./notify";
 import { ChangesSheet } from "./changes";
@@ -693,9 +693,7 @@ function DevicesPanel() {
       <div class="panel">
         {devices.map((d) => (
           <div class="prow">
-            <span class={`prow-icon ${d.online ? "online" : "muted-tile"}`}>
-              <Icon name={/ios|android/i.test(d.os) ? "phone" : "laptop"} size={16} />
-            </span>
+            <Tile icon={/ios|android/i.test(d.os) ? "phone" : "laptop"} tone={d.online ? "green" : "gray"} />
             <span class="prow-main">
               <span class="prow-name">
                 {d.name}
@@ -740,9 +738,7 @@ function BacklogSettings() {
   return (
     <div class="panel">
       <label class="switch-row">
-        <span class="tile blue">
-          <Icon name="history" size={16} />
-        </span>
+        <Tile icon="history" tone="blue" />
         <span class="switch-text">
           <b>Record agent sessions</b>
           <em>Sessions you start by hand show up as tasks</em>
@@ -750,9 +746,7 @@ function BacklogSettings() {
         <input type="checkbox" class="switch" checked={st.trackSessions} onChange={(e) => save({ trackSessions: (e.target as HTMLInputElement).checked })} />
       </label>
       <div class="switch-row">
-        <span class="tile indigo">
-          <Icon name="layers" size={16} />
-        </span>
+        <Tile icon="layers" tone="indigo" />
         <span class="switch-text">
           <b>Autopilot agents at once</b>
           <em>Across all projects · one per project</em>
@@ -768,9 +762,7 @@ function BacklogSettings() {
         </div>
       </div>
       <label class="switch-row">
-        <span class="tile teal">
-          <Icon name="stop" size={16} />
-        </span>
+        <Tile icon="power" tone="teal" />
         <span class="switch-text">
           <b>Close finished agents</b>
           <em>Close an autopilot agent an hour after it finished its task. Its work stays for you to review.</em>
@@ -778,9 +770,7 @@ function BacklogSettings() {
         <input type="checkbox" class="switch" checked={st.closeFinished} onChange={(e) => save({ closeFinished: (e.target as HTMLInputElement).checked })} />
       </label>
       <label class="switch-row">
-        <span class="tile red">
-          <Icon name="alert" size={16} />
-        </span>
+        <Tile icon="alert" tone="red" />
         <span class="switch-text">
           <b>ansai checks itself</b>
           <em>Every 10 minutes, look for signs ansai misbehaved and add a task for each to its own backlog. At most 3 a day.</em>
@@ -789,9 +779,7 @@ function BacklogSettings() {
       </label>
       {rel?.available && (
         <label class="switch-row">
-          <span class="tile green">
-            <Icon name="refresh" size={16} />
-          </span>
+          <Tile icon="refresh" tone="green" />
           <span class="switch-text">
             <b>Update ansai when you merge its tasks</b>
             <em>

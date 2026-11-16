@@ -1,7 +1,7 @@
 import { useMemo } from "preact/hooks";
 import type { Session } from "../api";
 import { openPalette, openSheet, useStore } from "../store";
-import { FolderIcon, Icon, Link, StatusPill, ToolBadge, sessionOrder, useTick } from "../ui";
+import { FolderIcon, Icon, Link, StatusPill, Tile, ToolBadge, sessionOrder, useTick } from "../ui";
 
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
 
@@ -99,7 +99,7 @@ export function Sidebar({ route }: { route: string }) {
 
       <footer class="side-foot">
         <button class="side-row" onClick={() => openSheet({ kind: "settings" })}>
-          <span class="tile gray sm"><Icon name="gear" size={14} /></span>
+          <Tile icon="gear" tone="gray" size="sm" />
           <span class="side-label">Settings</span>
           {me && <span class="side-device">{me.device}</span>}
         </button>

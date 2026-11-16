@@ -1,12 +1,12 @@
 import { useEffect, useState } from "preact/hooks";
 import { api } from "./api";
 import { toast, toastError } from "./store";
-import { Icon } from "./ui";
+import { Icon, Tile } from "./ui";
 
 const KINDS = [
   { id: "input", label: "An agent needs you", hint: "permission prompts and questions", icon: "question", color: "orange" },
   { id: "done", label: "An agent finished its turn", hint: "Claude Code and Codex", icon: "check", color: "green" },
-  { id: "exited", label: "An agent crashed", hint: "exited with an error", icon: "stop", color: "red" },
+  { id: "exited", label: "An agent crashed", hint: "exited with an error", icon: "x", color: "red" },
   { id: "system", label: "The machine is struggling", hint: "disk almost full, overheating, low memory or battery", icon: "cpu", color: "red" },
 ] as const;
 
@@ -92,9 +92,7 @@ export function NotifyPanel() {
     body = (
       <>
         <div class="notify-state">
-          <span class={`notify-icon ${sub ? "on" : ""}`}>
-            <Icon name="bell" size={16} />
-          </span>
+          <Tile icon="bell" tone={sub ? "red" : "gray"} />
           <div>
             <b>{sub ? "On for this device" : perm === "denied" ? "Blocked in browser settings" : "Off for this device"}</b>
             <div class="muted small">Pushes go out only when you're not already looking at that session.</div>
@@ -104,9 +102,7 @@ export function NotifyPanel() {
           <div class="panel">
             {KINDS.map((k) => (
               <label class="switch-row in-panel">
-                <span class={`tile ${k.color}`}>
-                  <Icon name={k.icon} size={16} />
-                </span>
+                <Tile icon={k.icon} tone={k.color} />
                 <span class="switch-text">
                   <b>{k.label}</b>
                   <em>{k.hint}</em>

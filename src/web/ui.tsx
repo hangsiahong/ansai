@@ -5,6 +5,7 @@ import { useStore } from "./store";
 import claudeIcon from "./icons/claude.svg";
 import codexIcon from "./icons/codex.svg";
 import agyIcon from "./icons/agy.svg";
+import { GLYPHS } from "./glyphs";
 
 // ------------------------------------------------------------------ routing
 
@@ -149,6 +150,31 @@ export function Icon({ name, size = 18, stroke = 1.9 }: { name: string; size?: n
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width={stroke} stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
       <path d={PATHS[name]} />
     </svg>
+  );
+}
+
+const TILE_PX = { sm: 24, md: 30, lg: 38 } as const;
+
+/** iOS Settings-style icon: a coloured squircle with a filled white glyph (see .tile and glyphs.ts). */
+export function Tile({ icon, tone, size = "md" }: { icon: string; tone: string; size?: keyof typeof TILE_PX }) {
+  const px = Math.round(TILE_PX[size] * 0.64);
+  const parts = GLYPHS[icon];
+  return (
+    <span class={`tile ${size === "md" ? "" : size} ${tone}`} aria-hidden="true">
+      {parts ? (
+        <svg width={px} height={px} viewBox="0 0 24 24">
+          {parts.map((p) =>
+            p[0] === "f" ? (
+              <path d={p[1]} fill="currentColor" fill-rule="evenodd" />
+            ) : (
+              <path d={p[1]} fill="none" stroke="currentColor" stroke-width={p[2]} stroke-linecap="round" stroke-linejoin="round" />
+            ),
+          )}
+        </svg>
+      ) : (
+        <Icon name={icon} size={px} stroke={2.4} />
+      )}
+    </span>
   );
 }
 
