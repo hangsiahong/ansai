@@ -38,6 +38,10 @@ function limitSummary(a: Account) {
   return [a.plan, ...ls.slice(0, 2).map((l) => `${l.label.replace("Weekly", "wk").replace("5-hour", "5h")} ${l.used_percent}%`)].filter(Boolean).join(" · ");
 }
 
+const LOGIN_WARN_MS = 5 * 86400_000;
+const loginEndsSoon = (a: Account) => !a.login_problem && a.logged_in && !!a.login_expires_at && a.login_expires_at - Date.now() < LOGIN_WARN_MS;
+const fmtDay = (ms: number) => new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+
 function AccountCard({ a }: { a: Account }) {
   const [menu, setMenu] = useState(false);
   const t = a.usage?.tokens;
@@ -143,6 +147,12 @@ function AccountCard({ a }: { a: Account }) {
         <p class="acct-note">
           Fresh tokens: input, cache writes and output. Re-reading cached context added {compact(t.cache_read_week)} more this week (
           {Math.round((t.cache_read_week / Math.max(1, t.total_week)) * 100)}% of all tokens), billed at a small fraction of the price.
+        </p>
+      )}
+
+      {loginEndsSoon(a) && (
+        <p class="acct-note" style={{ color: "var(--warn)" }}>
+          <b>Login ends {fmtDay(a.login_expires_at!)}.</b> It stops renewing then, and you'd have to sign in mid-task. Sign in again now, while nothing depends on it.
         </p>
       )}
 

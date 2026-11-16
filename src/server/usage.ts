@@ -133,6 +133,58 @@ export async function scanCodex(accountId: string, codexHome: string) {
   }, { includeNewest: true });
 }
 
+/**
+ * Claude's plan limits. Claude Code only rewrites `cachedUsageUtilization` in .claude.json when its own
+ * usage view loads, so reading that alone left Accounts hours stale (50% shown while the real number was 79%).
+ * Ask the same endpoint Claude Code asks, with the account's own access token, at most every few minutes.
+ * An expired token is never refreshed here: refreshing rotates the refresh token out from under Claude Code.
+ */
+const CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
+const CLAUDE_POLL_MS = 5 * 60_000;
+const CLAUDE_BACKOFF_MS = 15 * 60_000;
+const CLAUDE_LIMIT_KEYS = ["five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet"];
+const nextClaudePoll = new Map<string, number>();
+// Tokens Anthropic answered 401 while they were still unexpired (revoked, or signed out elsewhere), by expiry:
+// a refresh gives a new expiry, which clears this by itself.
+const rejectedTokens = new Map<string, number>();
+export const loginRejected = (accountId: string, expiresAt: unknown) => rejectedTokens.get(accountId) === Number(expiresAt);
+export const rejectLogin = (accountId: string, expiresAt: number) => void rejectedTokens.set(accountId, expiresAt);
+
+export async function fetchClaudeLimits(accountId: string, configDir: string, doFetch: typeof fetch = fetch): Promise<boolean> {
+  const t = now();
+  if (t < (nextClaudePoll.get(accountId) ?? 0)) return false;
+  let token: string | undefined;
+  let expiresAt = 0;
+  try {
+    const c = JSON.parse(await Bun.file(join(configDir, ".credentials.json")).text())?.claudeAiOauth;
+    if (c?.accessToken && Number(c.expiresAt) > t + 30_000) (token = c.accessToken), (expiresAt = Number(c.expiresAt));
+  } catch {}
+  if (!token) return false; // signed out or expired: Claude Code refreshes it when a session runs
+  nextClaudePoll.set(accountId, t + CLAUDE_BACKOFF_MS); // until proven fine
+  try {
+    const res = await doFetch(CLAUDE_USAGE_URL, {
+      headers: { Authorization: `Bearer ${token}`, "anthropic-beta": "oauth-2025-04-20", "User-Agent": "ansai" },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) {
+      console.error(`[ansai] claude usage ${accountId}: HTTP ${res.status}`);
+      if (res.status === 401) rejectedTokens.set(accountId, expiresAt);
+      return false;
+    }
+    rejectedTokens.delete(accountId);
+    const j = (await res.json()) as Record<string, unknown>;
+    const picked: Record<string, unknown> = {};
+    for (const k of CLAUDE_LIMIT_KEYS) if (j && k in j) picked[k] = j[k];
+    if (!Object.keys(picked).length) return false;
+    upsertLimits.run(accountId, JSON.stringify(picked), now());
+    nextClaudePoll.set(accountId, now() + CLAUDE_POLL_MS);
+    return true;
+  } catch (e) {
+    console.error(`[ansai] claude usage ${accountId}: ${(e as Error).name}`);
+    return false;
+  }
+}
+
 export function prune() {
   db.query("DELETE FROM usage_events WHERE ts < ?").run(now() - KEEP_DAYS * 86400_000);
 }

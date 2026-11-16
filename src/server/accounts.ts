@@ -1,10 +1,12 @@
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { config } from "./config";
-import { db, now } from "./db";
+import { db, getSetting, now, setSetting } from "./db";
 import { emit } from "./events";
+import { notify } from "./push";
+import { renewClaudeLogin } from "./renew";
 import { badRequest, conflict, notFound } from "./errors";
-import { prune, scanClaude, scanCodex, storedLimits, tokenSummary, type TokenSummary } from "./usage";
+import { fetchClaudeLimits, loginRejected, prune, scanClaude, scanCodex, storedLimits, tokenSummary, type TokenSummary } from "./usage";
 import { agyModels, agySignedIn, agySignInHint } from "./agyauth";
 
 export type AgentTool = "claude" | "codex" | "agy";
@@ -202,7 +204,18 @@ export function loginArgv(a: AccountRow): string[] {
 // ------------------------------------------------------------- reading info
 
 export type Limit = { id: string; label: string; used_percent: number; resets_at: number | null; reset: boolean };
-type Info = { email: string | null; plan: string | null; logged_in: boolean; limits: Limit[]; limits_at: number | null; note: string | null };
+type LoginProblem = "expired" | "rejected";
+type Info = {
+  email: string | null;
+  plan: string | null;
+  logged_in: boolean;
+  limits: Limit[];
+  limits_at: number | null;
+  note: string | null;
+  /** When the login stops being renewable on its own (Claude refresh token); null when unknown. */
+  login_expires_at?: number | null;
+  login_problem?: LoginProblem | null;
+};
 
 function readJson(path: string): any {
   try {
@@ -222,6 +235,7 @@ function jwtClaims(token: unknown): any {
 }
 
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+const shortDate = (ms: number) => new Date(ms).toLocaleDateString("en", { month: "short", day: "numeric" });
 
 function limit(id: string, label: string, pct: unknown, resetsAt: number | null): Limit | null {
   const n = Number(pct);
@@ -243,10 +257,20 @@ function claudeInfo(a: AccountRow): Info {
 
   const limits: Limit[] = [];
   let limits_at: number | null = null;
+  // Two sources: Claude Code's own cache (only rewritten when its usage view loads) and our own poll of
+  // the same endpoint (usage.ts). Whichever is newer wins.
   const cu = state.cachedUsageUtilization;
+  let u: any = null;
   if (cu?.utilization && (!cu.accountUuid || !oa.accountUuid || cu.accountUuid === oa.accountUuid)) {
     limits_at = cu.fetchedAtMs ?? null;
-    const u = cu.utilization;
+    u = cu.utilization;
+  }
+  const live = storedLimits(a.id);
+  if (live && (!u || live.at >= (limits_at ?? 0))) {
+    u = live.data;
+    limits_at = live.at;
+  }
+  if (u) {
     const named: [string, string][] = [
       ["five_hour", "5-hour"],
       ["seven_day", "Weekly"],
@@ -260,13 +284,30 @@ function claudeInfo(a: AccountRow): Info {
       if (l) limits.push(l);
     }
   }
+  // The access token lasts hours (30 minutes on some accounts) and Claude Code renews it while a session runs.
+  // The refresh token is what keeps the login alive; once it lapses, or Anthropic rejects the token, only a
+  // fresh sign-in helps. Know that early: say so here and warn before it happens (warnLogins).
+  const t = now();
+  const loginExpires = Number(creds?.refreshTokenExpiresAt) || null;
+  const accessValid = Number(creds?.expiresAt) > t;
+  const problem: LoginProblem | null =
+    loginExpires !== null && loginExpires < t && !accessValid ? "expired" : loginRejected(a.id, creds?.expiresAt) ? "rejected" : null;
+  const hasLogin = !!(creds?.refreshToken || creds?.accessToken || state.primaryApiKey);
+  const loginNote =
+    problem === "expired"
+      ? `This login lapsed on ${shortDate(loginExpires!)}. Sign in again.`
+      : problem === "rejected"
+        ? "Claude rejected this login (it was signed out elsewhere or revoked). Sign in again."
+        : null;
   return {
     email: oa.emailAddress ?? null,
     plan,
-    logged_in: !!(creds?.refreshToken || creds?.accessToken || state.primaryApiKey),
+    logged_in: hasLogin && !problem,
     limits,
     limits_at,
-    note: limits_at ? null : "Limits appear after Claude Code checks them (run a session or /usage).",
+    note: loginNote ?? (limits_at ? null : "Limits appear after Claude Code checks them (run a session or /usage)."),
+    login_expires_at: loginExpires,
+    login_problem: problem,
   };
 }
 
@@ -334,6 +375,8 @@ function readInfo(a: AccountRow): Info {
 
 export type AccountView = AccountRow & {
   logged_in: boolean;
+  login_expires_at: number | null;
+  login_problem: LoginProblem | null;
   running: number;
   usage: { limits: Limit[]; limits_at: number | null; tokens: TokenSummary; note: string | null };
 };
@@ -363,12 +406,48 @@ export function listAccounts(): AccountView[] {
       email: info.email,
       plan: info.plan,
       logged_in: info.logged_in,
+      login_expires_at: info.login_expires_at ?? null,
+      login_problem: info.login_problem ?? null,
       running: runMap.get(a.id) ?? 0,
       usage: { limits: info.limits, limits_at: info.limits_at, tokens: tokenSummary(a.id), note: info.note },
     };
   });
   cache = { at: now(), list };
   return list;
+}
+
+const LOGIN_WARN_MS = 5 * 86400_000;
+const LOGIN_WARN_EVERY_MS = 24 * 3600_000;
+
+/** Accounts whose Claude login needs a fresh sign-in now, or soon enough that doing it later risks a bad moment. */
+export function loginWarnings(list: AccountView[], t = now()): { id: string; kind: string; title: string; body: string }[] {
+  const out: { id: string; kind: string; title: string; body: string }[] = [];
+  for (const a of list) {
+    if (a.tool !== "claude") continue;
+    if (a.login_problem) {
+      out.push({ id: a.id, kind: a.login_problem, title: `Sign in again · ${a.name}`, body: a.usage.note ?? "This Claude login no longer works." });
+    } else if (a.logged_in && a.login_expires_at !== null && a.login_expires_at - t < LOGIN_WARN_MS) {
+      const days = Math.max(1, Math.ceil((a.login_expires_at - t) / 86400_000));
+      out.push({
+        id: a.id,
+        kind: "soon",
+        title: `Login ends soon · ${a.name}`,
+        body: `It stops renewing on ${shortDate(a.login_expires_at)} (${days} day${days === 1 ? "" : "s"}). Sign in again from Accounts now, while nothing depends on it.`,
+      });
+    }
+  }
+  return out;
+}
+
+/** One nudge a day per account, only while there's something to fix. Reuses the "needs you" push. */
+async function warnLogins(list: AccountView[]) {
+  for (const w of loginWarnings(list)) {
+    const key = `login-warned:${w.id}`;
+    const last = getSetting<{ at: number; kind: string }>(key, { at: 0, kind: "" });
+    if (last.kind === w.kind && now() - last.at < LOGIN_WARN_EVERY_MS) continue;
+    setSetting(key, { at: now(), kind: w.kind });
+    notify("input", { title: w.title, body: w.body, url: "/accounts", tag: `login-${w.id}` }).catch(() => {});
+  }
 }
 
 let scanning = false;
@@ -379,7 +458,12 @@ export async function scanUsage() {
   try {
     const rows = db.query("SELECT * FROM accounts").all() as AccountRow[];
     for (const a of rows) {
-      if (a.tool === "claude") await scanClaude(a.id, a.dir ?? join(H, ".claude"));
+      if (a.tool === "claude") {
+        const dir = a.dir ?? join(H, ".claude");
+        await scanClaude(a.id, dir);
+        await renewClaudeLogin(a.id, dir, !!a.dir); // before the limits poll, so a fresh token is used right away
+        await fetchClaudeLimits(a.id, dir);
+      }
       if (a.tool === "codex") await scanCodex(a.id, a.dir ?? join(H, ".codex"));
       if (a.tool === "agy") await agyModels(a.id, () => accountEnv(a, H)); // sign-in state, at most once a minute
     }
@@ -390,7 +474,9 @@ export async function scanUsage() {
     scanning = false;
   }
   cache = null;
-  const sig = JSON.stringify(listAccounts().map((a) => [a.id, a.email, a.plan, a.logged_in, a.running, a.usage]));
+  const accounts = listAccounts();
+  warnLogins(accounts).catch((e) => console.error("[ansai] login warning failed:", e));
+  const sig = JSON.stringify(accounts.map((a) => [a.id, a.email, a.plan, a.logged_in, a.login_expires_at, a.login_problem, a.running, a.usage]));
   if (sig !== lastSig) {
     lastSig = sig;
     emit("accounts");

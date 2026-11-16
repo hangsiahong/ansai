@@ -137,6 +137,9 @@ export type Account = {
   email: string | null;
   plan: string | null;
   logged_in: boolean;
+  /** Claude: when the login stops renewing on its own, and whether it already needs a fresh sign-in. */
+  login_expires_at?: number | null;
+  login_problem?: "expired" | "rejected" | null;
   running: number;
   usage: null | {
     limits: UsageLimit[];
