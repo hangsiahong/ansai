@@ -1,4 +1,4 @@
-import { db, now } from "./db";
+import { db, getSetting, now, setSetting } from "./db";
 import { badRequest, conflict, notFound } from "./errors";
 import { emit } from "./events";
 import { notify } from "./push";
@@ -12,8 +12,8 @@ import { shouldType, takeForTyping } from "./team";
  * instead of letting it wait for you. Claude gets it through its Stop hook (it
  * continues in the same turn), Codex gets it typed in once its turn has ended.
  * A shift ends when time is up, when the agent calls end_shift because nothing
- * useful is left, when it's nudged twice in a row without doing any work, or
- * when you end it. It leaves a short report: how long, how many nudges, and the
+ * useful is left, when it's nudged twice in a row without doing any work, when
+ * it has been nudged 30 times within an hour, or when you end it. It leaves a short report: how long, how many nudges, and the
  * commits made in the project meanwhile.
  */
 
@@ -25,7 +25,7 @@ export type ShiftRow = {
   focus: string | null;
   started_at: number;
   nudges: number;
-  /** Nudges in a row that produced no work (Claude: no tool call; Codex: a turn under a minute). */
+  /** Nudges in a row that produced no work (Claude: no tool call but ansai's own; Codex: a turn under a minute). */
   idle: number;
   /** Claude only: a tool ran since the last nudge. */
   worked: number;
@@ -42,8 +42,9 @@ export type ShiftView = Omit<ShiftRow, "report" | "worked"> & { active: boolean;
 
 /** Agents ansai can tell when a turn ends (agy has no hooks yet). */
 const SUPPORTED = new Set(["claude", "codex"]);
-/** Upper bound on nudges per hour, so a confused agent can't spin through tokens. */
+/** Upper bound on nudges in any one hour, so a confused agent can't spin through tokens. */
 const MAX_NUDGES_PER_HOUR = 30;
+const HOUR = 3600_000;
 /** A Codex turn shorter than this after a nudge counts as "nothing done". */
 const CODEX_IDLE_TURN = 60_000;
 /** Two nudges in a row with no work means the agent has run out of things to do. */
@@ -59,6 +60,14 @@ export const END_LABEL: Record<EndReason, string> = {
   cap: "it hit the hourly nudge limit",
   error: "the agent was stopped by an error (usage limit, login or billing)",
 };
+
+/**
+ * When this shift's nudges of the last hour happened. Kept in the database, so a restart
+ * of ansai doesn't hand a spinning agent a fresh allowance.
+ */
+const recentKey = (sessionId: string) => `shift-nudges:${sessionId}`;
+const recentNudges = (sessionId: string, t: number) => getSetting<number[]>(recentKey(sessionId), []).filter((at) => at > t - HOUR && at <= t);
+const forgetNudges = (sessionId: string) => db.query("DELETE FROM settings WHERE key = ?").run(recentKey(sessionId));
 
 function row(sessionId: string): ShiftRow | null {
   return db.query("SELECT * FROM shifts WHERE session_id = ?").get(sessionId) as ShiftRow | null;
@@ -118,6 +127,7 @@ export function startShift(sessionId: string, o: { until: number; focus?: string
        ON CONFLICT(session_id) DO UPDATE SET until = excluded.until, focus = excluded.focus, started_at = excluded.started_at,
          nudges = 0, idle = 0, worked = 0, last_nudge_at = NULL, ended_at = NULL, end_reason = NULL, summary = NULL, report = NULL`,
     ).run(sessionId, o.until, focus, t);
+    forgetNudges(sessionId);
   }
   emit("sessions");
   // An agent that is already waiting for you gets going right away (the loop types the nudge).
@@ -154,6 +164,7 @@ export function endShift(sessionId: string, reason: EndReason, summary?: string 
     summary?.trim() || null,
     sessionId,
   );
+  forgetNudges(sessionId);
   emit("sessions");
   if (!s) return;
   // The report (commits made meanwhile) is filled in shortly after; git can take a moment.
@@ -209,8 +220,13 @@ export function stopPressed(sessionId: string, keys: string[]) {
   if (midTurn) endShift(sessionId, "you");
 }
 
-/** Claude ran a tool: the shift is producing work. */
-export function shiftWorked(sessionId: string) {
+/**
+ * Claude ran a tool: the shift is producing work. ansai's own tools don't count: the shift
+ * prompt itself suggests list_tasks and list_agents, so an agent with nothing left to do
+ * that looked at the backlog and stopped again was "working" for ever.
+ */
+export function shiftWorked(sessionId: string, tool?: unknown) {
+  if (typeof tool === "string" && tool.startsWith("mcp__ansai__")) return;
   db.query("UPDATE shifts SET worked = 1, idle = 0 WHERE session_id = ? AND ended_at IS NULL AND worked = 0").run(sessionId);
 }
 
@@ -228,12 +244,14 @@ function nextNudge(s: SessionRow, didWork: boolean): string | null {
     endShift(s.id, "idle");
     return null;
   }
-  // On average no more than MAX_NUDGES_PER_HOUR (a burst early in the shift is fine).
-  const allowed = MAX_NUDGES_PER_HOUR * Math.max(1, Math.ceil((t - sh.started_at) / 3600_000));
-  if (sh.nudges >= allowed) {
+  // No more than MAX_NUDGES_PER_HOUR in any one hour. It used to be an average over the whole
+  // shift, so after seven quiet hours an agent could take 200 nudges back to back.
+  const recent = recentNudges(s.id, t);
+  if (recent.length >= MAX_NUDGES_PER_HOUR) {
     endShift(s.id, "cap");
     return null;
   }
+  setSetting(recentKey(s.id), [...recent, t]);
   db.query("UPDATE shifts SET nudges = nudges + 1, idle = ?, worked = 0, last_nudge_at = ? WHERE session_id = ?").run(idle, t, s.id);
   emit("sessions");
   return nudgeText(s, { ...sh, idle });

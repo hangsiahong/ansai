@@ -125,13 +125,64 @@ describe("Claude keeps going", () => {
     expect(handleHook("claude", "Stop", "b", {})?.decision).toBe("block");
   });
 
+  test("looking at ansai's backlog or team list isn't work: the shift still ends when nothing is left", () => {
+    agent("a", { task: "t1" });
+    shifts.startShift("a", { until: now() + HOUR });
+    expect(handleHook("claude", "Stop", "a", {})?.decision).toBe("block"); // first nudge
+    handleHook("claude", "PreToolUse", "a", { tool_name: "mcp__ansai__list_tasks" });
+    handleHook("claude", "PostToolUse", "a", { tool_name: "mcp__ansai__list_tasks" });
+    expect(handleHook("claude", "Stop", "a", {})?.decision).toBe("block"); // idle once
+    handleHook("claude", "PostToolUse", "a", { tool_name: "mcp__ansai__list_agents" });
+    expect(handleHook("claude", "Stop", "a", {})).toBeUndefined(); // idle twice: it used to go on like this all night
+    expect(shift("a")).toMatchObject({ active: false, end_reason: "idle" });
+  });
+
+  test("a real tool after a look at the backlog is work", () => {
+    agent("a");
+    shifts.startShift("a", { until: now() + HOUR });
+    for (let i = 0; i < 4; i++) {
+      expect(handleHook("claude", "Stop", "a", {})?.decision).toBe("block");
+      handleHook("claude", "PostToolUse", "a", { tool_name: "mcp__ansai__list_tasks" });
+      handleHook("claude", "PostToolUse", "a", { tool_name: "Edit" });
+    }
+    expect(shift("a")).toMatchObject({ active: true, nudges: 4, idle: 0 });
+  });
+
+  /** Nudge a working Claude until its shift lets it stop; how many nudges it got. */
+  const nudgesUntilStopped = (id: string, limit = 300) => {
+    for (let n = 0; n < limit; n++) {
+      handleHook("claude", "PostToolUse", id, { tool_name: "Bash" });
+      if (!handleHook("claude", "Stop", id, {})) return n;
+    }
+    return limit;
+  };
+
   test("the hourly nudge cap ends a runaway shift", () => {
     agent("a");
     shifts.startShift("a", { until: now() + HOUR });
-    db.query("UPDATE shifts SET nudges = 30 WHERE session_id = 'a'").run();
-    handleHook("claude", "PostToolUse", "a", {});
-    expect(handleHook("claude", "Stop", "a", {})).toBeUndefined();
+    expect(nudgesUntilStopped("a")).toBe(30);
+    expect(shift("a")).toMatchObject({ active: false, end_reason: "cap", nudges: 30 });
+  });
+
+  test("quiet hours don't save up nudges: a long shift is still held to 30 in an hour", () => {
+    agent("a");
+    shifts.startShift("a", { until: now() + 4 * HOUR });
+    // 7.5 hours in, 5 nudges so far, the last one two hours ago. It used to be allowed 235 more in a row.
+    db.query("UPDATE shifts SET started_at = ?, nudges = 5 WHERE session_id = 'a'").run(now() - 7.5 * HOUR);
+    db.query("INSERT OR REPLACE INTO settings (key, value) VALUES ('shift-nudges:a', ?)").run(JSON.stringify([now() - 2 * HOUR]));
+    expect(nudgesUntilStopped("a")).toBe(30);
     expect(shift("a").end_reason).toBe("cap");
+  });
+
+  test("nudges from more than an hour ago don't count against the cap, and a new shift starts clean", () => {
+    agent("a");
+    shifts.startShift("a", { until: now() + HOUR });
+    const old = Array.from({ length: 30 }, (_, i) => now() - HOUR - 1000 - i);
+    db.query("INSERT OR REPLACE INTO settings (key, value) VALUES ('shift-nudges:a', ?)").run(JSON.stringify(old));
+    handleHook("claude", "PostToolUse", "a", {});
+    expect(handleHook("claude", "Stop", "a", {})?.decision).toBe("block");
+    shifts.endShift("a", "you");
+    expect(db.query("SELECT 1 FROM settings WHERE key = 'shift-nudges:a'").get()).toBeNull();
   });
 });
 

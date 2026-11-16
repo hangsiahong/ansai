@@ -292,10 +292,10 @@ export function handleHook(tool: string, event: string, sessionId: string, paylo
       case "PreToolUse":
         if (s.agent_state !== "working") setState(s, "working");
         // Also counts as shift work here: agents started before PostToolUse was hooked only send PreToolUse.
-        shiftWorked(s.id);
+        shiftWorked(s.id, payload?.tool_name);
         return;
       case "PostToolUse": {
-        shiftWorked(s.id);
+        shiftWorked(s.id, payload?.tool_name);
         if (!reads) return;
         const msgs = takePending(s.id);
         const file = payload?.tool_input?.file_path ?? payload?.tool_input?.notebook_path;
