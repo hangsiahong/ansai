@@ -233,6 +233,12 @@ function parseClaude(line: string, st: ParseState, out: ChatItem[]) {
     const u = j.message.usage;
     if (u) st.context = (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.output_tokens ?? 0);
   }
+  // A compaction (yours or Claude Code's own) shrinks the context right away; don't
+  // wait for the next reply to show it, or a finished /compact looks like it did nothing.
+  if (j.type === "system" && j.subtype === "compact_boundary") {
+    const after = Number(j.compactMetadata?.postTokens);
+    st.context = Number.isFinite(after) && after > 0 ? after : null;
+  }
   if (j.type === "user") {
     if (j.isMeta) return;
     if (j.isCompactSummary) return void out.push({ id: j.uuid, k: "note", text: "Conversation compacted", ts });

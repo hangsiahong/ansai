@@ -81,3 +81,37 @@ describe("Codex transcript parsing", () => {
     } finally { chat.close(); }
   });
 });
+
+describe("context size", () => {
+  test("a compaction shows the smaller context at once, not after the next reply", async () => {
+    const { writeFileSync } = await import("node:fs");
+    const ts = new Date().toISOString();
+    const usage = { input_tokens: 10, cache_read_input_tokens: 178_000, cache_creation_input_tokens: 500, output_tokens: 200 };
+    const lines = [
+      { type: "user", uuid: "u1", timestamp: ts, message: { role: "user", content: "hi" } },
+      { type: "assistant", uuid: "a1", timestamp: ts, message: { model: "claude-opus-5-5", role: "assistant", content: [{ type: "text", text: "hello" }], usage } },
+    ];
+    const ctxOf = async (rows: object[]) => {
+      const id = `transcript-test-compact-${crypto.randomUUID()}`; // a fresh tail each time
+      const file = join(process.env.ANSAI_HOME!, `${id}.jsonl`);
+      sessions.push(id);
+      writeFileSync(file, rows.map((r) => JSON.stringify(r)).join("\n") + "\n");
+      db.query(
+        `INSERT INTO sessions (id, tool, title, cwd, argv, tmux_name, status, created_at, transcript)
+         VALUES (?, 'claude', 'Claude Code', '/tmp/transcript-project', '[]', ?, 'running', ?, ?)`,
+      ).run(id, `tmux-${id}`, Date.now(), file);
+      const messages: string[] = [];
+      const ws = { readyState: 1, send: (m: string) => messages.push(m) };
+      await subscribeChat(id, ws as never);
+      unsubscribeChat(id, ws as never);
+      return messages.map((m) => JSON.parse(m)).find((m) => m.t === "init")?.ctx;
+    };
+    expect(await ctxOf(lines)).toBe(178_710);
+    const compacted = [
+      ...lines,
+      { type: "system", subtype: "compact_boundary", uuid: "c1", timestamp: ts, content: "Conversation compacted", compactMetadata: { trigger: "manual", preTokens: 178_710, postTokens: 15_226 } },
+      { type: "user", uuid: "u2", timestamp: ts, isCompactSummary: true, message: { role: "user", content: "This session is being continued…" } },
+    ];
+    expect(await ctxOf(compacted)).toBe(15_226);
+  });
+});

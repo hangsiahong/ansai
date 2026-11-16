@@ -67,17 +67,24 @@ function App() {
   // for the on-screen keyboard: it pans the view down to the focused field instead.
   // Sizing the app to the visible height alone left that pan in place, so the compose
   // box ended up at the top of the screen with an empty gap down to the keyboard. So
-  // size the app to the visible area and move it to wherever that area is.
+  // while the keyboard is up, size the app to the visible area and move it there.
+  // Otherwise leave the size to CSS (100dvh): after the keyboard closes, iOS can go on
+  // reporting a visible height a status bar short, which left a gap under the app.
   useEffect(() => {
     const vv = window.visualViewport;
     if (!vv) return;
     const root = document.documentElement;
     const f = () => {
       const zoomed = Math.abs(vv.scale - 1) > 0.01; // a pinch-zoom pans on purpose; don't follow it
-      root.style.setProperty("--app-h", `${zoomed ? window.innerHeight : vv.height}px`);
-      root.style.setProperty("--app-top", `${zoomed ? 0 : Math.max(0, vv.pageTop)}px`);
       const kb = !zoomed && window.innerHeight - vv.height > 120;
-      if (!kb && root.hasAttribute("data-kb") && window.scrollY) window.scrollTo(0, 0); // iOS can leave the page scrolled after the keyboard closes
+      if (kb) {
+        root.style.setProperty("--app-h", `${vv.height}px`);
+        root.style.setProperty("--app-top", `${Math.max(0, vv.pageTop)}px`);
+      } else {
+        root.style.removeProperty("--app-h");
+        root.style.removeProperty("--app-top");
+        if (root.hasAttribute("data-kb") && window.scrollY) window.scrollTo(0, 0); // iOS can leave the page scrolled after the keyboard closes
+      }
       root.toggleAttribute("data-kb", kb);
     };
     f();

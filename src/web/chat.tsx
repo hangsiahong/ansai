@@ -393,23 +393,36 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
-const CTX_WARM = 100_000;
 const CTX_LONG = 150_000;
 
 /**
  * Every reply re-reads the whole conversation, so a long one costs more per turn
- * the longer it gets. Past ~150k, offer to compact it (or start fresh for new work).
+ * the longer it gets. Claude Code compacts on its own only near the model's full
+ * window (far past 150k on the big models), so past ~150k offer to do it sooner. A compaction
+ * takes about a minute and shows nothing in between, so say it's running until the
+ * transcript reports the smaller size.
  */
-function CompactCard({ s, ctx, onDismiss }: { s: Session; ctx: number; onDismiss: () => void }) {
+function CompactCard({ s, ctx, busy, onCompact, onDismiss }: { s: Session; ctx: number; busy: boolean; onCompact: () => void; onDismiss: () => void }) {
+  if (busy)
+    return (
+      <div class="live-card">
+        <div class="lc-head">
+          <i class="spin" /> Compacting · {compact(ctx)} tokens
+        </div>
+        <p class="lc-hint">Claude is summarizing the conversation. This takes about a minute; the size above drops when it's done.</p>
+      </div>
+    );
   return (
     <div class="live-card">
       <div class="lc-head">
         <Icon name="layers" size={16} /> Long conversation · {compact(ctx)} tokens
       </div>
       <div class="lc-body strong">Every reply re-reads all of it, so each turn costs more than the last.</div>
-      <p class="lc-hint">Compact it to a summary and keep going, or start a new session for unrelated work.</p>
+      <p class="lc-hint">
+        Claude Code compacts by itself only when it nears the model's limit, which on big models is far past this. Compact now to keep going for less, or start a new session for unrelated work.
+      </p>
       <div class="lc-actions two">
-        <button class="btn primary" onClick={() => api.send(s.id, "/compact", true).then(onDismiss).catch(toastError)}>
+        <button class="btn primary" onClick={() => api.send(s.id, "/compact", true).then(onCompact).catch(toastError)}>
           Compact
         </button>
         <button class="btn ghost" onClick={onDismiss}>
@@ -440,7 +453,15 @@ export function ChatView({ s, onCtx }: { s: Session; onCtx?: (tokens: number | n
   const [more, setMore] = useState(false);
   const [ctx, setCtx] = useState<number | null>(null);
   const [nudgeOff, setNudgeOff] = useState(false);
+  const [compacting, setCompacting] = useState<number | null>(null); // context size when you asked
   useEffect(() => onCtx?.(ctx), [ctx]);
+  // Done when the size drops (the transcript's compact marker), or give up after 3 minutes.
+  useEffect(() => {
+    if (compacting === null) return;
+    if (ctx !== null && ctx < compacting * 0.7) return void setCompacting(null);
+    const t = setTimeout(() => setCompacting(null), 180_000);
+    return () => clearTimeout(t);
+  }, [compacting, ctx]);
   const scroller = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   const [showJump, setShowJump] = useState(false);
@@ -532,19 +553,6 @@ export function ChatView({ s, onCtx }: { s: Session; onCtx?: (tokens: number | n
 
   return (
     <div class="chat">
-      {ctx !== null && ctx >= CTX_WARM && (
-        <div class={`ctx-bar ${ctx >= CTX_LONG ? "hot" : "warm"}`}>
-          <Icon name="layers" size={14} />
-          <span>
-            <b>{compact(ctx)} context.</b> Every reply re-reads all of it.
-          </span>
-          {running && st.cls !== "working" && (
-            <button class="btn sm" onClick={() => api.send(s.id, "/compact", true).catch(toastError)}>
-              Compact
-            </button>
-          )}
-        </div>
-      )}
       <div class="chat-scroll" ref={scroller} onScroll={onScroll}>
         <div class="chat-inner">
           {more && <div class="chat-note">Earlier messages are in the terminal history.</div>}
@@ -579,7 +587,9 @@ export function ChatView({ s, onCtx }: { s: Session; onCtx?: (tokens: number | n
           {running && st.cls === "attn" && !pendingQuestion && !s.startup?.message && <ApprovalCard s={s} />}
           {pendingQuestion && <QuestionCard s={s} t={pendingQuestion} />}
           {running && st.cls === "working" && <WorkingRow s={s} />}
-          {running && st.cls === "turn" && ctx !== null && ctx >= CTX_LONG && !nudgeOff && <CompactCard s={s} ctx={ctx} onDismiss={() => setNudgeOff(true)} />}
+          {running && ctx !== null && (compacting !== null || (st.cls === "turn" && ctx >= CTX_LONG && !nudgeOff)) && (
+            <CompactCard s={s} ctx={ctx} busy={compacting !== null} onCompact={() => setCompacting(ctx)} onDismiss={() => setNudgeOff(true)} />
+          )}
           {s.status === "exited" && <div class="chat-note">{TOOL_LABEL[s.tool]} exited.</div>}
           {phase === "reconnecting" && <div class="chat-note warn-text">Reconnecting…</div>}
         </div>
