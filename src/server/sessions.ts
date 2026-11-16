@@ -71,7 +71,8 @@ async function ensureServer() {
   serverChecked = true;
 }
 
-async function tmux(args: string[], stdin?: string) {
+type TmuxResult = { code: number; out: string; err: string };
+let runTmux = async (args: string[], stdin?: string): Promise<TmuxResult> => {
   const p = Bun.spawn([...tmuxBase(), ...args], {
     stdin: stdin !== undefined ? new Blob([stdin]) : "ignore",
     stdout: "pipe",
@@ -81,6 +82,13 @@ async function tmux(args: string[], stdin?: string) {
   const [out, err] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text()]);
   const code = await p.exited;
   return { code, out, err: err.trim() };
+};
+const tmux = (args: string[], stdin?: string) => runTmux(args, stdin);
+/** Tests: stand in for the tmux binary (they never touch a real tmux server). */
+export function setTmux(f: typeof runTmux): typeof runTmux {
+  const was = runTmux;
+  runTmux = f;
+  return was;
 }
 
 // --------------------------------------------------------------------- model
@@ -413,19 +421,41 @@ export async function scroll(id: string, dir: "up" | "down" | "exit") {
   }
 }
 
-/** Paste text as a bracketed paste (so multi-line prompts don't submit early), then optionally press Enter. */
-export async function sendText(id: string, text: string, enter = true) {
+/** What is being typed into each session right now; the next text waits for it. */
+const typing = new Map<string, Promise<void>>();
+let pasteSeq = 0;
+
+/**
+ * Paste text as a bracketed paste (so multi-line prompts don't submit early), then optionally press Enter.
+ * One at a time per session: a team message, a shift's next prompt and your own text can all
+ * be sent in the same moment, and two pastes running together used to overwrite each other
+ * (one text typed twice or not at all) or press Enter between the other's paste and its Enter.
+ */
+export function sendText(id: string, text: string, enter = true): Promise<void> {
+  const run = (typing.get(id) ?? Promise.resolve()).then(() => typeText(id, text, enter));
+  const settled = run.catch(() => {});
+  typing.set(id, settled);
+  void settled.then(() => {
+    if (typing.get(id) === settled) typing.delete(id);
+  });
+  return run;
+}
+
+async function typeText(id: string, text: string, enter: boolean) {
   const s = liveSession(id);
   const t = s.tmux_name;
   const inMode = (await tmux(["display", "-p", "-t", t, "#{pane_in_mode}"])).out.trim() === "1";
   if (inMode) await tmux(["send-keys", "-t", t, "-X", "cancel"]);
   if (text) {
-    const buf = `ansai-${s.id}`;
+    const buf = `ansai-${s.id}-${++pasteSeq}`; // its own buffer, so nothing else can replace it before the paste
     // The row lags tmux by up to a reconcile tick, so a just-killed pane fails here: 409, not 500.
     let r = await tmux(["load-buffer", "-b", buf, "-"], text);
     if (r.code !== 0) throw paneError(r.err);
     r = await tmux(["paste-buffer", "-p", "-d", "-b", buf, "-t", t]);
-    if (r.code !== 0) throw paneError(r.err);
+    if (r.code !== 0) {
+      await tmux(["delete-buffer", "-b", buf]); // -d only deletes it after a paste that worked
+      throw paneError(r.err);
+    }
   }
   if (enter) {
     if (text) await Bun.sleep(120); // let TUIs finish ingesting the paste

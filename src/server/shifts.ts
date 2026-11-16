@@ -3,7 +3,7 @@ import { badRequest, conflict, notFound } from "./errors";
 import { emit } from "./events";
 import { notify } from "./push";
 import { getSession, sendText, sessionView, type SessionRow } from "./sessions";
-import { wakes } from "./team";
+import { shouldType, takeForTyping } from "./team";
 
 /**
  * Shifts: keep an agent working until a set time while you're away.
@@ -297,9 +297,13 @@ export async function nudgeIdle() {
       endShift(s.id, "you");
       continue;
     }
-    if (nudging.has(s.id) || wakes(s)) continue; // a waiting team message goes first; it starts a turn of its own
+    if (nudging.has(s.id)) continue;
     const view = sessionView(s);
     const quietFor = t - (view.activity_at ?? 0);
+    // A team message that is about to be typed in goes first: it starts a turn of its own.
+    // One that is being held back (the agent's task is finished, or it has sat idle a long
+    // time) must not hold the shift up for good: the agent gets it with this prompt instead.
+    if (shouldType(s, view.activity_at ? quietFor : null)) continue;
     if (quietFor < 4000) continue; // let the screen settle after the turn
     if (s.agent_state === null && (view.startup || quietFor < 10_000)) continue; // a fresh Codex: only once it's clearly sitting at its prompt
     const sh = active(s.id);
@@ -311,7 +315,15 @@ export async function nudgeIdle() {
     nudging.add(s.id);
     try {
       const text = nextNudge(s, didWork);
-      if (text) await sendText(s.id, text, true);
+      // Claude picks up waiting messages by itself when a prompt is submitted (its hook hands
+      // them over); Codex has no such hook, so they are typed in front of the prompt.
+      const held = text && s.tool === "codex" ? takeForTyping(s.id) : null;
+      try {
+        if (text) await sendText(s.id, held ? `${held.text}\n\n${text}` : text, true);
+      } catch (e) {
+        held?.giveBack();
+        throw e;
+      }
     } catch (e) {
       console.error("[ansai] shift nudge:", e);
     } finally {

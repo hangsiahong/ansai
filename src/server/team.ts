@@ -100,15 +100,34 @@ function format(msgs: Message[], s: SessionRow): string {
 
 /** Hand over everything pending (marks it delivered). Null when there is nothing. */
 export function takePending(sessionId: string): string | null {
+  return takeForTyping(sessionId)?.text ?? null;
+}
+
+/**
+ * takePending for text that is about to be typed into the agent's terminal, which can
+ * fail (the pane just died). `giveBack` then puts the messages back as undelivered, so
+ * they aren't shown as Delivered and lost; they go out with the next delivery instead.
+ */
+export function takeForTyping(sessionId: string): { text: string; giveBack: () => void } | null {
   const s = getSession(sessionId);
   if (!s || s.status !== "running") return null;
   const msgs = pendingFor(s);
   if (!msgs.length) return null;
+  const before = s.msg_cursor ?? 0;
   const last = msgs[msgs.length - 1]!.id;
+  const at = now();
   db.query("UPDATE sessions SET msg_cursor = ? WHERE id = ? AND msg_cursor < ?").run(last, s.id, last);
-  db.query("UPDATE messages SET delivered_at = ? WHERE to_session = ? AND id <= ? AND delivered_at IS NULL").run(now(), s.id, last);
+  db.query("UPDATE messages SET delivered_at = ? WHERE to_session = ? AND id <= ? AND delivered_at IS NULL").run(at, s.id, last);
   emit("messages");
-  return format(msgs, s);
+  return {
+    text: format(msgs, s),
+    giveBack: () => {
+      const r = db.query("UPDATE sessions SET msg_cursor = ? WHERE id = ? AND msg_cursor = ?").run(before, s.id, last);
+      if (!r.changes) return; // something newer was delivered since: leave it
+      db.query("UPDATE messages SET delivered_at = NULL WHERE to_session = ? AND id > ? AND id <= ? AND delivered_at = ?").run(s.id, before, last, at);
+      emit("messages");
+    },
+  };
 }
 
 // ------------------------------------------------------------------ sending
@@ -232,9 +251,12 @@ export async function deliverIdle() {
     const at = sessionView(s).activity_at;
     if (!shouldType(s, at ? Date.now() - at : null)) continue;
     delivering.add(s.id);
+    const taken = takeForTyping(s.id);
     try {
-      const text = takePending(s.id);
-      if (text) await sendText(s.id, text, true);
+      if (taken) await sendText(s.id, taken.text, true);
+    } catch (e) {
+      taken?.giveBack(); // not typed: don't leave it marked Delivered
+      console.error(`[ansai] couldn't type a team message into ${s.id}:`, e instanceof Error ? e.message : e);
     } finally {
       delivering.delete(s.id);
     }
