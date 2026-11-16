@@ -42,6 +42,7 @@ const END: Record<string, string> = {
   you: "ended by you",
   exited: "agent stopped",
   cap: "hit the nudge limit",
+  error: "stopped by an error",
 };
 
 type Tab = "review" | "done" | "code" | "shifts" | "filed";

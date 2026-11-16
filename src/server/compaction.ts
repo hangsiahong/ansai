@@ -54,6 +54,8 @@ export function requestCompaction(sessionId: string, keep: string, next: string)
 }
 
 export const compactionAsked = (sessionId: string) => plans.get(sessionId)?.phase === "asked";
+/** ansai typed /compact for this agent and is waiting for it to finish. */
+export const compactionRunning = (sessionId: string) => plans.get(sessionId)?.phase === "compacting";
 
 /**
  * The agent's turn ended with a compaction asked for: type /compact once Claude is back

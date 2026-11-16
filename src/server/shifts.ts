@@ -36,7 +36,7 @@ export type ShiftRow = {
   report: string | null;
 };
 
-export type EndReason = "time" | "agent" | "idle" | "you" | "exited" | "cap";
+export type EndReason = "time" | "agent" | "idle" | "you" | "exited" | "cap" | "error";
 
 export type ShiftView = Omit<ShiftRow, "report" | "worked"> & { active: boolean; report: ShiftReport | null };
 
@@ -57,6 +57,7 @@ export const END_LABEL: Record<EndReason, string> = {
   you: "you ended it",
   exited: "the agent stopped running",
   cap: "it hit the hourly nudge limit",
+  error: "the agent was stopped by an error (usage limit, login or billing)",
 };
 
 function row(sessionId: string): ShiftRow | null {

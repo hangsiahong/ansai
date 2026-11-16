@@ -17,6 +17,7 @@ const END_LABEL: Record<NonNullable<Shift["end_reason"]>, string> = {
   you: "You ended it",
   exited: "The agent stopped running",
   cap: "It hit the hourly nudge limit",
+  error: "An error stopped the agent (usage limit, login or billing)",
 };
 
 /** Agents ansai can keep going (it needs to know when a turn ends). */

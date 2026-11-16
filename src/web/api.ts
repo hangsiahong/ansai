@@ -69,7 +69,7 @@ export type Shift = {
   idle: number;
   last_nudge_at: number | null;
   ended_at: number | null;
-  end_reason: "time" | "agent" | "idle" | "you" | "exited" | "cap" | null;
+  end_reason: "time" | "agent" | "idle" | "you" | "exited" | "cap" | "error" | null;
   summary: string | null;
   report: { commits: { sha: string; subject: string }[]; moreCommits: number } | null;
 };

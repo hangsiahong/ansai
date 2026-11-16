@@ -7,9 +7,9 @@ import { emit } from "./events";
 import { notify } from "./push";
 import { isWatched } from "./viewers";
 import { dropClaims, editWarning, getPlaybook, takePending, wakes } from "./team";
-import { compacted, contextNudge, dropCompaction, startCompaction } from "./compaction";
+import { compacted, compactionRunning, contextNudge, dropCompaction, startCompaction } from "./compaction";
 import { clearStartup, getSession, sessionView } from "./sessions";
-import { claudeStop, codexTurnEnded, shiftView, shiftWorked } from "./shifts";
+import { claudeStop, codexTurnEnded, endShift, shiftView, shiftWorked } from "./shifts";
 
 const EDITS = new Set(["Edit", "MultiEdit", "Write", "NotebookEdit"]);
 import type { ToolId } from "./tools";
@@ -43,6 +43,8 @@ function hookSettings() {
       Notification: entry("Notification"),
       PreCompact: entry("PreCompact"),
       Stop: entry("Stop", { speaks: true }),
+      // Fires instead of Stop when an API error ended the turn (usage limit, overloaded, login…).
+      StopFailure: entry("StopFailure"),
     },
   };
   return settings;
@@ -202,6 +204,43 @@ function turnEnded(s: Row, was: string | null) {
   }
 }
 
+/** Why Claude's turn ended on an API error (its StopFailure hook), in plain words. */
+const STOP_FAILURES: Record<string, string> = {
+  rate_limit: "it hit this account's usage limit",
+  overloaded: "Claude's servers were overloaded",
+  server_error: "Claude's servers had an error",
+  authentication_failed: "its login stopped working (sign in again on the Accounts page)",
+  oauth_org_not_allowed: "its login isn't allowed for this organisation",
+  account_on_hold: "the account is on hold",
+  verification_required: "the account needs verifying",
+  billing_error: "there's a billing problem on the account",
+  invalid_request: "Claude refused the request",
+  model_not_found: "the model it was set to use isn't available on this account",
+  cloud_credential_error: "its cloud login stopped working",
+  max_output_tokens: "its reply hit the output limit",
+};
+/** Errors that go away by themselves: an agent on shift may try again. The rest need you. */
+const PASSING_FAILURES = new Set(["overloaded", "server_error", "max_output_tokens", "unknown"]);
+
+/**
+ * The turn ended on an API error, so no Stop hook comes. Without this the session
+ * showed Working and its task sat in Doing, holding an autopilot slot, all night.
+ */
+function turnFailed(s: Row, payload: any) {
+  const error = typeof payload?.error === "string" ? payload.error : "unknown";
+  const why = STOP_FAILURES[error] ?? `the API returned an error (${clip(error.replace(/_/g, " "), 60)})`;
+  // A shift would type the next prompt straight into the same error, twice, and then report "ran out of work".
+  if (!PASSING_FAILURES.has(error) && shiftView(s.id)?.active) endShift(s.id, "error");
+  setState(s, "waiting", `Stopped: ${why}`);
+  if (shiftView(s.id)?.active) return; // a passing error: the shift's next prompt is the retry
+  if (isTaskReviewer(s.id)) return;
+  if (s.task_id) {
+    const r = db.query("UPDATE tasks SET status = 'review', last_failure = ?, updated_at = ? WHERE id = ? AND status = 'doing'").run(why, now(), s.task_id);
+    if (r.changes) emit("tasks");
+  }
+  push(s, "input", `Stopped before finishing: ${why}.`);
+}
+
 /**
  * `reads`: Claude reads this hook's reply (the hooks file marks those commands with r=1).
  * Agents started with an older hooks file send their output to /dev/null, so anything
@@ -270,6 +309,10 @@ export function handleHook(tool: string, event: string, sessionId: string, paylo
         const type = String(payload?.notification_type ?? "");
         const idle = type === "idle_prompt" || /waiting for your input/i.test(msg);
         if (idle) {
+          // Claude says it has sat at its prompt for a minute, yet ansai still has it mid-turn: the
+          // turn's Stop hook never arrived (ansai was restarting, or the agent predates StopFailure).
+          // End the turn now. On shift, "waiting" is enough: the next prompt gets typed in.
+          if (s.agent_state === "working" && !compactionRunning(s.id) && !shiftView(s.id)?.active) return void turnEnded(s, "working");
           setState(s, "waiting", msg);
           return;
         }
@@ -303,6 +346,9 @@ export function handleHook(tool: string, event: string, sessionId: string, paylo
         turnEnded(s, s.agent_state);
         return;
       }
+      case "StopFailure":
+        turnFailed(s, payload);
+        return;
     }
     return;
   }
