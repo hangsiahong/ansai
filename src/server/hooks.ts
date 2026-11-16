@@ -27,6 +27,18 @@ const hooksFile = join(config.dataDir, "claude-hooks.json");
 /** The hooks plus lean startup's settings (see lean.ts), rewritten at each lean launch. */
 const leanHooksFile = join(config.dataDir, "claude-hooks-lean.json");
 const base = () => `http://127.0.0.1:${config.port}/api/hooks`;
+/** What the destructive-command guard (guard.ts) protects, rewritten at each agent start so new projects count. */
+const guardFile = join(config.dataDir, "guard.json");
+const sh = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
+/** Runs guard.ts locally, not through ansai's API, so it still guards while ansai restarts. */
+const guardCommand = (agent: "claude" | "codex") => `${sh(process.execPath)} ${sh(join(import.meta.dir, "guard.ts"))} ${agent} ${sh(guardFile)}`;
+
+function writeGuardFile() {
+  const projects = (db.query("SELECT path FROM projects").all() as { path: string }[]).map((p) => p.path);
+  const tmp = `${guardFile}.${process.pid}.tmp`;
+  writeFileSync(tmp, JSON.stringify({ home: config.home, dataDir: config.dataDir, projects, sockets: [...new Set([config.tmuxSocket, "ansai"])] }));
+  renameSync(tmp, guardFile);
+}
 /** Each call shows the session's key (sessionkeys.ts), read from the agent's environment by the shell that runs the hook. */
 const KEY_HEADER = `authorization: Bearer $${KEY_ENV}`;
 
@@ -42,7 +54,10 @@ function hookSettings() {
     hooks: {
       SessionStart: entry("SessionStart"),
       UserPromptSubmit: entry("UserPromptSubmit", { speaks: true }),
-      PreToolUse: entry("PreToolUse", { matcher: "*" }),
+      PreToolUse: [
+        ...entry("PreToolUse", { matcher: "*" }),
+        { matcher: "Bash|Write|Edit|MultiEdit|NotebookEdit", hooks: [{ type: "command", command: guardCommand("claude"), timeout: 5 }] },
+      ],
       PostToolUse: entry("PostToolUse", { matcher: "*", speaks: true }),
       Notification: entry("Notification"),
       PreCompact: entry("PreCompact"),
@@ -55,6 +70,7 @@ function hookSettings() {
 }
 
 export function writeHookFiles() {
+  writeGuardFile();
   writeFileSync(hooksFile, JSON.stringify(hookSettings(), null, 2));
 }
 
@@ -118,6 +134,7 @@ export type HookOpts = {
  */
 export function withHooks(tool: ToolId, argv: string[], sessionId: string, playbook = "", instructions?: string, o: HookOpts = {}): string[] {
   const note = instructions ?? (playbook ? `${AGENT_NOTE}\n\n${playbook}` : AGENT_NOTE);
+  if (tool === "claude" || tool === "codex") writeGuardFile();
   if (tool === "claude")
     return [
       argv[0]!,
@@ -135,6 +152,10 @@ export function withHooks(tool: ToolId, argv: string[], sessionId: string, playb
       argv[0]!,
       "-c",
       codexNotify(),
+      "-c",
+      `hooks.PreToolUse=[{matcher="^Bash$",hooks=[{type="command",command=${toml(guardCommand("codex"))},timeout=5}]}]`,
+      // Codex runs a hook only once you've trusted it in /hooks; this one is ansai's own, written above.
+      "--dangerously-bypass-hook-trust",
       "-c",
       `mcp_servers.ansai.url=${toml(mcpUrl(sessionId))}`,
       // Codex sends this environment variable's value as `Authorization: Bearer …`.

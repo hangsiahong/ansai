@@ -129,12 +129,15 @@ describe("how the key reaches the agent", () => {
     expect(codex.find((a) => a.startsWith("notify="))).toContain(`-H "authorization: Bearer $${KEY_ENV}"`);
   });
 
-  test("every Claude hook shows it", () => {
+  test("every Claude hook that calls ansai shows it", () => {
     writeHookFiles();
     const file = JSON.parse(readFileSync(join(config.dataDir, "claude-hooks.json"), "utf8")) as { hooks: Record<string, { hooks: { command: string }[] }[]> };
     const commands = Object.values(file.hooks).flatMap((e) => e.flatMap((x) => x.hooks.map((h) => h.command)));
-    expect(commands.length).toBeGreaterThan(5);
-    for (const c of commands) expect(c).toContain(`-H "authorization: Bearer $${KEY_ENV}"`);
+    const calls = commands.filter((c) => c.includes("/api/hooks/"));
+    expect(calls.length).toBeGreaterThan(5);
+    for (const c of calls) expect(c).toContain(`-H "authorization: Bearer $${KEY_ENV}"`);
+    // The rest (the destructive-command guard) run locally and never reach ansai's API.
+    for (const c of commands.filter((c) => !calls.includes(c))) expect(c).not.toContain("127.0.0.1");
   });
 
   test("a new session gets its key in its environment, and nothing ansai shows carries it", async () => {
