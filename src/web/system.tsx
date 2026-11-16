@@ -1,7 +1,7 @@
 import type { ComponentChildren } from "preact";
 import { useEffect, useState } from "preact/hooks";
-import { api, type SystemHistory, type SystemNow, type SystemPoint, type SystemProcs, type SystemRange, type SystemSample } from "./api";
-import { useStore } from "./store";
+import { api, type SystemHistory, type SystemNow, type SystemPoint, type SystemProcs, type SystemRange, type SystemSample, type SystemSettings, type SystemThresholds } from "./api";
+import { toast, toastError, useStore } from "./store";
 import { Empty, Icon, Link, ToolBadge, goBack } from "./ui";
 
 // ------------------------------------------------------------------ helpers
@@ -164,13 +164,16 @@ function TempCard({ s }: { s: Sample }) {
           </div>
         </>
       )}
-      {s.fans.length > 0 && (
-        <dl class="sys-facts">
-          {s.fans.map((f) => (
-            <Fact k={f.label} v={f.rpm ? `${f.rpm} rpm` : "off"} />
-          ))}
-        </dl>
-      )}
+      {s.fans.length > 0 &&
+        (s.fans.every((f) => f.rpm === 0) ? (
+          <p class="muted small">Fans are off. Most laptops keep them off until the chip warms up, then start them on their own.</p>
+        ) : (
+          <dl class="sys-facts">
+            {s.fans.map((f) => (
+              <Fact k={f.label} v={f.rpm ? `${f.rpm} rpm` : "off"} />
+            ))}
+          </dl>
+        ))}
     </Card>
   );
 }
@@ -353,7 +356,7 @@ const tempDomain = (pts: SystemPoint[]): [number, number] => {
   return [Math.max(0, lo), hi];
 };
 
-function History({ range, setRange, h }: { range: SystemRange; setRange: (r: SystemRange) => void; h: SystemHistory | null }) {
+function History({ range, setRange, h, hot }: { range: SystemRange; setRange: (r: SystemRange) => void; h: SystemHistory | null; hot: number }) {
   const span = RANGES.find((r) => r.id === range)!.span;
   const from = h?.from ?? Date.now() - span;
   const to = from + span;
@@ -386,7 +389,7 @@ function History({ range, setRange, h }: { range: SystemRange; setRange: (r: Sys
       <div class="panel" style={{ "--sep": "16px" }}>
         <Chart {...common} title="Processor" color="var(--accent)" pts={pts.map((p) => ({ t: p.t, v: p.cpu, peak: p.cpuMax }))} domain={[0, 100]} fmt={pct} />
         <Chart {...common} title="Memory" color="var(--indigo)" pts={pts.map((p) => ({ t: p.t, v: p.mem }))} domain={[0, 100]} fmt={pct} />
-        <Chart {...common} title="Temperature (hottest CPU or GPU)" color="var(--warn)" pts={pts.map((p) => ({ t: p.t, v: p.temp }))} domain={tempDomain(pts)} mark={90} fmt={(n) => `${Math.round(n)}°C`} />
+        <Chart {...common} title="Temperature (hottest CPU or GPU)" color="var(--warn)" pts={pts.map((p) => ({ t: p.t, v: p.temp }))} domain={tempDomain(pts)} mark={hot} fmt={(n) => `${Math.round(n)}°C`} />
       </div>
       <p class="sec-foot">Averages per step, with the processor's peak as the thin line. Gaps are times ansai wasn't running or the machine slept.</p>
     </section>
@@ -471,6 +474,103 @@ function Usage({ p }: { p: SystemProcs | null }) {
   );
 }
 
+// -------------------------------------------------------------------- alerts
+
+const FIELDS: { key: keyof SystemThresholds; title: string; hint: string; unit: string }[] = [
+  { key: "diskPct", title: "A disk is getting full", hint: "Warn at this much full. It turns critical 5 points higher.", unit: "%" },
+  { key: "cpuTemp", title: "The CPU or GPU is hot", hint: "Warn at this temperature. It turns critical 7 degrees higher. SSD, Wi-Fi and board keep their own chip's limits.", unit: "°C" },
+  { key: "memFreePct", title: "Memory is running low", hint: "Warn when less than this much is available. Critical at half of it.", unit: "%" },
+  { key: "batteryPct", title: "The battery is low", hint: "Warn at or below this, while on battery. Critical at half of it.", unit: "%" },
+  { key: "confirmMin", title: "Wait before telling me", hint: "How long a problem must last first, so a short spike isn't news. A critical one waits one minute at most. 0 means right away.", unit: "min" },
+];
+
+function Alerts() {
+  const [cfg, setCfg] = useState<SystemSettings | null>(null);
+  const [draft, setDraft] = useState<Partial<Record<keyof SystemThresholds, string>>>({});
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    api.systemSettings().then(setCfg).catch(() => {});
+  }, []);
+  if (!cfg) return null;
+
+  const save = async (patch: Partial<SystemThresholds>, done = "Saved") => {
+    try {
+      setCfg(await api.saveSystemSettings(patch));
+      setDraft({});
+      toast(done);
+    } catch (e) {
+      setDraft({});
+      toastError(e);
+    }
+  };
+  const commit = (key: keyof SystemThresholds) => {
+    const text = draft[key];
+    if (text == null) return;
+    const n = Number(text);
+    const { min, max } = cfg.limits[key];
+    if (text.trim() === "" || !Number.isFinite(n)) return setDraft({});
+    const v = clamp(Math.round(n), min, max);
+    if (v === cfg.values[key]) return setDraft({});
+    save({ [key]: v });
+  };
+  const test = async () => {
+    setBusy(true);
+    try {
+      const { devices } = await api.testSystemAlert();
+      toast(devices ? `Test alert sent to ${devices} ${devices === 1 ? "device" : "devices"}` : "No device has these alerts on yet. Turn on notifications under Settings.", devices ? "info" : "error");
+    } catch (e) {
+      toastError(e);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const changed = FIELDS.some((f) => cfg.values[f.key] !== cfg.defaults[f.key]);
+
+  return (
+    <section class="sec" id="sys-alerts">
+      <h2 class="sec-title">Alerts</h2>
+      <div class="panel" style={{ "--sep": "16px" }}>
+        {FIELDS.map((f) => (
+          <label class="sys-set">
+            <span class="sys-set-text">
+              <b>{f.title}</b>
+              <em>{f.hint}</em>
+            </span>
+            <span class="sys-set-input">
+              <input
+                class="input"
+                type="number"
+                inputMode="numeric"
+                min={cfg.limits[f.key].min}
+                max={cfg.limits[f.key].max}
+                value={draft[f.key] ?? String(cfg.values[f.key])}
+                title={`${cfg.limits[f.key].min} to ${cfg.limits[f.key].max}`}
+                onInput={(e) => setDraft({ ...draft, [f.key]: (e.target as HTMLInputElement).value })}
+                onChange={() => commit(f.key)}
+                onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
+              />
+              <i>{f.unit}</i>
+            </span>
+          </label>
+        ))}
+      </div>
+      <div class="sys-alert-actions">
+        <button class="btn sm" onClick={test} disabled={busy}>
+          <Icon name="bell" size={14} /> Send a test alert
+        </button>
+        {changed && (
+          <button class="btn sm ghost" onClick={() => save(cfg.defaults, "Back to the defaults")}>
+            Reset to defaults
+          </button>
+        )}
+      </div>
+      <p class="sec-foot">
+        Alerts reach every device that has notifications on (Settings › Notifications › "The machine is struggling"). Each one is sent once, and again no sooner than 6 hours later unless it gets worse.
+      </p>
+    </section>
+  );
+}
+
 // --------------------------------------------------------------------- pages
 
 export function SystemPane() {
@@ -491,6 +591,11 @@ export function SystemPane() {
           <h1>System</h1>
           <div class="sub">{s ? `${s.host} · up ${uptime(s.uptime)}` : "The machine ansai runs on"}</div>
         </div>
+        {now.data?.supported && (
+          <button class="icon-btn" onClick={() => document.getElementById("sys-alerts")?.scrollIntoView({ behavior: "smooth" })} title="Alert settings" aria-label="Alert settings">
+            <Icon name="bell" />
+          </button>
+        )}
       </header>
       <div class="scroll wide">
         {unsupported && (
@@ -510,8 +615,9 @@ export function SystemPane() {
               <StorageCard s={s} />
               {s.battery && <BatteryCard b={s.battery} />}
             </div>
-            <History range={range} setRange={setRange} h={hist.data} />
+            <History range={range} setRange={setRange} h={hist.data} hot={now.data.thresholds.cpuTemp} />
             <Usage p={procs.data} />
+            <Alerts />
           </>
         )}
       </div>

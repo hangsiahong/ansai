@@ -227,7 +227,7 @@ export function classifySensor(chip: string, label: string, idx: number): { name
 }
 
 /** Warn/crit from what the chip itself reports (`temp_max`, `temp_crit`), else sensible defaults. */
-function thresholds(kind: TempKind, max: number | null, crit: number | null): [number, number] {
+function sensorLimits(kind: TempKind, max: number | null, crit: number | null): [number, number] {
   const sane = (x: number | null): x is number => x != null && x >= 40 && x <= 150;
   const [dw, dc] = TEMP_DEFAULTS[kind];
   const c = sane(crit) ? crit : sane(max) ? max : dc;
@@ -262,7 +262,7 @@ export function discoverSensors(root = "/sys/class"): SensorDef[] {
       if (!cls) continue;
       const max = num(read(join(base, `temp${idx}_max`)));
       const crit = num(read(join(base, `temp${idx}_crit`)));
-      const [warn, critC] = thresholds(cls.kind, max == null ? null : max / 1000, crit == null ? null : crit / 1000);
+      const [warn, critC] = sensorLimits(cls.kind, max == null ? null : max / 1000, crit == null ? null : crit / 1000);
       found.push({
         label: cls.name,
         kind: cls.kind,
@@ -290,7 +290,7 @@ export function discoverSensors(root = "/sys/class"): SensorDef[] {
     for (const z of zones) {
       const type = read(join(tz, z, "type"))?.trim() ?? "";
       if (!/^(x86_pkg_temp|cpu[-_]thermal|soc[-_]thermal|cpu)$/.test(type)) continue;
-      const [warn, crit] = thresholds("cpu", null, null);
+      const [warn, crit] = sensorLimits("cpu", null, null);
       kept.push({ label: "CPU", kind: "cpu", path: join(tz, z, "temp"), warn, crit, slow: false, pm: null, chip: type, raw: type });
       break;
     }
@@ -407,6 +407,64 @@ export function readBattery(root = "/sys/class"): Battery | null {
   };
 }
 
+// ---------------------------------------------------------------- thresholds
+
+/** When trouble counts as trouble. Adjustable on the System page; stored in the settings table. */
+export type Thresholds = {
+  /** Warn when a disk is this % full (critical 5 points higher). */
+  diskPct: number;
+  /** Warn when the CPU or GPU reaches this many °C (critical 7 degrees higher). */
+  cpuTemp: number;
+  /** Warn when less than this % of memory is available (critical at half of it). */
+  memFreePct: number;
+  /** Warn when the battery is at or below this % and discharging (critical at half of it). */
+  batteryPct: number;
+  /** A problem must last this many minutes before you're told (a critical one waits one at most). 0 = right away. */
+  confirmMin: number;
+};
+export const DEFAULT_THRESHOLDS: Thresholds = { diskPct: 90, cpuTemp: 90, memFreePct: 10, batteryPct: 15, confirmMin: 2 };
+export const THRESHOLD_LIMITS: Record<keyof Thresholds, { min: number; max: number }> = {
+  diskPct: { min: 50, max: 98 },
+  cpuTemp: { min: 60, max: 105 },
+  memFreePct: { min: 2, max: 50 },
+  batteryPct: { min: 5, max: 50 },
+  confirmMin: { min: 0, max: 30 },
+};
+
+/** Whatever was stored (or sent), made safe: unknown keys dropped, bad values replaced by the default, the rest rounded and clamped. */
+export function normalizeThresholds(raw: unknown): Thresholds {
+  const r = typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : {};
+  const out = { ...DEFAULT_THRESHOLDS };
+  for (const k of Object.keys(out) as (keyof Thresholds)[]) {
+    const x = r[k];
+    if (typeof x === "number" && Number.isFinite(x)) out[k] = clamp(Math.round(x), THRESHOLD_LIMITS[k].min, THRESHOLD_LIMITS[k].max);
+  }
+  return out;
+}
+
+let thresholds = normalizeThresholds(getSetting("health.thresholds", {}));
+export const getThresholds = () => thresholds;
+
+/** Saves a change (any subset of the fields) and re-checks the machine right away, so the page shows the effect at once. */
+export function setThresholds(patch: Partial<Thresholds>): Thresholds {
+  thresholds = normalizeThresholds({ ...thresholds, ...patch });
+  setSetting("health.thresholds", thresholds);
+  if (supported && last) {
+    try {
+      step(takeSample());
+    } catch {}
+  }
+  return thresholds;
+}
+
+/** What the settings form needs: the current values, the defaults and the allowed ranges. */
+export const thresholdsView = () => ({ values: thresholds, defaults: DEFAULT_THRESHOLDS, limits: THRESHOLD_LIMITS });
+
+/** CPU and GPU limits follow the setting; every other sensor keeps what its own chip says. */
+export function limitsFor(s: Pick<SensorDef, "kind" | "warn" | "crit">, th: Thresholds = thresholds): [warn: number, crit: number] {
+  return s.kind === "cpu" || s.kind === "gpu" ? [th.cpuTemp, th.cpuTemp + 7] : [s.warn, s.crit];
+}
+
 // ------------------------------------------------------------------ sampling
 
 let prevCpu: { all: CpuTimes; cores: CpuTimes[] } | null = null;
@@ -443,7 +501,10 @@ export function takeSample(at = now()): Sample {
   const temps: Temp[] = [];
   for (const s of sensors) {
     const c = readSensor(s, at);
-    if (c != null) temps.push({ id: s.id, label: s.label, kind: s.kind, c, warn: s.warn, crit: s.crit });
+    if (c != null) {
+      const [warn, crit] = limitsFor(s);
+      temps.push({ id: s.id, label: s.label, kind: s.kind, c, warn, crit });
+    }
   }
 
   if (at - mountsAt >= MOUNTS_MS) {
@@ -488,12 +549,12 @@ export function hottest(temps: Temp[]): number | null {
 // -------------------------------------------------------------------- issues
 
 /** What's wrong right now. Deliberately no "CPU is busy" rule: builds and agents are meant to use the CPU. */
-export function issuesOf(s: Sample): Issue[] {
+export function issuesOf(s: Sample, th: Thresholds = thresholds): Issue[] {
   const out: Issue[] = [];
   for (const d of s.disks) {
     const lowRoom = d.total > 50 * 1024 ** 3 && d.avail < 5 * 1024 ** 3;
-    if (d.pct >= 95) out.push({ id: `disk:${d.mount}`, level: "crit", title: `Disk ${d.mount} is almost full (${Math.round(d.pct)}%)`, detail: `${gb(d.avail)} left of ${gb(d.total)}. Agents and builds will start failing.` });
-    else if (d.pct >= 90 || lowRoom) out.push({ id: `disk:${d.mount}`, level: "warn", title: `Disk ${d.mount} is ${Math.round(d.pct)}% full`, detail: `${gb(d.avail)} left of ${gb(d.total)}.` });
+    if (d.pct >= Math.min(99, th.diskPct + 5)) out.push({ id: `disk:${d.mount}`, level: "crit", title: `Disk ${d.mount} is almost full (${Math.round(d.pct)}%)`, detail: `${gb(d.avail)} left of ${gb(d.total)}. Agents and builds will start failing.` });
+    else if (d.pct >= th.diskPct || lowRoom) out.push({ id: `disk:${d.mount}`, level: "warn", title: `Disk ${d.mount} is ${Math.round(d.pct)}% full`, detail: `${gb(d.avail)} left of ${gb(d.total)}.` });
   }
   for (const t of s.temps) {
     if (t.c >= t.crit) out.push({ id: `temp:${t.id}`, level: "crit", title: `${t.label} is very hot (${Math.round(t.c)}°C)`, detail: `Close to its limit of ${Math.round(t.crit)}°C. It will slow down or shut off to protect itself.` });
@@ -501,14 +562,14 @@ export function issuesOf(s: Sample): Issue[] {
   }
   if (s.mem.total) {
     const free = (100 * s.mem.available) / s.mem.total;
-    if (free < 5) out.push({ id: "mem", level: "crit", title: "Memory is nearly full", detail: `Only ${gb(s.mem.available)} of ${gb(s.mem.total)} is available. The system may start killing processes.` });
-    else if (free < 10) out.push({ id: "mem", level: "warn", title: "Memory is running low", detail: `Only ${gb(s.mem.available)} of ${gb(s.mem.total)} is available.` });
+    if (free < th.memFreePct / 2) out.push({ id: "mem", level: "crit", title: "Memory is nearly full", detail: `Only ${gb(s.mem.available)} of ${gb(s.mem.total)} is available. The system may start killing processes.` });
+    else if (free < th.memFreePct) out.push({ id: "mem", level: "warn", title: "Memory is running low", detail: `Only ${gb(s.mem.available)} of ${gb(s.mem.total)} is available.` });
   }
   const b = s.battery;
-  if (b && b.discharging && b.pct <= 15) {
+  if (b && b.discharging && b.pct <= th.batteryPct) {
     out.push({
       id: "battery",
-      level: b.pct <= 7 ? "crit" : "warn",
+      level: b.pct <= Math.floor(th.batteryPct / 2) ? "crit" : "warn",
       title: `Battery at ${b.pct}%`,
       detail: `On battery${b.etaMin ? `, about ${duration(b.etaMin)} left` : ""}. Agents stop if the laptop shuts down.`,
     });
@@ -526,12 +587,12 @@ const settingsStore: AlertStore = { load: () => getSetting<Sent>("health.alerted
 
 /**
  * Decides which issues become a push. A condition must hold for `confirmMs` without a gap
- * (a compile heating the CPU for 30 s isn't news, and a suspend/resume restarts the clock),
- * is then sent once, and again only if it gets worse (warn → crit) or `cooldownMs` later.
+ * (a compile heating the CPU for 30 s isn't news, and a suspend/resume restarts the clock;
+ * a critical one waits at most a minute), is then sent once, and again only if it gets worse (warn → crit) or `cooldownMs` later.
  * What was sent is remembered in the database so a restart doesn't repeat it.
  */
-export function createAlerter(o: { send: (i: Issue) => void; store?: AlertStore; confirmMs?: number; cooldownMs?: number }) {
-  const confirmMs = o.confirmMs ?? 2 * 60_000;
+export function createAlerter(o: { send: (i: Issue) => void; store?: AlertStore; confirmMs?: number | (() => number); cooldownMs?: number }) {
+  const confirmOf = (): number => (typeof o.confirmMs === "function" ? o.confirmMs() : (o.confirmMs ?? 2 * 60_000));
   const cooldownMs = o.cooldownMs ?? 6 * 3600_000;
   const store = o.store ?? settingsStore;
   const sent = store.load();
@@ -546,7 +607,7 @@ export function createAlerter(o: { send: (i: Issue) => void; store?: AlertStore;
       for (const i of issues) {
         const t = since.get(i.id) ?? at;
         since.set(i.id, t);
-        if (at - t < confirmMs) continue;
+        if (at - t < (i.level === "crit" ? Math.min(confirmOf(), 60_000) : confirmOf())) continue;
         const s = sent[i.id];
         const worse = s?.level === "warn" && i.level === "crit";
         if (s && !worse && at - s.at < cooldownMs) continue;
@@ -560,6 +621,7 @@ export function createAlerter(o: { send: (i: Issue) => void; store?: AlertStore;
 }
 
 const alerter = createAlerter({
+  confirmMs: () => thresholds.confirmMin * 60_000,
   send: (i) => void notify("system", { title: i.title, body: i.detail, url: "/system", tag: `sys-${i.id}` }).catch(() => {}),
 });
 
@@ -673,11 +735,19 @@ export function startHealthLoop() {
 }
 
 /** What the live page shows. */
-export function systemNow(): { supported: boolean; sample: Sample | null; issues: Issue[]; level: Level } {
-  if (!supported) return { supported: false, sample: null, issues: [], level: "ok" };
+export function systemNow(): { supported: boolean; sample: Sample | null; issues: Issue[]; level: Level; thresholds: Thresholds } {
+  if (!supported) return { supported: false, sample: null, issues: [], level: "ok", thresholds };
   const sample = last ?? takeSample();
   const issues = last ? lastIssues : issuesOf(sample);
-  return { supported: true, sample, issues, level: levelOf(issues) };
+  return { supported: true, sample, issues, level: levelOf(issues), thresholds };
+}
+
+/** Sends a real "system" push to every device that has these alerts on, so you can see one arrive. Returns how many devices that is. */
+export async function testAlert(): Promise<{ devices: number }> {
+  const subs = db.query("SELECT prefs FROM push_subs").all() as { prefs: string }[];
+  const devices = subs.filter((r) => JSON.parse(r.prefs).system !== false).length;
+  if (devices) await notify("system", { title: "Test alert from your machine", body: `This is how a warning about ${hostname()} looks. Everything is fine.`, url: "/system", tag: "sys-test" });
+  return { devices };
 }
 
 /** The small version pushed to every open page. */

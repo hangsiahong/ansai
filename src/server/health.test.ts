@@ -360,6 +360,88 @@ test("what was sent survives a restart", () => {
   expect(second.out).toEqual([]);
 });
 
+// ---------------------------------------------------------------- thresholds
+
+test("thresholds are clamped, rounded and defaulted, whatever is stored", () => {
+  const d = h.DEFAULT_THRESHOLDS;
+  expect(h.normalizeThresholds(undefined)).toEqual(d);
+  expect(h.normalizeThresholds("junk")).toEqual(d);
+  expect(h.normalizeThresholds({ diskPct: 80.6, cpuTemp: 5, memFreePct: 999, batteryPct: "20", confirmMin: -3, extra: 1 })).toEqual({ ...d, diskPct: 81, cpuTemp: 60, memFreePct: 50, confirmMin: 0 });
+  expect(h.normalizeThresholds({ diskPct: NaN, cpuTemp: Infinity })).toEqual(d);
+});
+
+test("the disk, memory and battery rules follow the thresholds", () => {
+  const th = { ...h.DEFAULT_THRESHOLDS, diskPct: 80, memFreePct: 20, batteryPct: 30 };
+  expect(h.issuesOf(sample({ disks: [disk(79)] }), th)).toEqual([]);
+  expect(h.issuesOf(sample({ disks: [disk(80)] }), th)[0]).toMatchObject({ level: "warn" });
+  expect(h.issuesOf(sample({ disks: [disk(85)] }), th)[0]).toMatchObject({ level: "crit" }); // 5 points above
+  expect(h.issuesOf(sample({ disks: [disk(96)] }), { ...th, diskPct: 98 })[0]).toBeUndefined(); // looser than the default stays quiet
+  const mem = (availGB: number) => sample({ mem: { total: 32 * GB, available: availGB * GB, used: 0, pct: 0, swapTotal: 0, swapUsed: 0, pressure: null } });
+  expect(h.issuesOf(mem(7), th)).toEqual([]); // 21.9% free
+  expect(h.issuesOf(mem(6), th)[0]).toMatchObject({ id: "mem", level: "warn" }); // 18.8%
+  expect(h.issuesOf(mem(3), th)[0]).toMatchObject({ level: "crit" }); // 9.4%, under half of 20
+  const bat = (pct: number) => sample({ battery: { pct, status: "", charging: false, discharging: true, plugged: false, watts: 10, etaMin: 40, limit: null } });
+  expect(h.issuesOf(bat(31), th)).toEqual([]);
+  expect(h.issuesOf(bat(30), th)[0]).toMatchObject({ level: "warn" });
+  expect(h.issuesOf(bat(15), th)[0]).toMatchObject({ level: "crit" });
+  // The defaults are what they were before they became settings
+  expect(h.issuesOf(sample({ disks: [disk(90)] }))[0]).toMatchObject({ level: "warn" });
+  expect(h.issuesOf(bat(15))[0]).toMatchObject({ level: "warn" });
+  expect(h.issuesOf(bat(7))[0]).toMatchObject({ level: "crit" });
+});
+
+test("only CPU and GPU limits follow the temperature setting; other chips keep their own", () => {
+  const th = { ...h.DEFAULT_THRESHOLDS, cpuTemp: 80 };
+  expect(h.limitsFor({ kind: "cpu", warn: 90, crit: 97 }, th)).toEqual([80, 87]);
+  expect(h.limitsFor({ kind: "gpu", warn: 90, crit: 100 }, th)).toEqual([80, 87]);
+  expect(h.limitsFor({ kind: "nvme", warn: 75, crit: 85 }, th)).toEqual([75, 85]);
+  expect(h.limitsFor({ kind: "board", warn: 80, crit: 95 }, th)).toEqual([80, 95]);
+});
+
+test("saving thresholds persists them, ignores nonsense and keeps what wasn't sent", () => {
+  try {
+    expect(h.getThresholds()).toEqual(h.DEFAULT_THRESHOLDS);
+    expect(h.setThresholds({ cpuTemp: 75 })).toEqual({ ...h.DEFAULT_THRESHOLDS, cpuTemp: 75 });
+    expect(h.setThresholds({ diskPct: 85, cpuTemp: 9999 })).toEqual({ ...h.DEFAULT_THRESHOLDS, diskPct: 85, cpuTemp: 105 });
+    const stored = db.query("SELECT value FROM settings WHERE key = 'health.thresholds'").get() as { value: string };
+    expect(h.normalizeThresholds(JSON.parse(stored.value))).toEqual(h.getThresholds());
+    expect(h.thresholdsView().values).toEqual(h.getThresholds());
+    expect(h.thresholdsView().limits.cpuTemp).toEqual({ min: 60, max: 105 });
+  } finally {
+    h.setThresholds(h.DEFAULT_THRESHOLDS);
+  }
+  expect(h.getThresholds()).toEqual(h.DEFAULT_THRESHOLDS);
+});
+
+test("the wait before an alert follows the setting, and a critical one waits at most a minute", () => {
+  let confirm = 5 * MIN;
+  const out: string[] = [];
+  let saved = {};
+  const a = h.createAlerter({ send: (i) => out.push(`${i.id}:${i.level}`), confirmMs: () => confirm, store: { load: () => saved, save: (v) => (saved = JSON.parse(JSON.stringify(v))) } });
+  run(a, [issue("disk:/")], 0, 4 * MIN);
+  expect(out).toEqual([]); // 4 of 5 minutes
+  run(a, [issue("disk:/")], 4 * MIN + 5_000, 5 * MIN);
+  expect(out).toEqual(["disk:/:warn"]);
+  run(a, [issue("temp:cpu", "crit")], 6 * MIN, 6 * MIN + 55_000);
+  expect(out).toHaveLength(1); // not yet a minute
+  run(a, [issue("temp:cpu", "crit")], 6 * MIN + 60_000, 6 * MIN + 65_000);
+  expect(out).toEqual(["disk:/:warn", "temp:cpu:crit"]); // after 1 min, not 5
+  confirm = 0;
+  run(a, [issue("mem")], 20 * MIN, 20 * MIN + 5_000);
+  expect(out).toContain("mem:warn"); // 0 = right away
+});
+
+test("a test alert counts the devices that have these alerts on, and sends nothing when there are none", async () => {
+  const add = (endpoint: string, prefs: object) => db.query("INSERT INTO push_subs (endpoint, keys, user, prefs, created_at) VALUES (?, '{}', 'me', ?, 0)").run(endpoint, JSON.stringify(prefs));
+  db.exec("DELETE FROM push_subs");
+  expect(await h.testAlert()).toEqual({ devices: 0 });
+  add("https://example.invalid/a", { system: false, input: true });
+  expect(await h.testAlert()).toEqual({ devices: 0 }); // muted on its only device
+  add("https://example.invalid/b", { input: true }); // never set: on by default
+  expect(await h.testAlert()).toEqual({ devices: 1 }); // the push to the bogus address fails quietly
+  db.exec("DELETE FROM push_subs");
+});
+
 // ------------------------------------------------------------------- history
 
 test("minutes become rows, and ranges average them into coarser steps", () => {

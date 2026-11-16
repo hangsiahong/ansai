@@ -32,7 +32,7 @@ import {
 import { EFFORTS, TOOLS, isModelId, toolList, type ToolId } from "./tools";
 import { modelChoices, switchModel } from "./models";
 import { startRunWatch } from "./limits";
-import { healthSummary, history, isRange, processes, RANGES, startHealthLoop, systemNow } from "./health";
+import { THRESHOLD_LIMITS, healthSummary, history, isRange, processes, RANGES, setThresholds, startHealthLoop, systemNow, testAlert, thresholdsView, type Thresholds } from "./health";
 import { HttpError, badRequest, conflict, errorCode, notFound, tooLarge } from "./errors";
 import { parseBody, v, type Check } from "./validate";
 import { onChange, emit, type Topic } from "./events";
@@ -244,6 +244,15 @@ const server = Bun.serve<WSData>({
       return json(history(range));
     }),
     "/api/system/processes": guard(async () => json(await processes())),
+    "/api/system/settings": {
+      GET: guard(() => json(thresholdsView())),
+      PUT: guard(async (req) => {
+        const shape = Object.fromEntries(Object.entries(THRESHOLD_LIMITS).map(([k, l]) => [k, v.optional(v.number({ int: true, min: l.min, max: l.max }))]));
+        setThresholds((await parseBody(req, v.object(shape))) as Partial<Thresholds>);
+        return json(thresholdsView());
+      }),
+    },
+    "/api/system/alerts/test": { POST: guard(async () => json(await testAlert())) },
 
     "/api/projects": {
       GET: guard((req) => json(listProjects(new URL(req.url).searchParams.has("all")))),

@@ -210,7 +210,9 @@ export type SystemSample = {
   disks: { mount: string; device: string; fs: string; total: number; used: number; avail: number; pct: number }[];
   battery: { pct: number; status: string; charging: boolean; discharging: boolean; plugged: boolean; watts: number | null; etaMin: number | null; limit: number | null } | null;
 };
-export type SystemNow = { supported: boolean; sample: SystemSample | null; issues: SystemIssue[]; level: SystemLevel };
+export type SystemThresholds = { diskPct: number; cpuTemp: number; memFreePct: number; batteryPct: number; confirmMin: number };
+export type SystemSettings = { values: SystemThresholds; defaults: SystemThresholds; limits: Record<keyof SystemThresholds, { min: number; max: number }> };
+export type SystemNow = { supported: boolean; sample: SystemSample | null; issues: SystemIssue[]; level: SystemLevel; thresholds: SystemThresholds };
 /** The small version every open page gets over the socket. */
 export type HealthSummary = { at: number; level: SystemLevel; issues: SystemIssue[]; cpu: number | null; mem: number; temp: number | null; disk: number | null; battery: { pct: number; plugged: boolean } | null };
 export type SystemRange = "1h" | "6h" | "24h" | "7d";
@@ -270,6 +272,9 @@ export const api = {
   system: () => call<SystemNow>("GET", "/api/system"),
   systemHistory: (range: SystemRange) => call<SystemHistory>("GET", `/api/system/history?range=${range}`),
   systemProcs: () => call<SystemProcs>("GET", "/api/system/processes"),
+  systemSettings: () => call<SystemSettings>("GET", "/api/system/settings"),
+  saveSystemSettings: (patch: Partial<SystemThresholds>) => call<SystemSettings>("PUT", "/api/system/settings", patch),
+  testSystemAlert: () => call<{ devices: number }>("POST", "/api/system/alerts/test"),
 
   pushKey: () => call<{ publicKey: string }>("GET", "/api/push/key"),
   pushSubscribe: (subscription: PushSubscriptionJSON, prefs: Record<string, boolean>) =>
