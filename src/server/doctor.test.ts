@@ -1,12 +1,14 @@
 // The doctor: each detector over fixtures, then gathering from the database, then filing tasks.
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
-import { realpathSync } from "node:fs";
-import { resolve } from "node:path";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import type { DoingRow, DoingRun, Finding, PlanRow, WorkingRow } from "./doctor";
 
 const { db, setSetting } = await import("./db");
 const d = await import("./doctor");
 const { updateSettings } = await import("./autopilot");
+const { gitOut } = await import("./git");
 const { getTask, updateTask } = await import("./tasks");
 
 const MIN = 60_000;
@@ -245,6 +247,22 @@ describe("filing", () => {
   const finding = (key: string, o: Partial<Finding> = {}): Finding => ({ key, title: `Problem ${key}`, details: `Evidence for ${key}`, priority: 2, latest: AT - 10 * MIN, ...o });
   const doctorTasks = () => db.query("SELECT * FROM tasks WHERE title LIKE 'Doctor: %' ORDER BY created_at").all() as { id: string; title: string; body: string; priority: number; queued: number; source: string; status: string }[];
 
+  test("a release folder's source checkout is its origin; a dev checkout is itself", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "doctor-"));
+    try {
+      const release = join(dir, "release");
+      await gitOut(dir, ["init", "-q", release]);
+      await gitOut(dir, ["init", "-q", join(dir, "dev")]);
+      expect(d.sourceCheckouts(release)).toEqual([realpathSync(release)]);
+      await gitOut(release, ["remote", "add", "origin", join(dir, "dev")]);
+      expect(d.sourceCheckouts(release)).toEqual([realpathSync(join(dir, "dev")), realpathSync(release)]);
+      await gitOut(release, ["remote", "set-url", "origin", "https://github.com/someone/ansai.git"]);
+      expect(d.sourceCheckouts(release)).toEqual([realpathSync(release)]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("ansai's project is the one at its source checkout, unless doctor:project says otherwise", () => {
     expect(d.doctorProject().id).toBe("ansai");
     db.query("INSERT INTO projects (id, name, path, created_at) VALUES ('other', 'other', '/tmp/other', 0)").run();
@@ -286,13 +304,14 @@ describe("filing", () => {
     expect(doctorTasks()).toHaveLength(2);
   });
 
-  test("a deleted task counts as closed from when the doctor noticed", () => {
+  test("deleting the task dismisses its finding for good", () => {
     d.fileFindings([finding("a")], "ansai", AT);
+    expect(doctorTasks()[0]!.body).toContain("Delete this task instead to stop the doctor filing this finding");
     db.query("DELETE FROM tasks").run();
-    const noticed = AT + 60 * MIN;
-    expect(d.fileFindings([finding("a")], "ansai", noticed).skipped).toEqual([expect.objectContaining({ why: expect.stringContaining("deleted") })]);
-    expect(d.fileFindings([finding("a", { latest: noticed + 24 * 60 * MIN })], "ansai", AT + 30 * 60 * MIN).filed).toEqual([]);
-    expect(d.fileFindings([finding("a", { latest: noticed + 24 * 60 * MIN + 1 })], "ansai", AT + 30 * 60 * MIN).filed).toHaveLength(1);
+    const later = AT + 30 * 24 * 60 * MIN;
+    const r = d.fileFindings([finding("a", { latest: later })], "ansai", later);
+    expect(r.filed).toEqual([]);
+    expect(r.skipped).toEqual([expect.objectContaining({ key: "a", why: "dismissed: its task was deleted" })]);
   });
 
   test("at most three new tasks a day, the most urgent first; the rest wait for a later run", () => {

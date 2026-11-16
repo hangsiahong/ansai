@@ -32,7 +32,7 @@ export const COMPACTION_STUCK_MS = 20 * MIN;
 export const SCHEDULE_LATE_MS = 30 * MIN;
 /** nudgeIdle ends expired shifts every few seconds. */
 export const SHIFT_LATE_MS = 10 * MIN;
-/** A closed finding is filed again only when the problem starts anew this long after it was closed. */
+/** A finding whose task is Done is filed again only when the problem starts anew this long after. */
 export const REFILE_AFTER_MS = 24 * HOUR;
 export const DEFAULT_PER_DAY = 3;
 
@@ -40,7 +40,7 @@ export const DEFAULT_PER_DAY = 3;
 export type Finding = { key: string; title: string; details: string; priority: number; latest: number };
 
 const p2 = (n: number) => String(n).padStart(2, "0");
-export function stamp(ms: number): string {
+function stamp(ms: number): string {
   const d = new Date(ms);
   return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`;
 }
@@ -460,22 +460,20 @@ export function detect(g: Gathered, at: number): Finding[] {
 
 // ------------------------------------------------------------------ ansai's own project
 
-let checkouts: string[] | null = null;
+const real = (p: string) => {
+  try {
+    return realpathSync(p);
+  } catch {
+    return resolve(p);
+  }
+};
 
-/** Where ansai's source lives: a release folder's origin is the dev checkout; a dev instance runs from the checkout itself. */
-function sourceCheckouts(): string[] {
-  if (checkouts) return checkouts;
-  const origin = gitSync(ROOT, ["remote", "get-url", "origin"], { timeout: 5000 })?.replace(/^file:\/\//, "") ?? null;
-  const real = (p: string) => {
-    try {
-      return realpathSync(p);
-    } catch {
-      return resolve(p);
-    }
-  };
-  checkouts = [...new Set([origin && isAbsolute(origin) ? real(origin) : null, real(ROOT)].filter((p): p is string => !!p))];
-  return checkouts;
+/** Where the code running from `root` comes from: a release folder is a clone whose origin is the dev checkout; a dev instance runs from the checkout itself. */
+export function sourceCheckouts(root: string): string[] {
+  const origin = gitSync(root, ["remote", "get-url", "origin"], { timeout: 5000 })?.replace(/^file:\/\//, "") ?? null;
+  return [...new Set([origin && isAbsolute(origin) ? real(origin) : null, real(root)].filter((p): p is string => !!p))];
 }
+let checkouts: string[] | null = null;
 
 export type DoctorProject = { id: string; why: string } | { id: null; why: string };
 
@@ -486,16 +484,17 @@ export function doctorProject(): DoctorProject {
     const p = db.query("SELECT id FROM projects WHERE id = ?").get(override) as { id: string } | null;
     return p ? { id: p.id, why: "the doctor:project setting" } : { id: null, why: `the doctor:project setting names ${override}, which isn't a project` };
   }
-  for (const path of sourceCheckouts()) {
+  checkouts ??= sourceCheckouts(ROOT);
+  for (const path of checkouts) {
     const p = db.query("SELECT id FROM projects WHERE path = ?").get(path) as { id: string } | null;
     if (p) return { id: p.id, why: `ansai's source checkout ${path}` };
   }
-  return { id: null, why: `no project is at ansai's source checkout (${sourceCheckouts().join(" or ")}); set doctor:project to choose one` };
+  return { id: null, why: `no project is at ansai's source checkout (${checkouts.join(" or ")}); set doctor:project to choose one` };
 }
 
 // ------------------------------------------------------------------ filing
 
-type Seen = { task: string; filedAt: number; closedAt?: number };
+type Seen = { task: string; filedAt: number };
 const SEEN = "doctor:seen:";
 export const perDay = () => Math.max(0, Math.floor(getSetting<number>("doctor:max_per_day", DEFAULT_PER_DAY)));
 
@@ -512,15 +511,17 @@ function body(f: Finding): string {
       "- If it isn't an ansai bug (for example the user's own action, or an outside service failing), say so with the evidence in finish_task and change nothing.",
       "- Never weaken a test or a doctor detector to make this go away.",
     ].join("\n"),
-    `Doctor finding ${f.key}: filed again only if it starts happening again more than 24 hours after this task is closed.`,
+    `Doctor finding ${f.key}: once this task is Done, it is filed again only if the problem starts again more than 24 hours later. Delete this task instead to stop the doctor filing this finding at all.`,
   ].join("\n\n");
 }
 
 /**
- * Findings become tasks in `projectId`: one open task per finding key, a closed one filed
- * again only for a problem that began more than a day after it was closed, and at most
- * `doctor:max_per_day` new tasks in any 24 hours (the rest wait for a later run). `dry`
- * says what would happen and writes nothing.
+ * Findings become tasks in `projectId`: one open task per finding key, a Done one filed
+ * again only for a problem that began more than a day after it was done, and at most
+ * `doctor:max_per_day` new tasks in any 24 hours (the rest wait for a later run). A
+ * deleted task dismisses its finding for good: from the phone, that is how you say "not a
+ * bug, stop telling me" (a fixer that finds no ansai bug says so and leaves it to you).
+ * `dry` says what would happen and writes nothing.
  */
 export function fileFindings(findings: Finding[], projectId: string, at: number, dry = false): Filing {
   const out: Filing = { filed: [], held: [], skipped: [] };
@@ -538,14 +539,17 @@ export function fileFindings(findings: Finding[], projectId: string, at: number,
     const s = seen.get(f.key);
     if (s) {
       const task = getTask(s.task);
-      if (task && task.status !== "done") {
+      if (!task) {
+        out.skipped.push({ key: f.key, title: f.title, why: "dismissed: its task was deleted", task: s.task });
+        continue;
+      }
+      if (task.status !== "done") {
         out.skipped.push({ key: f.key, title: f.title, why: `already filed, still open (${task.status})`, task: s.task });
         continue;
       }
-      const closedAt = task ? (task.done_at ?? task.updated_at) : (s.closedAt ?? at);
-      if (!task && s.closedAt === undefined && !dry) setSetting(SEEN + f.key, { ...s, closedAt });
-      if (f.latest <= closedAt + REFILE_AFTER_MS) {
-        out.skipped.push({ key: f.key, title: f.title, why: `${task ? "fixed" : "deleted"} at ${stamp(closedAt)}; this began before a day had passed since`, task: s.task });
+      const doneAt = task.done_at ?? task.updated_at;
+      if (f.latest <= doneAt + REFILE_AFTER_MS) {
+        out.skipped.push({ key: f.key, title: f.title, why: `done at ${stamp(doneAt)}; this began before a day had passed since`, task: s.task });
         continue;
       }
     }
