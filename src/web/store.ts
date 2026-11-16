@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "preact/hooks";
+import { mergeActivity } from "./live";
 import { api, wsUrl, type Account, type HealthSummary, type Me, type Message, type Project, type Session, type Task, type TaskCleanup, type TeamBoard, type Tool, type ToolId } from "./api";
 
 export type SheetState =
@@ -222,6 +223,7 @@ function connectEvents() {
       try {
         const m = JSON.parse(ev.data);
         if (m.t === "sessions") setState({ sessions: m.sessions });
+        else if (m.t === "activity") setState({ sessions: mergeActivity(state.sessions, m.sessions) });
         else if (m.t === "tasks") setState({ tasks: m.tasks });
         else if (m.t === "projects") setState({ projects: m.projects });
         else if (m.t === "accounts") setState({ accounts: m.accounts });

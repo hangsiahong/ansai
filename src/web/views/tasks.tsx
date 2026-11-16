@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { api, STATUS_LABEL, TASK_STATUSES, type Session, type Task, type TaskChecks, type TaskStatus, type TeamBoard } from "../api";
 import { overlapsByTask, overlapText, overlapTitle, type TaskOverlap } from "../overlaps";
+import { liveSessionsOf } from "../live";
 import { getState, loadTeam, openSheet, patchTaskLocal, toastCleanup, toastError, useStore } from "../store";
 import { Icon, Link, ToolBadge } from "../ui";
 
@@ -44,7 +45,7 @@ function clashLabel(s: ReturnType<typeof getState>, taskId: string, projectId: s
  */
 function useOverlaps(task: Task): { text: string; title: string } | null {
   const pid = task.project_id;
-  const live = task.sessions.some((s) => s.status === "running");
+  const live = useStore((s) => liveSessionsOf(s.sessions, task.id).length > 0);
   const sig = useStore((s) => (pid && live ? teamSig(s.sessions, pid) : ""));
   useEffect(() => {
     if (pid && sig) loadTeam(pid, sig);
@@ -123,7 +124,7 @@ function Prio({ p }: { p: number }) {
 }
 
 function TaskMeta({ task, showProject }: { task: Task; showProject?: boolean }) {
-  const live = task.sessions.filter((s) => s.status === "running");
+  const live = useStore((s) => liveSessionsOf(s.sessions, task.id));
   const asking = live.find((s) => s.agent_state === "needs-input");
   const plan = task.plan && task.plan.total > 0 && task.status !== "done" ? task.plan : null;
   const clash = useOverlaps(task);
