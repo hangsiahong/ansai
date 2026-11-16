@@ -141,6 +141,9 @@ export function withHooks(tool: ToolId, argv: string[], sessionId: string, playb
       // ansai's own tools (backlog, team messages) are safe; without this Codex stops to ask before each one.
       "-c",
       `mcp_servers.ansai.default_tools_approval_mode="approve"`,
+      // finish_task waits for the project's checks; Codex's default 60s would cut it off.
+      "-c",
+      "mcp_servers.ansai.tool_timeout_sec=1800",
       "-c",
       `developer_instructions=${toml(note)}`,
       ...argv.slice(1),

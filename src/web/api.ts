@@ -125,7 +125,12 @@ export type Task = {
   dependencies?: { id: string; title: string; status: TaskStatus }[];
   blocked_by?: { id: string; title: string; status: TaskStatus }[];
   review: null | { session_id: string | null; reviewer_tool: "claude" | "codex"; status: "running" | "complete" | "stopped"; summary: string | null; findings: { file: string; line: number; severity: "high" | "medium" | "low"; message: string }[] };
+  /** The project's checks as run at finish_task; null when it has none or they never ran. */
+  checks: TaskChecks | null;
+  evidence: { name: string; kind: "image" | "text"; size: number }[];
 };
+
+export type TaskChecks = { running: true; cmd: string; at: number } | { ok: boolean; cmd: string; code: number | null; ms: number; at: number; tail: string; timedOut?: boolean };
 
 /** What marking a task Done cleared on its own (only present when something went): agents closed, and its worktree removed. */
 export type TaskCleanup = { agents: number; worktree: boolean };

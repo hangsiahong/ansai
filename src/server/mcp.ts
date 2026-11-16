@@ -7,6 +7,8 @@ import { createTask, finishTask, finishTaskReview, getTask, reportReviewFinding 
 import { claimFiles, deliveryNote, describeAgents, describeHistory, postMessage, releaseFiles, takePending } from "./team";
 import { endShift, shiftView } from "./shifts";
 import { compactionAsked, noteToolsListed, requestCompaction } from "./compaction";
+import { checksRunning, getChecks, runTaskChecks } from "./checks";
+import { pickEvidence, saveEvidence } from "./evidence";
 
 /**
  * A tiny MCP server (streamable HTTP, JSON responses, no SSE) that every agent
@@ -119,10 +121,18 @@ const TOOLS = [
   {
     name: "finish_task",
     description:
-      "Mark the backlog task you were given as ready for the user's review, with a 2-3 sentence summary of what changed and how to verify it. Only call this when the task is actually done.",
+      "Mark the backlog task you were given as ready for the user's review, with a 2-3 sentence summary of what changed and how to verify it. Only call this when the task is actually done. " +
+      "If the project has a checks command, ansai runs it in your working folder first; on failure the task stays in Doing and you get the output to fix.",
     inputSchema: {
       type: "object",
-      properties: { summary: { type: "string", description: "What changed, and how the user can check it" } },
+      properties: {
+        summary: { type: "string", description: "What changed, and how the user can check it" },
+        evidence: {
+          type: "array",
+          items: { type: "string" },
+          description: "Optional proof the user sees first on the task: paths (relative to your working folder) to screenshots (.png .jpg .webp) or a short check log (.txt .log). At most 8 files, 8 MB each.",
+        },
+      },
       required: ["summary"],
     },
   },
@@ -133,16 +143,16 @@ type Rpc = { jsonrpc: "2.0"; id?: string | number | null; method: string; params
 const text = (t: string, isError = false) => ({ content: [{ type: "text", text: t }], isError });
 
 /** Tool failures are results the agent can read and act on, never HTTP errors. */
-function callTool(sessionId: string, name: string, args: any) {
+async function callTool(sessionId: string, name: string, args: any) {
   try {
-    return runTool(sessionId, name, args);
+    return await runTool(sessionId, name, args);
   } catch (e) {
     if (!(e instanceof HttpError)) console.error(`[ansai] mcp ${name} failed:`, e);
     return text(e instanceof Error ? e.message : String(e), true);
   }
 }
 
-function runTool(sessionId: string, name: string, args: any) {
+async function runTool(sessionId: string, name: string, args: any) {
   const s = getSession(sessionId);
   if (!s) return text("This ansai session no longer exists.", true);
   const label = s.tool === "codex" ? "Codex" : s.tool === "claude" ? "Claude" : "agent";
@@ -223,8 +233,25 @@ function runTool(sessionId: string, name: string, args: any) {
     if (!s.task_id || !getTask(s.task_id)) return text("This session wasn't started from a backlog task — just tell the user you're done.");
     const summary = String(args?.summary ?? "").trim();
     if (!summary) return text("A summary is required.", true);
-    finishTask(s.task_id, summary);
-    return text("Thanks — the task is marked ready for the user's review.");
+    const task = getTask(s.task_id)!;
+    const picked = await pickEvidence(args?.evidence, s.cwd);
+    if (picked.errors.length) return text(`Nothing was finished. Fix the evidence and call finish_task again:\n${picked.errors.map((e) => `- ${e}`).join("\n")}`, true);
+    const cmd = task.project_id ? getChecks(task.project_id) : "";
+    let passed = "";
+    if (cmd) {
+      if (checksRunning(task.id)) return text("Checks are already running for this task from an earlier finish_task call; wait for that result.", true);
+      const r = await runTaskChecks(task.id, s.cwd, cmd);
+      const took = `${Math.round(r.ms / 1000)}s`;
+      if (!r.ok)
+        return text(
+          `The project's checks failed, so the task stays in Doing. Fix the cause (don't weaken or skip the checks), then call finish_task again.\n$ ${cmd}\n→ ${r.timedOut ? "timed out" : `exit ${r.code}`} after ${took}\n\n${r.tail}`,
+          true,
+        );
+      passed = `Checks passed (${cmd}, ${took}). `;
+    }
+    const evidence = await saveEvidence(task.id, picked.files);
+    finishTask(task.id, summary, evidence);
+    return text(`${passed}${evidence.length ? `${evidence.length} evidence file${evidence.length > 1 ? "s" : ""} attached. ` : ""}The task is marked ready for the user's review.`);
   }
 
   if (name === "report_finding") {
@@ -252,7 +279,7 @@ function instructionsFor(_sessionId: string): string {
   return "The user's ansai backlog for this project. Use add_task for follow-ups and finish_task when a backlog task is done.";
 }
 
-function handle(sessionId: string, msg: Rpc): object | null {
+async function handle(sessionId: string, msg: Rpc): Promise<object | null> {
   const reply = (result: unknown) => ({ jsonrpc: "2.0", id: msg.id ?? null, result });
   switch (msg.method) {
     case "initialize":
@@ -269,7 +296,7 @@ function handle(sessionId: string, msg: Rpc): object | null {
       noteToolsListed(sessionId); // it has the compact tool (see compaction.ts)
       return reply({ tools: TOOLS });
     case "tools/call":
-      return reply(callTool(sessionId, String(msg.params?.name ?? ""), msg.params?.arguments ?? {}));
+      return reply(await callTool(sessionId, String(msg.params?.name ?? ""), msg.params?.arguments ?? {}));
     default:
       if (msg.id === undefined || msg.id === null) return null; // notification (e.g. notifications/initialized)
       return { jsonrpc: "2.0", id: msg.id, error: { code: -32601, message: `Method not found: ${msg.method}` } };
@@ -298,7 +325,7 @@ export async function mcpHttp(req: Request): Promise<Response> {
   }
   const invalid = { jsonrpc: "2.0", id: null, error: { code: -32600, message: "Invalid Request" } };
   const isRpc = (m: unknown): m is Rpc => typeof m === "object" && m !== null && typeof (m as Rpc).method === "string";
-  const out = (Array.isArray(body) ? body : [body]).map((m) => (isRpc(m) ? handle(sessionId, m) : invalid)).filter(Boolean);
+  const out = (await Promise.all((Array.isArray(body) ? body : [body]).map((m) => (isRpc(m) ? handle(sessionId, m) : invalid)))).filter(Boolean);
   if (!out.length) return new Response(null, { status: 202 });
   return Response.json(Array.isArray(body) ? out : out[0]);
 }

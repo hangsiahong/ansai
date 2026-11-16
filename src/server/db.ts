@@ -271,6 +271,11 @@ const migrations: string[] = [
     token TEXT NOT NULL
   );
   `,
+  // 19: proof on a finished task: the project's checks run at finish_task (checks.ts) and the agent's evidence files (evidence.ts), both JSON.
+  `
+  ALTER TABLE tasks ADD COLUMN checks TEXT;
+  ALTER TABLE tasks ADD COLUMN evidence TEXT;
+  `,
 ];
 
 export function getSetting<T>(key: string, fallback: T): T {
