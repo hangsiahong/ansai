@@ -86,7 +86,9 @@ const AGENT_NOTE =
   "If a task is unclear or needs a decision, ask the user before changing anything. " +
   "Other agents may be working at the same time: list_agents shows them and the files they are editing or have claimed (claim_files before a bigger change to shared code), " +
   "and send_message reaches one of them (or everyone in the project) — use it to avoid clashing edits, hand over findings, or ask a teammate who owns that code. " +
-  "Messages to you arrive by themselves, marked \"ansai: … from your team\".";
+  "Messages to you arrive by themselves, marked \"ansai: … from your team\". " +
+  "Write for the next agent, not for a human reader: no narrating comments and no docs nobody asked for; keep a comment only for a one-line non-obvious why. " +
+  "Put a rule where an agent will hit it (a test, a type, a check), and make its failure message say what to do instead.";
 
 const mcpUrl = (sessionId: string) => `http://127.0.0.1:${config.port}/mcp?s=${sessionId}`;
 const toml = (s: string) => JSON.stringify(s); // TOML basic strings share JSON's escaping for our text
