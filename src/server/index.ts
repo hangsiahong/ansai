@@ -43,6 +43,7 @@ import { getPrefs, publicKey, subscribe, testPush, unsubscribe } from "./push";
 import { setViewer } from "./viewers";
 import { startBackgroundTails, subscribeChat, unsubscribeChat } from "./transcripts";
 import { mcpHttp } from "./mcp";
+import { callerAllowed, shownKey } from "./sessionkeys";
 import { deliverIdle, getPlaybook, listMessages, postMessage, resumeClaims, setPlaybook, teamBoard } from "./team";
 import { resumeCompactions } from "./compaction";
 import { digest, markSeen } from "./digest";
@@ -445,7 +446,9 @@ const server = Bun.serve<WSData>({
       POST: guard(async (req) => {
         // Claude reads this reply (team messages as additionalContext); an empty body means "nothing to add".
         const sid = new URL(req.url).searchParams.get("s");
-        const reads = new URL(req.url).searchParams.get("r") === "1"; // the hook's reply reaches Claude
+        // A hook call acts as its session (it hands over that agent's messages): it must show the session's key.
+        if (sid && !callerAllowed(sid, shownKey(req))) throw new HttpError(403, "ansai doesn't know this session, or its key doesn't match");
+        const reads =new URL(req.url).searchParams.get("r") === "1"; // the hook's reply reaches Claude
         const out = sid ? handleHook(req.params.tool!, req.params.event!, sid, await parseBody(req, v.anyObject(), HOOK_LIMIT), reads) : undefined;
         return out ? json(out) : new Response(null, { status: 204 });
       }),

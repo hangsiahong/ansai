@@ -10,6 +10,7 @@ import { dropClaims, editWarning, getPlaybook, takePending, wakes } from "./team
 import { compacted, compactionRunning, contextNudge, dropCompaction, startCompaction } from "./compaction";
 import { dropHold, holdNote, holdRun, promptedWhileHeld } from "./holds";
 import { clearStartup, getSession, sessionView, type AgySaw } from "./sessions";
+import { KEY_ENV } from "./sessionkeys";
 import { claudeStop, codexTurnEnded, endShift, shiftView, shiftWorked } from "./shifts";
 
 const EDITS = new Set(["Edit", "MultiEdit", "Write", "NotebookEdit"]);
@@ -18,20 +19,22 @@ import type { ToolId } from "./tools";
 /**
  * Real agent status. Claude Code gets a hooks file via `--settings` (merged with
  * your own settings, never written into them); Codex gets a `notify` override
- * via `-c`. Both call back to ansai on 127.0.0.1 with the session id from the
- * environment tmux gives each session.
+ * via `-c`. Both call back to ansai on 127.0.0.1 with the session id and the session's
+ * secret key (sessionkeys.ts) from the environment tmux gives each session.
  */
 
 const hooksFile = join(config.dataDir, "claude-hooks.json");
 /** The hooks plus lean startup's settings (see lean.ts), rewritten at each lean launch. */
 const leanHooksFile = join(config.dataDir, "claude-hooks-lean.json");
 const base = () => `http://127.0.0.1:${config.port}/api/hooks`;
+/** Each call shows the session's key (sessionkeys.ts), read from the agent's environment by the shell that runs the hook. */
+const KEY_HEADER = `authorization: Bearer $${KEY_ENV}`;
 
 function hookSettings() {
   // `speaks`: Claude reads the hook's stdout, so ansai can hand over team messages as
   // additionalContext. ansai answers those with an empty body when it has nothing to say.
   const cmd = (event: string, speaks = false) =>
-    `curl -s${speaks ? "f" : ""} -m 2 -X POST -H 'content-type: application/json' --data-binary @- "${base()}/claude/${event}?s=$ANSAI_SESSION_ID${speaks ? "&r=1" : ""}"${speaks ? " 2>/dev/null" : " >/dev/null 2>&1"} || true`;
+    `curl -s${speaks ? "f" : ""} -m 2 -X POST -H 'content-type: application/json' -H "${KEY_HEADER}" --data-binary @- "${base()}/claude/${event}?s=$ANSAI_SESSION_ID${speaks ? "&r=1" : ""}"${speaks ? " 2>/dev/null" : " >/dev/null 2>&1"} || true`;
   const entry = (event: string, o: { matcher?: string; speaks?: boolean } = {}) => [
     { ...(o.matcher ? { matcher: o.matcher } : {}), hooks: [{ type: "command", command: cmd(event, o.speaks), timeout: 5 }] },
   ];
@@ -72,7 +75,7 @@ function claudeSettingsFile(lean: boolean, configDir: string): string {
 
 const codexNotify = () =>
   // TOML array; the literal string ('…') keeps the shell script's double quotes intact. Codex appends the JSON event as $1.
-  `notify=["sh", "-c", 'curl -s -m 2 -X POST -H "content-type: application/json" --data-binary "$1" "${base()}/codex/turn?s=$ANSAI_SESSION_ID" >/dev/null 2>&1 || true', "ansai-notify"]`;
+  `notify=["sh", "-c", 'curl -s -m 2 -X POST -H "content-type: application/json" -H "${KEY_HEADER}" --data-binary "$1""${base()}/codex/turn?s=$ANSAI_SESSION_ID" >/dev/null 2>&1 || true', "ansai-notify"]`;
 
 /** What every agent started from ansai is told about the backlog tools (kept short). */
 const AGENT_NOTE =
@@ -119,7 +122,8 @@ export function withHooks(tool: ToolId, argv: string[], sessionId: string, playb
       "--settings",
       claudeSettingsFile(!!o.lean, o.configDir ?? join(config.home, ".claude")),
       "--mcp-config",
-      JSON.stringify({ mcpServers: { ansai: { type: "http", url: mcpUrl(sessionId), alwaysLoad: true } } }),
+      // Claude fills ${…} in from its environment, so the key itself is never on the command line.
+      JSON.stringify({ mcpServers: { ansai: { type: "http", url: mcpUrl(sessionId), headers: { Authorization: `Bearer \${${KEY_ENV}}` }, alwaysLoad: true } } }),
       "--append-system-prompt",
       note,
       ...argv.slice(1),
@@ -131,6 +135,9 @@ export function withHooks(tool: ToolId, argv: string[], sessionId: string, playb
       codexNotify(),
       "-c",
       `mcp_servers.ansai.url=${toml(mcpUrl(sessionId))}`,
+      // Codex sends this environment variable's value as `Authorization: Bearer …`.
+      "-c",
+      `mcp_servers.ansai.bearer_token_env_var=${toml(KEY_ENV)}`,
       // ansai's own tools (backlog, team messages) are safe; without this Codex stops to ask before each one.
       "-c",
       `mcp_servers.ansai.default_tools_approval_mode="approve"`,

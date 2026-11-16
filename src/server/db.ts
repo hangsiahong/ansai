@@ -263,6 +263,14 @@ const migrations: string[] = [
     disk REAL
   );
   `,
+  // 18: a secret key per session for its hook and tool calls (sessionkeys.ts). Its own table,
+  // so a query for a session row never carries the key along.
+  `
+  CREATE TABLE session_keys (
+    session_id TEXT PRIMARY KEY,
+    token TEXT NOT NULL
+  );
+  `,
 ];
 
 export function getSetting<T>(key: string, fallback: T): T {

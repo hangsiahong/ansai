@@ -13,6 +13,7 @@ import { accountEnv, getAccount, refreshAccountsSoon, resolveAccount, type Accou
 import { agySaw, codexScreen, onExited, playbookNote, startupScreen, withHooks, type HookOpts } from "./hooks";
 import { isLean } from "./lean";
 import { dropAttachments } from "./attachments";
+import { KEY_ENV, dropSessionKey, hasSessionKey, sessionKey } from "./sessionkeys";
 
 // ---------------------------------------------------------------- tmux plumbing
 
@@ -282,7 +283,7 @@ const hookOpts = (projectId: string | null | undefined, account: AccountRow | nu
 });
 
 function sessionEnv(id: string, account: AccountRow | null, cwd: string): string[] {
-  const env: Record<string, string> = { ANSAI_SESSION_ID: id, ...accountEnv(account, cwd) };
+  const env: Record<string, string> = { ANSAI_SESSION_ID: id, [KEY_ENV]: sessionKey(id), ...accountEnv(account, cwd) };
   return Object.entries(env).flatMap(([k, v]) => ["-e", `${k}=${v}`]);
 }
 
@@ -308,7 +309,10 @@ export async function createSession(o: CreateOpts) {
 
   await ensureServer();
   const r = await tmux(["new-session", "-d", "-s", tmuxName, "-x", "160", "-y", "48", "-c", cwd, ...sessionEnv(id, account, cwd), "--", ...argv]);
-  if (r.code !== 0) throw new Error(`tmux: ${r.err || "failed to start session"}`);
+  if (r.code !== 0) {
+    dropSessionKey(id);
+    throw new Error(`tmux: ${r.err || "failed to start session"}`);
+  }
 
   db.query(
     `INSERT INTO sessions (id, project_id, task_id, account_id, tool, title, cwd, argv, tmux_name, status, created_at, auto, msg_cursor)
@@ -356,15 +360,22 @@ export async function restartSession(id: string) {
   const launch = !conv ? fresh : s.tool === "claude" ? [...fresh, "--resume", conv] : [fresh[0]!, "resume", conv, ...fresh.slice(1)];
   const account = s.account_id ? getAccount(s.account_id) : null;
   const base = s.tool === "shell" ? argv : withHooks(s.tool, launch, s.id, playbookNote(s.project_id), undefined, hookOpts(s.project_id, account));
+  // An agent started before keys existed has none; if it can't be restarted it must stay believed without one.
+  const keyed = hasSessionKey(s.id);
+  const failed = (err: string) => {
+    if (!keyed) dropSessionKey(s.id);
+    return new Error(`tmux: ${err}`);
+  };
   const env = sessionEnv(s.id, account, s.cwd); // also prepares the profile, which a respawn needs too
   const alive = (await tmux(["has-session", "-t", s.tmux_name])).code === 0;
   if (alive) {
-    const r = await tmux(["respawn-pane", "-k", "-t", s.tmux_name, "-c", s.cwd, "--", ...base]);
-    if (r.code !== 0) throw new Error(`tmux: ${r.err}`);
+    // A respawned pane gets the environment its tmux session was made with, which has no key for those older agents.
+    const r = await tmux(["respawn-pane", "-k", "-t", s.tmux_name, "-c", s.cwd, "-e", `${KEY_ENV}=${sessionKey(s.id)}`, "--", ...base]);
+    if (r.code !== 0) throw failed(r.err);
   } else {
     await ensureServer();
     const r = await tmux(["new-session", "-d", "-s", s.tmux_name, "-x", "160", "-y", "48", "-c", s.cwd, ...env, "--", ...base]);
-    if (r.code !== 0) throw new Error(`tmux: ${r.err}`);
+    if (r.code !== 0) throw failed(r.err);
   }
   db.query("UPDATE sessions SET argv = ?, agent_state = NULL WHERE id = ?").run(JSON.stringify(base), id);
   db.query("UPDATE sessions SET status = 'running', exit_code = NULL, ended_at = NULL WHERE id = ?").run(id);

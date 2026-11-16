@@ -1,5 +1,6 @@
 import { db } from "./db";
 import { HttpError } from "./errors";
+import { callerAllowed, shownKey } from "./sessionkeys";
 import { getSession } from "./sessions";
 import { JSON_LIMIT, readJson } from "./validate";
 import { createTask, finishTask, finishTaskReview, getTask, reportReviewFinding } from "./tasks";
@@ -279,6 +280,10 @@ export async function mcpHttp(req: Request): Promise<Response> {
   if (req.method === "GET") return new Response("ansai MCP: POST JSON-RPC here", { status: 405, headers: { allow: "POST" } });
   if (req.method === "DELETE") return new Response(null, { status: 204 });
   const sessionId = new URL(req.url).searchParams.get("s") ?? "";
+  // Before anything is done in this session's name: is it a session, and is this really its agent?
+  if (!callerAllowed(sessionId, shownKey(req))) {
+    return Response.json({ jsonrpc: "2.0", id: null, error: { code: -32001, message: "ansai doesn't know this session, or its key doesn't match" } }, { status: 403 });
+  }
   let body: unknown;
   try {
     body = await readJson(req, JSON_LIMIT);
