@@ -111,8 +111,26 @@ export function listTasks() {
   const byReview = new Map(reviews.map((r): [string, TaskReview] => [r.task_id, { session_id: r.session_id, reviewer_tool: r.reviewer_tool, status: r.status === "running" && r.session_status !== "running" ? "stopped" : r.status, summary: r.summary, findings: JSON.parse(r.findings) as ReviewFinding[], round: r.round, sent_back: !!r.sent_back }]));
   return rows.map((t) => {
     const deps = byDependency.get(t.id) ?? [];
-    return { ...t, plan: t.plan ? (JSON.parse(t.plan) as Plan) : null, checks: liveChecks(t), evidence: parseEvidence(t.evidence), sessions: byTask.get(t.id) ?? [], dependencies: deps, blocked_by: deps.filter((d) => d.status !== "done"), review: byReview.get(t.id) ?? null };
+    return { ...t, ...doneText(t), plan: t.plan ? (JSON.parse(t.plan) as Plan) : null, checks: liveChecks(t), evidence: parseEvidence(t.evidence), sessions: byTask.get(t.id) ?? [], dependencies: deps, blocked_by: deps.filter((d) => d.status !== "done"), review: byReview.get(t.id) ?? null };
   });
+}
+
+/** How much of a done task's body and summary the live list carries: enough to search and to show it has details. */
+export const DONE_PREVIEW = 120;
+
+/**
+ * Done tasks pile up (dozens a day) and their text is most of the list, which is pushed to
+ * every open screen on each change. The list carries the start of it with cut: true; the
+ * task sheet loads the rest (taskText) when one is opened.
+ */
+function doneText(t: Pick<Task, "status" | "body" | "summary">): { body: string; summary: string | null; cut?: true } {
+  if (t.status !== "done" || (t.body.length <= DONE_PREVIEW && (t.summary ?? "").length <= DONE_PREVIEW)) return { body: t.body, summary: t.summary };
+  return { body: t.body.slice(0, DONE_PREVIEW), summary: t.summary === null ? null : t.summary.slice(0, DONE_PREVIEW), cut: true };
+}
+
+/** A task's full body and summary, for a screen that got it cut from the list. */
+export function taskText(id: string): { body: string; summary: string | null } | null {
+  return db.query("SELECT body, summary FROM tasks WHERE id = ?").get(id) as { body: string; summary: string | null } | null;
 }
 
 // A "running" left behind by a restart mid-run would otherwise spin forever.

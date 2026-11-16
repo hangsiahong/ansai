@@ -215,23 +215,43 @@ export function startupDialog(tool: ToolId, screen: string) {
 }
 
 export function sessionView(s: SessionRow) {
-  const l = live.get(s.tmux_name);
+  return { ...sessionListView(s), argv: JSON.parse(s.argv) as string[] };
+}
+export type SessionView = ReturnType<typeof sessionView>;
+
+/**
+ * A session as lists and live pushes carry it: without argv, which holds the whole launch
+ * prompt (most of the bytes) and is only read from a restart's answer.
+ */
+export function sessionListView(s: SessionRow) {
+  const { argv: _argv, ...row } = s;
   const project = s.project_id ? getProject(s.project_id) : null;
   return {
-    ...s,
-    argv: JSON.parse(s.argv) as string[],
+    ...row,
     project_name: project?.name ?? null,
-    activity_at: l?.activity ?? null,
-    current_command: l?.command ?? null,
-    clients: l?.attached ?? 0,
+    ...activityView(s),
     startup: visibleStartup(s),
     shift: shiftView(s.id),
-    /** Tokens spent so far (from the agent's log), and when an autopilot run hits its time limit. */
-    tokens: sessionTokens(s.id),
     deadline: runDeadline(s),
   };
 }
-export type SessionView = ReturnType<typeof sessionView>;
+
+/** The fields that move while an agent prints: pushed alone as "activity", so the whole list isn't resent every few seconds. */
+export function activityView(s: Pick<SessionRow, "id" | "tmux_name">) {
+  const l = live.get(s.tmux_name);
+  return {
+    activity_at: l?.activity ?? null,
+    current_command: l?.command ?? null,
+    clients: l?.attached ?? 0,
+    /** Tokens spent so far, from the agent's log. */
+    tokens: sessionTokens(s.id),
+  };
+}
+
+export function listActivity() {
+  const rows = db.query("SELECT id, tmux_name FROM sessions WHERE status != 'closed' ORDER BY created_at DESC").all() as Pick<SessionRow, "id" | "tmux_name">[];
+  return rows.map((s) => ({ id: s.id, ...activityView(s) }));
+}
 
 export function getSession(id: string): SessionRow | null {
   return db.query("SELECT * FROM sessions WHERE id = ?").get(id) as SessionRow | null;
@@ -248,7 +268,7 @@ export function listSessions(opts: { projectId?: string; includeClosed?: boolean
   const rows = db
     .query(`SELECT * FROM sessions ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY created_at DESC`)
     .all(...args) as SessionRow[];
-  return rows.map(sessionView);
+  return rows.map(sessionListView);
 }
 
 // ------------------------------------------------------------------ lifecycle
@@ -819,6 +839,7 @@ async function watchRewinds(at = Date.now()) {
 
 let lastStatusSig = "";
 let lastActivitySig = "";
+let lastTaskSig = "";
 
 const PANE_FORMAT = "#{session_name}\t#{pane_dead}\t#{pane_dead_status}\t#{pane_current_command}\t#{window_activity}\t#{session_attached}";
 
@@ -884,14 +905,20 @@ export function applyPanes(seen: Map<string, Pane>): boolean {
       db.query("UPDATE sessions SET status = 'running', exit_code = NULL, ended_at = NULL WHERE id = ?").run(s.id);
   }
   const statusSig = JSON.stringify(db.query("SELECT id, status, title, agent_state FROM sessions WHERE status != 'closed'").all());
-  const activitySig = JSON.stringify([...live.entries()].map(([k, v]) => [k, Math.floor(v.activity / 3000), v.attached]));
+  // Tasks list their linked sessions, but the UI reads those sessions' agent state from the
+  // session list: an agent going busy or idle must not resend every task.
+  const taskSig = JSON.stringify(db.query("SELECT id, task_id, status, title FROM sessions WHERE status != 'closed' AND task_id IS NOT NULL").all());
+  const activitySig = JSON.stringify([...live.entries()].map(([k, v]) => [k, Math.floor(v.activity / 3000), v.attached, v.command]));
   const statusChanged = statusSig !== lastStatusSig;
-  const changed = statusChanged || activitySig !== lastActivitySig;
+  const activityChanged = activitySig !== lastActivitySig;
+  const tasksChanged = taskSig !== lastTaskSig;
   lastStatusSig = statusSig;
   lastActivitySig = activitySig;
-  if (changed) emit("sessions");
-  if (statusChanged) emit("tasks"); // tasks show their linked sessions
-  return changed;
+  lastTaskSig = taskSig;
+  if (statusChanged) emit("sessions");
+  else if (activityChanged) emit("activity");
+  if (tasksChanged) emit("tasks");
+  return statusChanged || activityChanged;
 }
 
 export function startReconcileLoop(ms = 2000) {

@@ -35,7 +35,6 @@ export type Session = {
   tool: ToolId;
   title: string;
   cwd: string;
-  argv: string[];
   status: "running" | "exited" | "closed";
   exit_code: number | null;
   agent_state: string | null;
@@ -106,6 +105,8 @@ export type Task = {
   project_name: string | null;
   title: string;
   body: string;
+  /** Done tasks come with body and summary cut short (enough to search); api.taskText has the rest. */
+  cut?: true;
   status: TaskStatus;
   priority: number;
   position: number;
@@ -121,6 +122,7 @@ export type Task = {
   attempts: number;
   last_failure: string | null;
   source: "you" | "agent" | "session";
+  /** Linked sessions; their agent_state goes stale (it isn't re-pushed with tasks), so read live state from the session list (liveSessionsOf). */
   sessions: { id: string; tool: ToolId; title: string; status: string; agent_state: string | null; auto: number }[];
   dependencies?: { id: string; title: string; status: TaskStatus }[];
   blocked_by?: { id: string; title: string; status: TaskStatus }[];
@@ -267,6 +269,7 @@ export const api = {
   updateTask: (id: string, patch: { title?: string; body?: string; status?: TaskStatus; projectId?: string | null; priority?: number; position?: number; queued?: boolean; dependencies?: string[] }) =>
     call<Task & { cleanup?: TaskCleanup }>("PATCH", `/api/tasks/${id}`, patch),
   deleteTask: (id: string) => call<{ ok: true }>("DELETE", `/api/tasks/${id}`),
+  taskText: (id: string) => call<{ body: string; summary: string | null }>("GET", `/api/tasks/${id}/text`),
   taskChanges: (id: string) => call<Changes>("GET", `/api/tasks/${id}/changes`),
   reviewTask: (id: string, tool?: "claude" | "codex") => call<Session>("POST", `/api/tasks/${id}/review`, { tool }),
   mergeTask: (id: string) => call<{ sha: string; into: string; files: number }>("POST", `/api/tasks/${id}/merge`),
@@ -336,7 +339,7 @@ export const api = {
     call<Session>("POST", "/api/sessions", o),
   renameSession: (id: string, title: string) => call<Session>("PATCH", `/api/sessions/${id}`, { title }),
   sessionChanges: (id: string) => call<Changes>("GET", `/api/sessions/${id}/changes`),
-  restartSession: (id: string) => call<Session>("POST", `/api/sessions/${id}/restart`),
+  restartSession: (id: string) => call<Session & { argv: string[] }>("POST", `/api/sessions/${id}/restart`),
   closeSession: (id: string) => call<{ ok: true }>("DELETE", `/api/sessions/${id}`),
   history: (id: string) => call<string>("GET", `/api/sessions/${id}/history`),
   scroll: (id: string, dir: "up" | "down" | "exit") => call<{ ok: true }>("POST", `/api/sessions/${id}/scroll`, { dir }),

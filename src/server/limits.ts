@@ -91,7 +91,7 @@ export async function sampleBusy(read: () => Promise<string>, looks = 5, gapMs =
 export function startRunWatch(ms = 5000) {
   const tick = async () => {
     try {
-      if (await scanTokens()) emit("sessions");
+      if (await scanTokens()) emit("activity");
       await enforceRunLimits();
     } catch (e) {
       console.error("[ansai] run watch:", e);

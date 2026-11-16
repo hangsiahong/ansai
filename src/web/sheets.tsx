@@ -257,12 +257,34 @@ function NewTaskSheet(p: { projectId: string | null; onClose: () => void }) {
 
 const PRIORITIES = ["None", "Low", "Medium", "High"];
 
+/** A task's body and summary in full: from the list, or loaded when the list carries them cut (done tasks); null while loading. */
+function useFullText(task: Task | undefined) {
+  const [loaded, setLoaded] = useState<{ id: string; body: string; summary: string | null } | null>(null);
+  const cut = !!task?.cut;
+  useEffect(() => {
+    if (!task || !cut) return;
+    let on = true;
+    api.taskText(task.id).then((t) => on && setLoaded({ id: task.id, ...t }), toastError);
+    return () => {
+      on = false;
+    };
+  }, [task?.id, cut]);
+  if (!task) return null;
+  if (!cut) return { body: task.body, summary: task.summary };
+  return loaded?.id === task.id ? loaded : null;
+}
+
 function TaskSheet(p: { taskId: string; onClose: () => void }) {
   const task = useStore((s) => s.tasks.find((t) => t.id === p.taskId));
+  const text = useFullText(task);
   const autopilot = useStore((s) => s.projects.find((x) => x.id === task?.project_id)?.autopilot ?? null);
   const sessions = useStore((s) => s.sessions.filter((x) => x.task_id === p.taskId));
   const [title, setTitle] = useState(task?.title ?? "");
-  const [body, setBody] = useState(task?.body ?? "");
+  // null until a cut task's full text is in: a body is never saved from the cut copy.
+  const [body, setBody] = useState<string | null>(task && !task.cut ? task.body : null);
+  useEffect(() => {
+    if (body === null && text) setBody(text.body);
+  }, [text?.body]);
   const [yolo, setYolo] = useState(false);
   const [accountByTool, setAccountByTool] = useState<Record<string, string | null>>({});
   const [pickByTool, setPickByTool] = useState<Partial<Record<ToolId, ModelPick>>>({});
@@ -289,19 +311,28 @@ function TaskSheet(p: { taskId: string; onClose: () => void }) {
     }
   };
 
+  /** What the user changed and hasn't saved yet; null when nothing. */
+  const edits = () => {
+    if (!task || !dirty.current || !title.trim()) return null;
+    const patch: { title?: string; body?: string } = {};
+    if (title !== task.title) patch.title = title;
+    if (body !== null && body !== text?.body) patch.body = body;
+    return patch.title !== undefined || patch.body !== undefined ? patch : null;
+  };
+  const flush = () => {
+    const patch = edits();
+    dirty.current = false;
+    return patch ? save(patch) : Promise.resolve();
+  };
+
   useEffect(() => {
-    if (!task || !dirty.current) return;
-    const h = setTimeout(() => {
-      if (title.trim() && (title !== task.title || body !== task.body)) {
-        dirty.current = false;
-        save({ title, body });
-      }
-    }, 600);
+    if (!edits()) return;
+    const h = setTimeout(flush, 600);
     return () => clearTimeout(h);
   }, [title, body]);
 
   const close = () => {
-    if (task && dirty.current && title.trim() && (title !== task.title || body !== task.body)) save({ title, body });
+    void flush();
     p.onClose();
   };
 
@@ -318,7 +349,7 @@ function TaskSheet(p: { taskId: string; onClose: () => void }) {
   const run = async () => {
     setBusy(true);
     try {
-      if (dirty.current) await save({ title, body });
+      await flush();
       const s = await api.runTask(task.id, { tool: agent, yolo, accountId: accountByTool[agent] ?? null, ...(pickByTool[agent] ?? NO_PICK) });
       p.onClose();
       nav(`/s/${s.id}`);
@@ -418,19 +449,20 @@ function TaskSheet(p: { taskId: string; onClose: () => void }) {
             </button>
           ))}
         </div>
-        {task.summary && (
+        {(text ?? task).summary && (
           <div class="summary-card">
             <div class="summary-head">
               <Icon name="check" size={14} stroke={2.6} /> Agent's summary
             </div>
-            <p>{task.summary}</p>
+            <p>{(text ?? task).summary}</p>
           </div>
         )}
         <Proof task={task} />
         <textarea
           class="input notes"
           rows={4}
-          value={body}
+          value={body ?? task.body}
+          disabled={body === null}
           placeholder="Details — context, acceptance criteria, links. Sent to the agent with the title."
           onInput={(e) => {
             dirty.current = true;

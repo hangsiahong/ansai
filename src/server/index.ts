@@ -20,6 +20,7 @@ import {
   closeSession,
   createSession,
   getSession,
+  listActivity,
   listSessions,
   reconcile,
   renameSession,
@@ -54,7 +55,7 @@ import { resumeCompactions } from "./compaction";
 import { digest, markSeen } from "./digest";
 import { endProjectShift, endShift, nudgeIdle, stopPressed, shiftView, startProjectShift, startShift } from "./shifts";
 import { autopilotTick, getSettings, setProjectAutopilot, startAutopilot, updateSettings } from "./autopilot";
-import { STATUSES, createTask, deleteTask, getTask, listTasks, patchTask, runTask, startTaskReview, updateTask } from "./tasks";
+import { STATUSES, createTask, deleteTask, getTask, listTasks, patchTask, runTask, startTaskReview, taskText, updateTask } from "./tasks";
 import { changesIn, taskDir } from "./changes";
 import { discardTaskWorktreeClosingAgents, mergeTaskWorktree } from "./worktrees";
 import { db } from "./db";
@@ -171,6 +172,7 @@ function allowMethods<T extends Record<string, unknown>>(routes: T): T {
 
 function snapshot(t: Topic): string {
   if (t === "sessions") return JSON.stringify({ t, sessions: listSessions() });
+  if (t === "activity") return JSON.stringify({ t, sessions: listActivity() });
   if (t === "tasks") return JSON.stringify({ t, tasks: listTasks() });
   if (t === "projects") return JSON.stringify({ t, projects: listProjects() });
   if (t === "accounts") return JSON.stringify({ t, accounts: listAccounts() });
@@ -347,6 +349,10 @@ const server = Bun.serve<WSData>({
         return json({ ok: true });
       }),
     },
+    "/api/tasks/:id/text": guard((req) => {
+      const t = taskText(req.params.id!);
+      return t ? json(t) : fail(404, "no such task");
+    }),
     "/api/tasks/:id/changes": {
       GET: guard(async (req) => {
         const task = getTask(req.params.id!);
@@ -761,6 +767,7 @@ const server = Bun.serve<WSData>({
 
   websocket: {
     maxPayloadLength: 4 * 1024 * 1024,
+    perMessageDeflate: true, // the phone gets these through tailscale, which doesn't compress
     idleTimeout: 0, // terminals can sit idle for hours
     sendPings: true,
 
