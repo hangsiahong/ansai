@@ -1,5 +1,5 @@
 /** Tiny change bus: modules emit a topic, the server pushes fresh data to every open UI. */
-export type Topic = "sessions" | "tasks" | "projects" | "accounts" | "messages";
+export type Topic = "sessions" | "tasks" | "projects" | "accounts" | "messages" | "health";
 
 const listeners = new Set<(t: Topic) => void>();
 const pending = new Set<Topic>();

@@ -11,7 +11,7 @@ import { badRequest, notFound } from "./errors";
  * ~/.ansai. Payloads only carry a title, a short body and a link.
  */
 
-export type PushKind = "input" | "done" | "exited";
+export type PushKind = "input" | "done" | "exited" | "system";
 export type Prefs = Partial<Record<PushKind, boolean>>;
 
 const keyFile = join(config.dataDir, "vapid.json");

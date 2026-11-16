@@ -32,6 +32,7 @@ import {
 import { EFFORTS, TOOLS, isModelId, toolList, type ToolId } from "./tools";
 import { modelChoices, switchModel } from "./models";
 import { startRunWatch } from "./limits";
+import { healthSummary, history, isRange, processes, RANGES, startHealthLoop, systemNow } from "./health";
 import { HttpError, badRequest, conflict, errorCode, notFound, tooLarge } from "./errors";
 import { parseBody, v, type Check } from "./validate";
 import { onChange, emit, type Topic } from "./events";
@@ -163,6 +164,7 @@ function snapshot(t: Topic): string {
   if (t === "projects") return JSON.stringify({ t, projects: listProjects() });
   if (t === "accounts") return JSON.stringify({ t, accounts: listAccounts() });
   if (t === "messages") return JSON.stringify({ t, messages: listMessages({ limit: 200 }) });
+  if (t === "health") return JSON.stringify({ t, health: healthSummary() });
   return JSON.stringify({ t });
 }
 
@@ -193,6 +195,7 @@ const server = Bun.serve<WSData>({
     "/backlog": index,
     "/projects": index,
     "/accounts": index,
+    "/system": index,
     "/s/*": index,
     "/sw.js": asset(swPath, "text/javascript", "no-cache"),
     "/manifest.webmanifest": asset(manifestPath, "application/manifest+json"),
@@ -233,6 +236,14 @@ const server = Bun.serve<WSData>({
         return json(await modelChoices(tool, q.get("account") || null));
       }),
     },
+
+    "/api/system": guard(() => json(systemNow())),
+    "/api/system/history": guard((req) => {
+      const range = new URL(req.url).searchParams.get("range") ?? "1h";
+      if (!isRange(range)) throw badRequest(`range must be one of ${Object.keys(RANGES).join(", ")}`);
+      return json(history(range));
+    }),
+    "/api/system/processes": guard(async () => json(await processes())),
 
     "/api/projects": {
       GET: guard((req) => json(listProjects(new URL(req.url).searchParams.has("all")))),
@@ -453,7 +464,7 @@ const server = Bun.serve<WSData>({
               endpoint: v.string({ min: 1, max: 2048 }),
               keys: v.object({ p256dh: v.string({ min: 1, max: 512 }), auth: v.string({ min: 1, max: 512 }) }),
             }),
-            prefs: v.optional(v.object({ input: optBool, done: optBool, exited: optBool })),
+            prefs: v.optional(v.object({ input: optBool, done: optBool, exited: optBool, system: optBool })),
           }),
         );
         subscribe(b.subscription, user, b.prefs ?? {});
@@ -700,7 +711,7 @@ const server = Bun.serve<WSData>({
       }
       if (d.kind === "events") {
         ws.subscribe("events");
-        for (const t of ["sessions", "tasks", "projects", "accounts", "messages"] as Topic[]) ws.send(snapshot(t));
+        for (const t of ["sessions", "tasks", "projects", "accounts", "messages", "health"] as Topic[]) ws.send(snapshot(t));
         return;
       }
       const s = getSession(d.sessionId)!;
@@ -764,6 +775,7 @@ const server = Bun.serve<WSData>({
 onChange((t) => server.publish("events", snapshot(t)));
 startReconcileLoop();
 startUsageLoop();
+startHealthLoop();
 startBackgroundTails();
 startAutopilot();
 startRunWatch();

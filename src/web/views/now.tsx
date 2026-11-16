@@ -5,6 +5,7 @@ import { AGENTS, Empty, FolderIcon, Icon, Link, TOOL_SHORT, ToolBadge, ago, mode
 import { TaskRow } from "./tasks";
 import { ShiftTag } from "../shift";
 import { AwayDigest } from "../digest";
+import { SystemRow } from "../system";
 
 function greeting() {
   const h = new Date().getHours();
@@ -187,6 +188,7 @@ export function NowPane() {
 
         <aside class="now-side">
           <UsageRows accounts={accounts} />
+          <SystemRow />
 
           {working.length > 0 && (
             <section class="sec">

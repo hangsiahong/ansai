@@ -7,6 +7,7 @@ const KINDS = [
   { id: "input", label: "An agent needs you", hint: "permission prompts and questions" },
   { id: "done", label: "An agent finished its turn", hint: "Claude Code and Codex" },
   { id: "exited", label: "An agent crashed", hint: "exited with an error" },
+  { id: "system", label: "The machine is struggling", hint: "disk almost full, overheating, low memory or battery" },
 ] as const;
 
 function b64ToBytes(b64: string) {
@@ -20,7 +21,7 @@ const standalone = () => matchMedia("(display-mode: standalone)").matches || (na
 
 export function NotifyPanel() {
   const [sub, setSub] = useState<PushSubscription | null>(null);
-  const [prefs, setPrefs] = useState<Record<string, boolean>>({ input: true, done: true, exited: true });
+  const [prefs, setPrefs] = useState<Record<string, boolean>>({ input: true, done: true, exited: true, system: true });
   const [busy, setBusy] = useState(false);
   const [perm, setPerm] = useState<NotificationPermission | "unsupported">(supported() ? Notification.permission : "unsupported");
 
@@ -32,7 +33,7 @@ export function NotifyPanel() {
         setSub(s);
         if (s) {
           const r = await api.pushStatus(s.endpoint);
-          if (r.prefs) setPrefs({ input: true, done: true, exited: true, ...r.prefs });
+          if (r.prefs) setPrefs({ input: true, done: true, exited: true, system: true, ...r.prefs });
           else setSub(null); // server forgot it; let the user re-enable
         }
       })

@@ -1,6 +1,7 @@
 import { useState } from "preact/hooks";
 import { api, type Account, type ToolId, type UsageLimit } from "./api";
 import { confirmDialog, openSheet, promptDialog, setState, toast, toastError, useStore } from "./store";
+import { SystemRow } from "./system";
 import { AGENTS, Icon, TOOL_LABEL, ToolBadge, ago, compact, goBack, nav, until, useTick } from "./ui";
 
 const level = (pct: number) => (pct >= 90 ? "hot" : pct >= 70 ? "warm" : "ok");
@@ -245,6 +246,9 @@ export function AccountsPane() {
         </button>
       </header>
       <div class="scroll wide">
+        <div class="sys-phone-row">
+          <SystemRow />
+        </div>
         {AGENTS.filter((t) => tools.find((x) => x.id === t)?.installed !== false).map((tool) => {
           const list = accounts.filter((a) => a.tool === tool);
           return (

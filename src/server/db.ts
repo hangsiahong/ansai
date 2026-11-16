@@ -249,6 +249,18 @@ const migrations: string[] = [
   );
   CREATE INDEX task_reviews_session ON task_reviews(session_id);
   `,
+  // v17: one row per minute of machine health (src/server/health.ts), for the System page's charts; kept 8 days.
+  `
+  CREATE TABLE health_samples (
+    ts INTEGER PRIMARY KEY,
+    cpu REAL,
+    cpu_max REAL,
+    mem REAL,
+    temp REAL,
+    load REAL,
+    disk REAL
+  );
+  `,
 ];
 
 export function getSetting<T>(key: string, fallback: T): T {

@@ -24,6 +24,7 @@ export function Sidebar({ route }: { route: string }) {
   const me = useStore((s) => s.me);
   const openTasks = tasks.filter((t) => t.status !== "done").length;
   const hotAccounts = useStore((s) => s.accounts.filter((a) => a.usage?.limits.some((l) => l.used_percent >= 90)).length);
+  const machineIssues = useStore((s) => s.health?.issues.length ?? 0);
 
   const activeSession = route.startsWith("/s/") ? route.slice(3) : null;
   const activeProject = route.startsWith("/p/") ? route.slice(3) : null;
@@ -67,6 +68,7 @@ export function Sidebar({ route }: { route: string }) {
         {navItem("/backlog", "list", "Backlog", openTasks)}
         {navItem("/projects", "layers", "Projects")}
         {navItem("/accounts", "gauge", "Accounts", hotAccounts, true)}
+        {navItem("/system", "cpu", "System", machineIssues, true)}
       </div>
 
       <div class="side-scroll">

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "preact/hooks";
-import { api, wsUrl, type Account, type Me, type Message, type Project, type Session, type Task, type TeamBoard, type Tool, type ToolId } from "./api";
+import { api, wsUrl, type Account, type HealthSummary, type Me, type Message, type Project, type Session, type Task, type TeamBoard, type Tool, type ToolId } from "./api";
 
 export type SheetState =
   | null
@@ -26,6 +26,8 @@ type State = {
   tasks: Task[];
   accounts: Account[];
   messages: Message[];
+  /** The laptop's vital signs (CPU, memory, disk, temperature) and any trouble; null until the first sample. */
+  health: HealthSummary | null;
   /** Per project: who's on what (Team panel, and file overlaps on task cards). Fetched, not pushed. */
   teams: Record<string, TeamBoard>;
   tools: Tool[];
@@ -53,6 +55,7 @@ let state: State = {
   tasks: [],
   accounts: [],
   messages: [],
+  health: null,
   teams: {},
   tools: [],
   me: null,
@@ -216,6 +219,7 @@ function connectEvents() {
         else if (m.t === "projects") setState({ projects: m.projects });
         else if (m.t === "accounts") setState({ accounts: m.accounts });
         else if (m.t === "messages") setState({ messages: m.messages });
+        else if (m.t === "health") setState({ health: m.health });
       } catch {}
     };
     ws.onclose = () => {

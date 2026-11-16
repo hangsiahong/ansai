@@ -12,6 +12,7 @@ import { ProjectsPane } from "./views/projects";
 import { SessionPane } from "./views/session";
 import { BacklogPane } from "./views/backlog";
 import { AccountsPane } from "./accounts";
+import { SystemPane } from "./system";
 
 function Blocked({ reason }: { reason: string }) {
   return (
@@ -104,6 +105,7 @@ function App() {
   else if (route === "/projects") main = <ProjectsPane />;
   else if (route === "/backlog") main = <BacklogPane />;
   else if (route === "/accounts") main = <AccountsPane />;
+  else if (route === "/system") main = <SystemPane />;
   else main = <NowPane />;
 
   const inSession = route.startsWith("/s/");

@@ -193,6 +193,35 @@ export type ModelChoices = {
 };
 /** A launch choice: null = the agent's own default. */
 export type ModelPick = { model: string | null; effort: string | null };
+export type SystemLevel = "ok" | "warn" | "crit";
+export type SystemIssue = { id: string; level: "warn" | "crit"; title: string; detail: string };
+export type SystemPressure = { avg10: number; avg60: number; avg300: number };
+export type SystemSample = {
+  at: number;
+  host: string;
+  uptime: number;
+  cpu: { pct: number | null; cores: number[]; threads: number; model: string; load: [number, number, number]; pressure: SystemPressure | null };
+  mem: { total: number; available: number; used: number; pct: number; swapTotal: number; swapUsed: number; pressure: SystemPressure | null };
+  temps: { id: string; label: string; kind: "cpu" | "gpu" | "nvme" | "wifi" | "board"; c: number; warn: number; crit: number }[];
+  fans: { label: string; rpm: number }[];
+  disks: { mount: string; device: string; fs: string; total: number; used: number; avail: number; pct: number }[];
+  battery: { pct: number; status: string; charging: boolean; discharging: boolean; plugged: boolean; watts: number | null; etaMin: number | null; limit: number | null } | null;
+};
+export type SystemNow = { supported: boolean; sample: SystemSample | null; issues: SystemIssue[]; level: SystemLevel };
+/** The small version every open page gets over the socket. */
+export type HealthSummary = { at: number; level: SystemLevel; issues: SystemIssue[]; cpu: number | null; mem: number; temp: number | null; disk: number | null; battery: { pct: number; plugged: boolean } | null };
+export type SystemRange = "1h" | "6h" | "24h" | "7d";
+export type SystemPoint = { t: number; cpu: number | null; cpuMax: number | null; mem: number | null; temp: number | null; load: number | null; disk: number | null };
+export type SystemHistory = { range: SystemRange; step: number; from: number; points: SystemPoint[] };
+export type SystemProcRow = { pid: number; name: string; cpu: number; rss: number; agent: string | null };
+export type SystemProcs = {
+  at: number;
+  cores: number;
+  agents: { id: string; title: string; tool: ToolId; project: string | null; cpu: number; rss: number; procs: number }[];
+  ansai: { cpu: number; rss: number; procs: number };
+  topCpu: SystemProcRow[];
+  topMem: SystemProcRow[];
+};
 export type Me = { user: string; device: string; tailscale: { dnsName: string | null; owner: string | null; url: string | null }; shell: string };
 
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -234,6 +263,10 @@ export const api = {
   deleteAccount: (id: string) => call<{ ok: true }>("DELETE", `/api/accounts/${id}`),
   loginAccount: (id: string) => call<Session>("POST", `/api/accounts/${id}/login`),
   refreshAccounts: () => call<Account[]>("POST", "/api/accounts/refresh"),
+
+  system: () => call<SystemNow>("GET", "/api/system"),
+  systemHistory: (range: SystemRange) => call<SystemHistory>("GET", `/api/system/history?range=${range}`),
+  systemProcs: () => call<SystemProcs>("GET", "/api/system/processes"),
 
   pushKey: () => call<{ publicKey: string }>("GET", "/api/push/key"),
   pushSubscribe: (subscription: PushSubscriptionJSON, prefs: Record<string, boolean>) =>
