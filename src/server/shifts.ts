@@ -2,7 +2,7 @@ import { db, getSetting, now, setSetting } from "./db";
 import { badRequest, conflict, notFound } from "./errors";
 import { emit } from "./events";
 import { notify } from "./push";
-import { getSession, sendText, sessionView, type SessionRow } from "./sessions";
+import { getSession, readyToType, sendText, sessionView, type SessionRow } from "./sessions";
 import { shouldType, takeForTyping } from "./team";
 
 /**
@@ -332,6 +332,9 @@ export async function nudgeIdle() {
     const didWork = s.tool === "claude" ? sh.worked === 1 : turnLength >= CODEX_IDLE_TURN;
     nudging.add(s.id);
     try {
+      // A menu or a question is on its screen instead of its input box: Enter would answer
+      // that, not send a prompt. Nothing is counted; the next round looks again.
+      if (!(await readyToType(s))) continue;
       const text = nextNudge(s, didWork);
       // Claude picks up waiting messages by itself when a prompt is submitted (its hook hands
       // them over); Codex has no such hook, so they are typed in front of the prompt.

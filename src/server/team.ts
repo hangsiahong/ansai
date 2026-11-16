@@ -3,7 +3,7 @@ import { db, getSetting, now, setSetting } from "./db";
 import { badRequest, conflict, notFound } from "./errors";
 import { emit } from "./events";
 import { getProject } from "./projects";
-import { getSession, sendText, sessionView, type SessionRow } from "./sessions";
+import { getSession, readyToType, sendText, sessionView, type SessionRow } from "./sessions";
 import { touchedFiles } from "./transcripts";
 import { TOOLS } from "./tools";
 
@@ -149,7 +149,7 @@ function resolveTarget(to: string, from: SessionRow | null): SessionRow {
 
 /** What happens to a direct message right now: delivered mid-turn, typed in, or held (and why). */
 export function deliveryNote(target: SessionRow): string {
-  if (target.agent_state === "working") return "It's working, so it reads this between steps.";
+  if (target.agent_state === "working") return target.tool === "codex" ? "It's working; ansai types this in when its turn ends." : "It's working, so it reads this between steps.";
   if (target.agent_state === "needs-input") return "It's waiting for the user's approval; it reads this once it continues.";
   const at = sessionView(target).activity_at;
   const why = holdReason(target, at ? Date.now() - at : null);
@@ -251,8 +251,11 @@ export async function deliverIdle() {
     const at = sessionView(s).activity_at;
     if (!shouldType(s, at ? Date.now() - at : null)) continue;
     delivering.add(s.id);
-    const taken = takeForTyping(s.id);
+    let taken: ReturnType<typeof takeForTyping> = null;
     try {
+      // A menu or a question on its screen instead of its input box: the message waits (still undelivered).
+      if (!(await readyToType(s))) continue;
+      taken = takeForTyping(s.id);
       if (taken) await sendText(s.id, taken.text, true);
     } catch (e) {
       taken?.giveBack(); // not typed: don't leave it marked Delivered

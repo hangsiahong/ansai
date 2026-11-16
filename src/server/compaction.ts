@@ -1,6 +1,6 @@
 import { db, getSetting, now, setSetting } from "./db";
 import { emit } from "./events";
-import { sendText } from "./sessions";
+import { sendAtPrompt } from "./sessions";
 import { contextSize } from "./transcripts";
 
 /**
@@ -42,7 +42,8 @@ const nudged = new Map<string, number>();
 /** Delays, in ms (tests shorten them). */
 export const timing = { afterStop: 1500, afterCompact: 1500, giveUp: 5 * 60_000 };
 
-let send: (id: string, text: string) => Promise<unknown> = (id, text) => sendText(id, text, true);
+// Only once Claude's input box is showing: "/compact" typed into a menu would pick one of its rows.
+let send: (id: string, text: string) => Promise<unknown> = (id, text) => sendAtPrompt(id, text);
 /** Tests: capture what would be typed instead of driving tmux. */
 export function setSender(f: typeof send) {
   send = f;

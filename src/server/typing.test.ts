@@ -1,7 +1,8 @@
 // Text ansai types into an agent's terminal: team messages, a shift's next prompt.
 // Two of them sent in the same moment must not overwrite each other, a message that
 // couldn't be typed must not be shown as Delivered, and a message that is being held
-// back must not stop a shift from handing the agent its next prompt.
+// back must not stop a shift from handing the agent its next prompt. And nothing is
+// typed while a menu or a question is on the agent's screen instead of its input box.
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 
 const { db, now } = await import("./db");
@@ -10,6 +11,7 @@ const { applyPanes, parsePanes, sendText, getSession } = sessions;
 const team = await import("./team");
 const shifts = await import("./shifts");
 const { handleHook } = await import("./hooks");
+const screen = await import("./test-screens");
 
 const HOUR = 3600_000;
 
@@ -18,6 +20,8 @@ let buffers = new Map<string, string>();
 let ops: string[] = [];
 let typed: { pane: string; text: string }[] = [];
 let failPaste = false;
+/** What each pane shows (capture-pane); an agent sits at its prompt unless a test says otherwise. */
+let screens = new Map<string, string>();
 const realTmux = sessions.setTmux(async (args, stdin) => {
   await Bun.sleep(1 + Math.floor(Math.random() * 4));
   const opt = (flag: string) => args[args.indexOf(flag) + 1]!;
@@ -25,6 +29,8 @@ const realTmux = sessions.setTmux(async (args, stdin) => {
   switch (args[0]) {
     case "display":
       return { ...ok, out: "0\n" };
+    case "capture-pane":
+      return { ...ok, out: screens.get(opt("-t")) ?? "" };
     case "load-buffer":
       buffers.set(opt("-b"), stdin ?? "");
       ops.push("load");
@@ -54,6 +60,7 @@ function agent(id: string, o: { tool?: string; state?: string | null; task?: str
     `INSERT INTO sessions (id, project_id, task_id, tool, title, cwd, argv, tmux_name, status, agent_state, created_at, msg_cursor)
      VALUES (?, 'yp1', ?, ?, ?, '/tmp', '[]', ?, 'running', ?, ?, (SELECT COALESCE(MAX(id), 0) FROM messages))`,
   ).run(id, o.task ?? null, o.tool ?? "claude", `Agent ${id}`, `ansai-${id}`, o.state === undefined ? "waiting" : o.state, now());
+  screens.set(`ansai-${id}`, o.tool === "codex" ? screen.CODEX_IDLE : screen.CLAUDE_IDLE);
   return getSession(id)!;
 }
 /** Tell ansai what tmux shows: these agents are alive and their screens have been still for a minute. */
@@ -76,6 +83,7 @@ beforeEach(async () => {
   ops = [];
   typed = [];
   failPaste = false;
+  screens = new Map();
 });
 
 describe("typing into a session", () => {
@@ -208,5 +216,88 @@ describe("a shift and a waiting team message", () => {
     expect(typed.length).toBe(1);
     expect(typed[0]!.text).not.toContain("tests fail on main");
     expect(handleHook("claude", "UserPromptSubmit", "b", {})?.hookSpecificOutput?.additionalContext).toContain("tests fail on main");
+  });
+});
+
+describe("a menu or a question on the agent's screen", () => {
+  test("a team message waits (undelivered) and is typed once the input box is back", async () => {
+    const a = agent("a", { state: "working" });
+    agent("b");
+    quiet("a", "b");
+    screens.set("ansai-b", screen.CLAUDE_MENU); // Enter here would pick the focused model
+    const m = team.postMessage({ from: a, to: "b", body: "the API moved to v2" });
+    await settle();
+    await team.deliverIdle();
+    expect(ops).toEqual([]); // nothing pasted, no Enter pressed
+    expect(message(m.id).delivered_at).toBeNull();
+    screens.set("ansai-b", screen.CLAUDE_IDLE);
+    await team.deliverIdle();
+    expect(typed.map((t) => t.pane)).toEqual(["ansai-b"]);
+    expect(message(m.id).delivered_at).not.toBeNull();
+  });
+
+  test("a shift's next prompt waits too, and isn't counted until it is typed", async () => {
+    agent("c", { tool: "codex" });
+    quiet("c");
+    screens.set("ansai-c", screen.CODEX_TRUST);
+    shifts.startShift("c", { until: now() + HOUR });
+    await Bun.sleep(120); // startShift's own first look
+    await shifts.nudgeIdle();
+    expect(ops).toEqual([]);
+    expect(shifts.shiftView("c")!.nudges).toBe(0);
+    expect(shifts.shiftView("c")!.active).toBe(true);
+    screens.set("ansai-c", screen.CODEX_IDLE);
+    await shifts.nudgeIdle();
+    await until(() => typed.length > 0);
+    expect(typed.length).toBe(1);
+    expect(shifts.shiftView("c")!.nudges).toBe(1);
+  });
+
+  test("a prompt for the agent waits a moment for the box, then gives up without typing", async () => {
+    agent("a");
+    screens.set("ansai-a", screen.CLAUDE_MENU);
+    const err = await sessions.sendAtPrompt("a", "/compact keep the plan", 60).catch((e) => e);
+    expect(err.status).toBe(409);
+    expect(ops).toEqual([]);
+    setTimeout(() => screens.set("ansai-a", screen.CLAUDE_IDLE), 30);
+    await sessions.sendAtPrompt("a", "/compact keep the plan", 2000);
+    expect(typed.map((t) => t.text)).toEqual(["/compact keep the plan"]);
+  });
+});
+
+describe("Codex, which only says when a turn ends", () => {
+  test("a prompt typed in through ansai marks it working; a slash command doesn't", async () => {
+    agent("c", { tool: "codex" });
+    await sendText("c", "/model");
+    expect(getSession("c")!.agent_state).toBe("waiting");
+    await sendText("c", "half a thought", false); // typed, not sent
+    expect(getSession("c")!.agent_state).toBe("waiting");
+    await sendText("c", "fix the failing test");
+    expect(getSession("c")!.agent_state).toBe("working");
+    handleHook("codex", "turn", "c", { type: "agent-turn-complete", "last-assistant-message": "Fixed." });
+    expect(getSession("c")!.agent_state).toBe("waiting");
+  });
+
+  test("a turn you stopped with Esc doesn't leave it working for good", async () => {
+    agent("c", { tool: "codex" });
+    await sendText("c", "run the slow thing");
+    quiet("c"); // its screen has been still for a minute
+    const later = Date.now() + 20_000;
+    screens.set("ansai-c", screen.CODEX_WORKING); // still says "esc to interrupt": leave it
+    await sessions.watchCodexScreens(later);
+    expect(getSession("c")!.agent_state).toBe("working");
+    screens.set("ansai-c", screen.CODEX_INTERRUPTED);
+    await sessions.watchCodexScreens(Date.now()); // too soon after the prompt to tell
+    expect(getSession("c")!.agent_state).toBe("working");
+    await sessions.watchCodexScreens(later);
+    expect(getSession("c")!).toMatchObject({ agent_state: "waiting", agent_message: "Interrupted" });
+  });
+
+  test("a turn whose end ansai missed is noticed the same way, without calling it interrupted", async () => {
+    agent("c", { tool: "codex" });
+    await sendText("c", "say hi");
+    quiet("c");
+    await sessions.watchCodexScreens(Date.now() + 20_000);
+    expect(getSession("c")!).toMatchObject({ agent_state: "waiting", agent_message: null });
   });
 });

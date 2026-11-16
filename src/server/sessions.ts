@@ -461,7 +461,20 @@ async function typeText(id: string, text: string, enter: boolean) {
     if (text) await Bun.sleep(120); // let TUIs finish ingesting the paste
     const r = await tmux(["send-keys", "-t", t, "Enter"]);
     if (r.code !== 0) throw paneError(r.err);
+    if (s.tool === "codex" && text.trim() && !text.trimStart().startsWith("/")) codexPrompted(s.id);
   }
+}
+
+/**
+ * Codex only says when a turn ends, so a prompt typed in through ansai (yours, a team
+ * message, a shift's next prompt) is what marks it "working". Before, it stayed "idle"
+ * through such turns, and only its moving screen kept ansai from typing into it again.
+ */
+function codexPrompted(id: string) {
+  const r = db
+    .query("UPDATE sessions SET agent_state = 'working', agent_state_at = ?, agent_message = NULL WHERE id = ? AND status = 'running' AND (agent_state IS NULL OR agent_state = 'waiting')")
+    .run(Date.now(), id);
+  if (r.changes) emit("sessions");
 }
 
 const NAMED_KEYS = new Set(["Enter", "Escape", "Tab", "BTab", "Up", "Down", "Left", "Right", "C-c", "Space", "BSpace"]);
@@ -481,8 +494,11 @@ export async function sendKeys(id: string, keys: string[]) {
 const CODEX_ASK = /Would you like to (run the following command|make the following edits|grant these permissions|send input to the existing terminal)/;
 
 /** Codex shows approvals only on screen; read the visible pane of running Codex sessions. */
-async function watchCodexScreens() {
-  const rows = db.query("SELECT id, tmux_name FROM sessions WHERE tool = 'codex' AND status = 'running'").all() as { id: string; tmux_name: string }[];
+export async function watchCodexScreens(at = Date.now()) {
+  const rows = db.query("SELECT id, tmux_name, agent_state, agent_state_at FROM sessions WHERE tool = 'codex' AND status = 'running'").all() as Pick<
+    SessionRow,
+    "id" | "tmux_name" | "agent_state" | "agent_state_at"
+  >[];
   for (const r of rows) {
     if (startup.has(r.id)) continue; // a startup dialog, not an approval; watchStartupScreens owns it
     const cap = await tmux(["capture-pane", "-p", "-J", "-t", r.tmux_name]);
@@ -499,8 +515,30 @@ async function watchCodexScreens() {
       prompt = detail ? `${ask} ${detail}`.slice(0, 200) : ask;
     }
     codexScreen(r.id, prompt);
+    if (!prompt && r.agent_state === "working") codexStopped(r, cap.out, at);
   }
 }
+
+/**
+ * Codex says when a turn ends, but not when you interrupt one (Esc), and a turn's end can be
+ * missed while ansai restarts: it would say "working" for good. A working Codex redraws its
+ * timer every second and shows "esc to interrupt", so one whose screen has been still for
+ * 10 s, with its input box showing and no such hint, has stopped.
+ */
+function codexStopped(r: Pick<SessionRow, "id" | "tmux_name" | "agent_state_at">, screen: string, at: number) {
+  const l = live.get(r.tmux_name);
+  if (!l || at - l.activity < CODEX_QUIET_MS || at - (r.agent_state_at ?? at) < CODEX_QUIET_MS) return;
+  if (/esc to interrup[t]/i.test(screen) || !atPrompt("codex", screen)) return;
+  const lines = screen.split("\n").map((x) => x.trimEnd());
+  const box = lines.findLastIndex((x) => x === "›" || x.startsWith("› "));
+  // The last thing Codex wrote above its box is its own note that you stopped it (as Claude's log says for Claude).
+  const interrupted = /^■ Conversation interrupte[d]/.test(lines.slice(0, box).findLast((x) => /^[•■›]/.test(x)) ?? "");
+  const u = db
+    .query("UPDATE sessions SET agent_state = 'waiting', agent_state_at = ?, agent_message = ? WHERE id = ? AND agent_state = 'working'")
+    .run(Date.now(), interrupted ? "Interrupted" : null, r.id);
+  if (u.changes) emit("sessions");
+}
+const CODEX_QUIET_MS = 10_000;
 
 /**
  * Claude (and Codex) show a few screens before they run hooks (so before ansai hears from it):
@@ -555,6 +593,19 @@ async function watchStartupScreens() {
   }
 }
 
+/** Claude's input box at the bottom of its screen: what is typed in it, and how many lines (its footer) sit under it. */
+function claudeBox(screen: string): { text: string; below: number } | null {
+  const lines = screen.split("\n").map((l) => l.trimEnd());
+  while (lines.length && !lines[lines.length - 1]!.trim()) lines.pop();
+  const rules = lines.flatMap((l, i) => (/^─{20,}$/.test(l.trim()) ? [i] : []));
+  if (rules.length < 2) return null;
+  const [top, bottom] = rules.slice(-2) as [number, number];
+  // The box is: rule, "❯ text", wrapped lines, rule. Claude puts a no-break space after ❯.
+  const first = lines[top + 1] ?? "";
+  if (!first.startsWith("❯")) return null;
+  return { text: first.slice(1).trim(), below: lines.length - 1 - bottom };
+}
+
 /**
  * Esc while Claude is still thinking makes it rewind: your prompt goes back into its
  * input box, nothing is logged (so the log's "[Request interrupted…]" check can't see
@@ -564,13 +615,71 @@ async function watchStartupScreens() {
  */
 export function claudeRewound(screen: string): boolean {
   if (/esc to interrup[t]/i.test(screen)) return false;
+  const box = claudeBox(screen);
+  return !!box && !!box.text && box.below <= 3; // the box with at most its footer under it
+}
+
+/**
+ * Is the agent's own input box on its screen, so text followed by Enter becomes a prompt?
+ * When a menu is up instead (a model picker, a usage-limit choice, a trust or approval
+ * question), the box is gone, the text is thrown away and Enter picks whatever row is
+ * focused. Checked against Claude Code 2.1 and Codex 0.169 screens:
+ * - Claude draws its box between two rules at the bottom, with a short footer under it;
+ *   every menu replaces the box.
+ * - Codex's box is a "› " line near the bottom with its status lines under it. A menu's
+ *   focused row is "› 1. …" and its last line says "enter … esc …".
+ * Other tools have no known screen, so nothing is held for them.
+ */
+export function atPrompt(tool: ToolId, screen: string): boolean {
+  if (tool === "claude") {
+    const box = claudeBox(screen);
+    return !!box && box.below <= 5;
+  }
+  if (tool !== "codex") return true;
+  if (CODEX_ASK.test(screen)) return false;
   const lines = screen.split("\n").map((l) => l.trimEnd());
   while (lines.length && !lines[lines.length - 1]!.trim()) lines.pop();
-  const rules = lines.flatMap((l, i) => (/^─{20,}$/.test(l.trim()) ? [i] : []));
-  if (rules.length < 2) return false;
-  const [top, bottom] = rules.slice(-2) as [number, number];
-  // The input box (rule, "❯ text", wrapped lines, rule) with at most its footer under it.
-  return /^❯\s+\S/.test(lines[top + 1] ?? "") && lines.length - 1 - bottom <= 3; // Claude puts a no-break space after ❯
+  const i = lines.findLastIndex((l) => l === "›" || l.startsWith("› "));
+  if (i < 0 || lines.length - 1 - i > 10) return false; // its status lines wrap on a narrow screen
+  if (/^›\s+\d+\.\s/.test(lines[i]!)) return false;
+  return !lines.slice(-3).some((l) => /\benter\b.*\besc\b/i.test(l));
+}
+
+/** Read the agent's screen and say whether its input box is showing (false when the pane can't be read). */
+export async function promptShowing(s: Pick<SessionRow, "tool" | "tmux_name">): Promise<boolean> {
+  if (s.tool !== "claude" && s.tool !== "codex") return true;
+  const cap = await tmux(["capture-pane", "-p", "-t", s.tmux_name]);
+  return cap.code === 0 && atPrompt(s.tool, cap.out);
+}
+
+const offPrompt = new Set<string>();
+/**
+ * For text ansai types by itself (a team message, a shift's next prompt): is this agent's
+ * input box showing right now? When it isn't, the text is held and tried again later;
+ * the log says so once, until the box is back.
+ */
+export async function readyToType(s: Pick<SessionRow, "id" | "tool" | "tmux_name">): Promise<boolean> {
+  if (await promptShowing(s)) {
+    offPrompt.delete(s.id);
+    return true;
+  }
+  if (!offPrompt.has(s.id)) {
+    offPrompt.add(s.id);
+    console.warn(`[ansai] not typing into ${s.id}: its input box isn't on screen (a menu or a question is). Trying again when it is.`);
+  }
+  return false;
+}
+
+/**
+ * Type a prompt once the agent's input box is showing, waiting a little for it
+ * (a screen is still being redrawn right after a turn ends). 409 if it never shows.
+ */
+export async function sendAtPrompt(id: string, text: string, waitMs = 10_000): Promise<void> {
+  for (const end = Date.now() + waitMs; ; ) {
+    if (await promptShowing(liveSession(id))) return sendText(id, text, true);
+    if (Date.now() >= end) throw conflict("the agent's input box isn't on its screen (a menu or a question is), so nothing was typed");
+    await Bun.sleep(Math.min(500, waitMs));
+  }
 }
 
 const QUIET_MS = 8000;
@@ -675,7 +784,7 @@ export function applyPanes(seen: Map<string, Pane>): boolean {
 export function startReconcileLoop(ms = 2000) {
   const tick = () =>
     reconcile()
-      .then(watchCodexScreens)
+      .then(() => watchCodexScreens())
       .then(watchStartupScreens)
       .then(() => watchRewinds())
       .catch((e) => console.error("reconcile:", e))
