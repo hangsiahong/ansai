@@ -3,7 +3,7 @@ import { badRequest, conflict, notFound } from "./errors";
 import { emit } from "./events";
 import { getProject } from "./projects";
 import { closeSession, createSession, getSession } from "./sessions";
-import { ensureTaskWorktree } from "./worktrees";
+import { ensureTaskWorktree, removeTaskWorktreeSafely } from "./worktrees";
 import { changesIn, taskDir } from "./changes";
 import type { ToolId } from "./tools";
 import { checkAgySignIn } from "./accounts";
@@ -256,7 +256,11 @@ export function updateTask(
   return { ...next, dependencies: deps, blocked_by: deps.filter((d) => d.status !== "done") };
 }
 
-export function deleteTask(id: string) {
+export async function deleteTask(id: string) {
+  const task = getTask(id);
+  if (!task) throw notFound("no such task");
+  // The task's worktree and branch go with it, unless that would lose work (409).
+  await removeTaskWorktreeSafely(task);
   if (!db.query("DELETE FROM tasks WHERE id = ?").run(id).changes) throw notFound("no such task");
   emit("tasks");
 }

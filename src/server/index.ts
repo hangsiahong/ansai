@@ -297,8 +297,8 @@ const server = Bun.serve<WSData>({
         );
         return json(updateTask(req.params.id!, b));
       }),
-      DELETE: guard((req) => {
-        deleteTask(req.params.id!);
+      DELETE: guard(async (req) => {
+        await deleteTask(req.params.id!);
         return json({ ok: true });
       }),
     },

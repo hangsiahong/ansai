@@ -47,6 +47,8 @@ async function ensure(task: WorktreeTask, projectPath: string): Promise<Worktree
     if (hasBranch) {
       const restored = await git(["-C", repoRoot, "worktree", "add", path, branch]);
       if (restored.code !== 0) throw conflict(`could not restore task worktree: ${restored.stderr || restored.stdout}`);
+      // A checkout has committed files only: give it .env and node_modules again, as a new one gets.
+      notes = await provision(repoRoot, path);
     } else {
       path = null;
     }
@@ -199,6 +201,36 @@ function forget(taskId: string) {
   emit("tasks");
 }
 
+/** Running sessions on the task, which may be in its worktree (a finished review's doesn't count). */
+function openSessions(taskId: string) {
+  return db.query(`SELECT s.agent_state FROM sessions s WHERE s.task_id = ? AND s.status = 'running'
+    AND NOT EXISTS (SELECT 1 FROM task_reviews r WHERE r.session_id = s.id AND r.status = 'complete')`).all(taskId) as { agent_state: string | null }[];
+}
+
+/**
+ * Before a task is deleted: remove its worktree and branch, but only when that loses
+ * nothing. Unlike Discard (an explicit "throw this away"), this refuses while an agent
+ * session is open on the task, while the folder has uncommitted changes, or while the
+ * branch (or the worktree's HEAD) has commits that no other branch or remote has.
+ */
+export async function removeTaskWorktreeSafely(task: TaskRef) {
+  const wt = task.worktree_path;
+  const branch = task.worktree_branch;
+  if (!wt || !branch) return;
+  if (openSessions(task.id).length) throw conflict("an agent session is still open on this task; close it first (deleting the task removes its worktree)");
+  // The folder is already gone: Discard then only forgets it and leaves the branch alone.
+  if (!existsSync(wt)) return discardTaskWorktree(task);
+  const status = await gitIn(wt, ["status", "--porcelain"]);
+  if (status.code !== 0) throw conflict(`git: ${status.stderr}`);
+  if (status.stdout) throw conflict("this task's worktree has uncommitted changes; merge or discard it first");
+  const tips = ["HEAD"];
+  if ((await gitIn(wt, ["rev-parse", "--verify", "-q", `refs/heads/${branch}`])).code === 0) tips.push(`refs/heads/${branch}`);
+  const unmerged = await gitIn(wt, ["rev-list", "--count", ...tips, "--not", `--exclude=${branch}`, "--branches", "--remotes"]);
+  if (unmerged.code !== 0) throw conflict(`git: ${unmerged.stderr}`);
+  if (unmerged.stdout !== "0") throw conflict("this task's branch has unmerged commits; merge or discard it first");
+  await discardTaskWorktree(task);
+}
+
 /** Remove the task's worktree folder and its branch (whatever is in them is gone). */
 export async function discardTaskWorktree(task: TaskRef) {
   if (!task.worktree_path || !task.worktree_branch) throw conflict("this task has no worktree");
@@ -224,8 +256,7 @@ export async function mergeTaskWorktree(task: TaskRef): Promise<{ sha: string; i
   // Merging removes the worktree folder, so no agent may still be in it: not one
   // mid-turn (working, or paused on an approval), and not an idle one either,
   // whose next reply would run in a deleted folder.
-  const open = db.query(`SELECT s.agent_state FROM sessions s WHERE s.task_id = ? AND s.status = 'running'
-    AND NOT EXISTS (SELECT 1 FROM task_reviews r WHERE r.session_id = s.id AND r.status = 'complete')`).all(task.id) as { agent_state: string | null }[];
+  const open = openSessions(task.id);
   if (open.some((s) => s.agent_state === "working" || s.agent_state === "needs-input"))
     throw conflict("the agent is still working on this task; wait for it to finish (or stop it) first");
   if (open.length) throw conflict("close the agent's session first: merging removes its worktree folder");
