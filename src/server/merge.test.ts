@@ -2,13 +2,13 @@
 // worktree goes away, or the merge is refused and nothing at all changes. It must never
 // say "merged" while work is left behind in a folder it then deletes, and never commit
 // a copied secret. Runs against throwaway Git repos under the test ANSAI_HOME.
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const { db, now } = await import("./db");
 const { getTask } = await import("./tasks");
-const { ensureTaskWorktree, mergeTaskWorktree } = await import("./worktrees");
+const { discardTaskWorktreeClosingAgents, ensureTaskWorktree, mergeTaskWorktree } = await import("./worktrees");
 
 const root = join(process.env.ANSAI_HOME!, "merge-repos");
 
@@ -69,9 +69,9 @@ async function refusal(p: Promise<unknown>) {
 }
 
 /** Run a merge that must be refused, and check that neither the project folder nor the worktree changed. */
-async function refusedUnchanged(id: string, repo: string, wtPath: string) {
+async function refusedUnchanged(id: string, repo: string, wtPath: string, o?: Parameters<typeof mergeTaskWorktree>[1]) {
   const before = { repo: state(repo), wt: state(wtPath) };
-  const e = await refusal(mergeTaskWorktree(getTask(id)!));
+  const e = await refusal(mergeTaskWorktree(getTask(id)!, o));
   expect(e.status).toBe(409);
   expect({ repo: state(repo), wt: state(wtPath) }).toEqual(before);
   expect(getTask(id)!.worktree_path).toBe(wtPath);
@@ -132,6 +132,238 @@ describe("merging a task", () => {
     expect(git(wt.path, "log", "-1", "--format=%s")).toBe("task edit");
     expect(read(wt.path, "a.txt")).toBe("task version, edited again\n");
     expect(read(wt.path, "untracked.txt")).toBe("u\n");
+  });
+});
+
+/** A session on the task, as the hooks leave it: "waiting" is idle at its prompt, "working" is mid-turn. */
+function openAgent(taskId: string, agentState: string | null = "waiting") {
+  const sid = `ag${++n}`;
+  db.query(
+    `INSERT INTO sessions (id, task_id, tool, title, cwd, argv, tmux_name, status, agent_state, created_at)
+     VALUES (?, ?, 'claude', 'Agent', '/tmp', '[]', ?, 'running', ?, ?)`,
+  ).run(sid, taskId, `ansai-${sid}`, agentState, now());
+  return sid;
+}
+
+/** A stand-in for closing a session that notes what the project and worktree looked like at that moment. */
+function closer(repo: string, wtPath: string, failFor: string[] = []) {
+  const calls: { id: string; head: string; worktreeThere: boolean }[] = [];
+  const close = async (id: string) => {
+    calls.push({ id, head: git(repo, "rev-parse", "HEAD"), worktreeThere: existsSync(wtPath) });
+    if (failFor.includes(id)) throw new Error("tmux said no");
+  };
+  return { calls, close };
+}
+
+/** A task whose branch edits a.txt, after main edited it too: merging it conflicts. */
+async function conflictingTask(name: string) {
+  const repo = project(name);
+  const { id, wt } = await taskIn(repo);
+  write(wt.path, "a.txt", "task version\n");
+  git(wt.path, "add", "-A");
+  git(wt.path, "commit", "-qm", "task edit");
+  write(repo, "a.txt", "main version\n");
+  git(repo, "commit", "-qam", "main edit");
+  return { repo, id, wt };
+}
+
+describe("merging a task whose agent session is still open", () => {
+  test("an idle agent is closed once its work has landed, and before the worktree goes", async () => {
+    const repo = project("idle-closed");
+    const { id, wt } = await taskIn(repo);
+    write(wt.path, "one.txt", "1\n");
+    const sid = openAgent(id);
+    const before = git(repo, "rev-parse", "HEAD");
+    const { calls, close } = closer(repo, wt.path);
+
+    const r = await mergeTaskWorktree(getTask(id)!, { close });
+
+    expect(r.sha).not.toBe(before);
+    // Closed once, after the commit was on main (HEAD was already the merge) and with the worktree still there.
+    expect(calls).toEqual([{ id: sid, head: r.sha, worktreeThere: true }]);
+    expect(read(repo, "one.txt")).toBe("1\n");
+    expect(existsSync(wt.path)).toBe(false);
+    expect(getTask(id)!.worktree_path).toBeNull();
+  });
+
+  test("a session that won't close is logged: the others still close and the merge completes", async () => {
+    const repo = project("close-fails");
+    const { id, wt } = await taskIn(repo);
+    write(wt.path, "one.txt", "1\n");
+    const a = openAgent(id);
+    const b = openAgent(id);
+    const { calls, close } = closer(repo, wt.path, [a]);
+    const errors = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const r = await mergeTaskWorktree(getTask(id)!, { close });
+      expect(calls.map((c) => c.id).sort()).toEqual([a, b].sort());
+      expect(errors.mock.calls.some((c) => String(c[0]).includes(a))).toBe(true);
+      expect(git(repo, "rev-parse", "HEAD")).toBe(r.sha);
+      expect(existsSync(wt.path)).toBe(false);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  test("a conflict with the agent open: it stays open, the worktree stays, and the message says to ask it", async () => {
+    const { repo, id, wt } = await conflictingTask("conflict-open");
+    openAgent(id);
+    const { calls, close } = closer(repo, wt.path);
+
+    const e = await refusedUnchanged(id, repo, wt.path, { close });
+
+    expect(e.message).toContain("conflict in a.txt");
+    expect(e.message).toContain(`Ask the agent to rebase ${wt.branch} on main, then merge again.`);
+    expect(e.message).not.toContain("No agent is open");
+    expect(calls).toEqual([]);
+    expect(existsSync(wt.path)).toBe(true);
+  });
+
+  test("a conflict with no session open says there is no agent, and how to get one back", async () => {
+    const { repo, id, wt } = await conflictingTask("conflict-none");
+
+    const e = await refusedUnchanged(id, repo, wt.path);
+
+    expect(e.message).toContain("conflict in a.txt");
+    expect(e.message).toContain("No agent is open on this task: pick its last session back up (or run the task again)");
+    expect(e.message).toContain(`rebase ${wt.branch} on main, then merge again.`);
+    expect(e.message).not.toContain("Ask the agent");
+  });
+
+  for (const state of ["working", "needs-input"]) {
+    test(`an agent that is ${state} is still refused when closing is allowed, and nothing is closed`, async () => {
+      const repo = project(`midturn-${state}`);
+      const { id, wt } = await taskIn(repo);
+      write(wt.path, "one.txt", "1\n");
+      openAgent(id, state);
+      openAgent(id); // an idle one beside it doesn't change that
+      const { calls, close } = closer(repo, wt.path);
+
+      const e = await refusedUnchanged(id, repo, wt.path, { close });
+
+      expect(e.message).toContain("the agent is still working on this task");
+      expect(calls).toEqual([]);
+      expect(existsSync(wt.path)).toBe(true);
+    });
+  }
+
+  test("an agent with no state yet (a Codex on its first turn, agy) may be working: refused, and nothing is closed", async () => {
+    const repo = project("state-unknown");
+    const { id, wt } = await taskIn(repo);
+    write(wt.path, "one.txt", "1\n");
+    openAgent(id, null);
+    openAgent(id); // an idle one beside it doesn't change that
+    const { calls, close } = closer(repo, wt.path);
+
+    const e = await refusedUnchanged(id, repo, wt.path, { close });
+
+    expect(e.message).toContain("close the agent's session first");
+    expect(calls).toEqual([]);
+    expect(existsSync(wt.path)).toBe(true);
+  });
+
+  test("an idle agent and no way to close it: refused as before, nothing changes", async () => {
+    const repo = project("idle-no-close");
+    const { id, wt } = await taskIn(repo);
+    write(wt.path, "one.txt", "1\n");
+    openAgent(id);
+
+    const e = await refusedUnchanged(id, repo, wt.path);
+
+    expect(e.message).toContain("close the agent's session first");
+    expect(read(wt.path, "one.txt")).toBe("1\n");
+  });
+
+  /** A session that is the task's finished reviewer. */
+  function finishedReviewer(taskId: string) {
+    const sid = openAgent(taskId);
+    db.query("INSERT INTO task_reviews (task_id, session_id, reviewer_tool, status, updated_at) VALUES (?, ?, 'claude', 'complete', ?)").run(taskId, sid, now());
+    return sid;
+  }
+
+  test("a finished reviewer's session isn't closed by the merge, only the agent's", async () => {
+    const repo = project("reviewer-kept");
+    const { id, wt } = await taskIn(repo);
+    write(wt.path, "one.txt", "1\n");
+    finishedReviewer(id);
+    const agent = openAgent(id);
+    const { calls, close } = closer(repo, wt.path);
+
+    await mergeTaskWorktree(getTask(id)!, { close });
+
+    expect(calls.map((c) => c.id)).toEqual([agent]);
+  });
+
+  test("a finished reviewer's session alone doesn't stop a merge that has no way to close sessions", async () => {
+    const repo = project("reviewer-only");
+    const { id, wt } = await taskIn(repo);
+    write(wt.path, "one.txt", "1\n");
+    finishedReviewer(id);
+
+    expect((await mergeTaskWorktree(getTask(id)!)).files).toBe(1);
+    expect(existsSync(wt.path)).toBe(false);
+  });
+});
+
+describe("discarding a task whose agent session is still open", () => {
+  test("an idle agent is closed and the worktree and branch are thrown away", async () => {
+    const repo = project("discard-idle");
+    const { id, wt } = await taskIn(repo);
+    write(wt.path, "one.txt", "never merged\n");
+    const sid = openAgent(id);
+    const { calls, close } = closer(repo, wt.path);
+
+    await discardTaskWorktreeClosingAgents(getTask(id)!, close);
+
+    expect(calls).toEqual([{ id: sid, head: git(repo, "rev-parse", "HEAD"), worktreeThere: true }]);
+    expect(existsSync(wt.path)).toBe(false);
+    expect(git(repo, "branch", "--format=%(refname:short)")).toBe("main");
+    expect(getTask(id)!.worktree_path).toBeNull();
+  });
+
+  for (const state of ["working", "needs-input"]) {
+    test(`an agent that is ${state} refuses it, and nothing is closed or deleted`, async () => {
+      const repo = project(`discard-${state}`);
+      const { id, wt } = await taskIn(repo);
+      openAgent(id, state);
+      openAgent(id);
+      const { calls, close } = closer(repo, wt.path);
+
+      const e = await refusal(discardTaskWorktreeClosingAgents(getTask(id)!, close));
+
+      expect(e.status).toBe(409);
+      expect(e.message).toContain("the agent is still working on this task");
+      expect(calls).toEqual([]);
+      expect(existsSync(wt.path)).toBe(true);
+      expect(getTask(id)!.worktree_path).toBe(wt.path);
+    });
+  }
+
+  test("an agent with no state yet may be working: refused, and nothing is closed or deleted", async () => {
+    const repo = project("discard-unknown");
+    const { id, wt } = await taskIn(repo);
+    openAgent(id, null);
+    const { calls, close } = closer(repo, wt.path);
+
+    const e = await refusal(discardTaskWorktreeClosingAgents(getTask(id)!, close));
+
+    expect(e.status).toBe(409);
+    expect(e.message).toContain("can't tell whether it is idle");
+    expect(calls).toEqual([]);
+    expect(existsSync(wt.path)).toBe(true);
+    expect(getTask(id)!.worktree_path).toBe(wt.path);
+  });
+
+  test("a task with no worktree is refused before any agent is closed", async () => {
+    db.query("INSERT INTO tasks (id, title, created_at, updated_at) VALUES ('mg-bare', 'No worktree', ?, ?)").run(now(), now());
+    const sid = openAgent("mg-bare");
+    const calls: string[] = [];
+
+    const e = await refusal(discardTaskWorktreeClosingAgents(getTask("mg-bare")!, async (s) => void calls.push(s)));
+
+    expect(e.message).toContain("no worktree");
+    expect(calls).toEqual([]);
+    expect(db.query("SELECT status FROM sessions WHERE id = ?").get(sid)).toEqual({ status: "running" });
   });
 });
 

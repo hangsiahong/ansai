@@ -51,7 +51,7 @@ import { endProjectShift, endShift, nudgeIdle, stopPressed, shiftView, startProj
 import { autopilotTick, getSettings, setProjectAutopilot, startAutopilot, updateSettings } from "./autopilot";
 import { STATUSES, createTask, deleteTask, getTask, listTasks, runTask, startTaskReview, updateTask } from "./tasks";
 import { changesIn, taskDir } from "./changes";
-import { discardTaskWorktree, mergeTaskWorktree } from "./worktrees";
+import { discardTaskWorktreeClosingAgents, mergeTaskWorktree } from "./worktrees";
 import { db } from "./db";
 import { startBackupLoop } from "./backup";
 import { WEEKDAYS, deleteSchedule, listSchedules, runScheduleNow, saveSchedule, setScheduleEnabled } from "./schedules";
@@ -362,7 +362,8 @@ const server = Bun.serve<WSData>({
         if (db.query(`SELECT 1 FROM sessions s WHERE s.task_id = ? AND s.status = 'running' AND s.agent_state = 'working'
           AND NOT EXISTS (SELECT 1 FROM task_reviews r WHERE r.session_id = s.id AND r.status = 'complete')`).get(task.id))
           throw conflict("the agent is still working on this task; wait for it to finish (or stop it) first");
-        const r = await mergeTaskWorktree(task);
+        // An idle agent is closed too, once its work has landed; a conflict leaves it open to be asked for a rebase.
+        const r = await mergeTaskWorktree(task, { close: closeSession });
         updateTask(task.id, { status: "done" });
         return json(r);
       }),
@@ -371,10 +372,8 @@ const server = Bun.serve<WSData>({
       DELETE: guard(async (req) => {
         const task = getTask(req.params.id!);
         if (!task) throw notFound("no such task");
-        if (db.query(`SELECT 1 FROM sessions s WHERE s.task_id = ? AND s.status = 'running'
-          AND NOT EXISTS (SELECT 1 FROM task_reviews r WHERE r.session_id = s.id AND r.status = 'complete')`).get(task.id))
-          throw conflict("an agent session is still open on this task; close it first");
-        await discardTaskWorktree(task);
+        // Refuses while an agent is mid-turn; an idle one is closed, then the worktree thrown away.
+        await discardTaskWorktreeClosingAgents(task, closeSession);
         return json({ ok: true });
       }),
     },

@@ -297,10 +297,33 @@ function forget(taskId: string) {
   emit("tasks");
 }
 
+type OpenSession = { id: string; agent_state: string | null };
+
 /** Running sessions on the task, which may be in its worktree (a finished review's doesn't count). */
 function openSessions(taskId: string) {
-  return db.query(`SELECT s.agent_state FROM sessions s WHERE s.task_id = ? AND s.status = 'running'
-    AND NOT EXISTS (SELECT 1 FROM task_reviews r WHERE r.session_id = s.id AND r.status = 'complete')`).all(taskId) as { agent_state: string | null }[];
+  return db.query(`SELECT s.id, s.agent_state FROM sessions s WHERE s.task_id = ? AND s.status = 'running'
+    AND NOT EXISTS (SELECT 1 FROM task_reviews r WHERE r.session_id = s.id AND r.status = 'complete')`).all(taskId) as OpenSession[];
+}
+
+/** Mid-turn: working, or paused on an approval. Closing it would cut its work off. */
+const midTurn = (s: OpenSession) => s.agent_state === "working" || s.agent_state === "needs-input";
+/**
+ * Idle for sure: it finished a turn and waits for you. A session with no state yet is not
+ * known to be idle: a Codex on its first turn has none while it works (it only says when a
+ * turn ends), and agy never has one. Those are never closed for you.
+ */
+const idle = (s: OpenSession) => s.agent_state === "waiting";
+const STILL_WORKING = "the agent is still working on this task; wait for it to finish (or stop it) first";
+
+/** Close these sessions; one that won't close is logged and the rest still are. */
+async function closeAll(sessions: OpenSession[], close: (sessionId: string) => Promise<void>) {
+  for (const s of sessions) {
+    try {
+      await close(s.id);
+    } catch (e) {
+      console.error(`[ansai] couldn't close session ${s.id}:`, e);
+    }
+  }
 }
 
 /**
@@ -351,6 +374,20 @@ export async function discardTaskWorktree(task: TaskRef) {
 }
 
 /**
+ * Discard, as the web UI asks for it: throw the task's worktree and branch away. An agent
+ * mid-turn refuses; an idle one is closed first, since its next reply would run in a
+ * deleted folder.
+ */
+export async function discardTaskWorktreeClosingAgents(task: TaskRef, close: (sessionId: string) => Promise<void>) {
+  if (!task.worktree_path || !task.worktree_branch) throw conflict("this task has no worktree");
+  const open = openSessions(task.id);
+  if (open.some(midTurn)) throw conflict(STILL_WORKING);
+  if (!open.every(idle)) throw conflict("an agent session is still open on this task, and ansai can't tell whether it is idle; close it first");
+  await closeAll(open, close);
+  await discardTaskWorktree(task);
+}
+
+/**
  * Bring a task's work into the project: commit what the agent left uncommitted
  * on its branch, squash-merge the branch into the branch the project's folder has
  * checked out, as one commit (titled after the task), then remove the worktree and
@@ -358,18 +395,22 @@ export async function discardTaskWorktree(task: TaskRef) {
  * uncommitted changes to tracked files, and conflicts are rolled back. It also
  * refuses when removing the worktree would delete work the merge didn't bring:
  * the worktree isn't on the task's branch, or it holds a nested Git repository.
+ *
+ * An agent mid-turn always refuses, and so does one whose state ansai doesn't know. An idle
+ * agent (it finished its turn and waits) refuses unless `close` is given: then it is closed,
+ * but only once the squash commit has landed, so a refusal or a conflict leaves it open (and
+ * the worktree as it was) to be asked for a fix.
  */
-export async function mergeTaskWorktree(task: TaskRef): Promise<{ sha: string; into: string; files: number }> {
+export async function mergeTaskWorktree(task: TaskRef, o: { close?: (sessionId: string) => Promise<void> } = {}): Promise<{ sha: string; into: string; files: number }> {
   const wt = task.worktree_path;
   const branch = task.worktree_branch;
   if (!wt || !branch || !existsSync(wt)) throw conflict("this task has no worktree to merge");
   // Merging removes the worktree folder, so no agent may still be in it: not one
-  // mid-turn (working, or paused on an approval), and not an idle one either,
-  // whose next reply would run in a deleted folder.
+  // mid-turn (working, or paused on an approval), and not an idle one either, whose
+  // next reply would run in a deleted folder. An idle one is closed after the merge when we may.
   const open = openSessions(task.id);
-  if (open.some((s) => s.agent_state === "working" || s.agent_state === "needs-input"))
-    throw conflict("the agent is still working on this task; wait for it to finish (or stop it) first");
-  if (open.length) throw conflict("close the agent's session first: merging removes its worktree folder");
+  if (open.some(midTurn)) throw conflict(STILL_WORKING);
+  if (open.length && (!o.close || !open.every(idle))) throw conflict("close the agent's session first: merging removes its worktree folder");
   if (!(await connected(wt)))
     throw conflict(`${CUT_OFF} There is nothing to merge into until the folder is back where it was, or added to ansai where it is now. The task's files are still in ${wt}.`);
   const main = await mergeTarget(wt);
@@ -429,13 +470,14 @@ export async function mergeTaskWorktree(task: TaskRef): Promise<{ sha: string; i
   let sha: string;
   let staged: string[];
   try {
-    ({ sha, staged } = await squash(main.path, main.branch, branch, task));
+    ({ sha, staged } = await squash(main.path, main.branch, branch, task, open.length > 0));
   } catch (e) {
     if (wip) await gitIn(wt, ["reset", "-q", "HEAD~1"]);
     throw e;
   }
 
-  // 3. The branch is merged (as one commit): drop the worktree and branch.
+  // 3. The branch is merged (as one commit): close the idle agents that were in the worktree, then drop it and the branch.
+  if (o.close) await closeAll(open, o.close);
   await discardTaskWorktree(task).catch((e) => console.error("[ansai] worktree cleanup after merge:", e));
   return { sha, into: main.branch, files: staged.length };
 }
@@ -465,16 +507,20 @@ function nestedRepository(paths: string[]) {
   );
 }
 
-async function squash(mainPath: string, mainBranch: string, branch: string, task: TaskRef): Promise<{ sha: string; staged: string[] }> {
+/** `agentOpen`: a session is still open on the task, so a conflict can be handed back to it. */
+async function squash(mainPath: string, mainBranch: string, branch: string, task: TaskRef, agentOpen: boolean): Promise<{ sha: string; staged: string[] }> {
   const ahead = await gitIn(mainPath, ["rev-list", "--count", `${mainBranch}..${branch}`]);
   if (ahead.code === 0 && ahead.stdout === "0") throw conflict(`nothing to merge: ${branch} has no commits that ${mainBranch} doesn't have`);
   const sq = await gitIn(mainPath, ["merge", "--squash", branch]);
   if (sq.code !== 0) {
     const conflicted = (await gitIn(mainPath, ["diff", "--name-only", "--diff-filter=U"])).stdout.split("\n").filter(Boolean);
     await gitIn(mainPath, ["reset", "--merge"]);
+    const fix = agentOpen
+      ? `Ask the agent to rebase ${branch} on ${mainBranch}, then merge again.`
+      : `No agent is open on this task: pick its last session back up (or run the task again), ask it to rebase ${branch} on ${mainBranch}, then merge again.`;
     throw conflict(
       conflicted.length
-        ? `merging would conflict in ${conflicted.slice(0, 5).join(", ")}${conflicted.length > 5 ? "…" : ""}. Ask the agent to rebase ${branch} on ${mainBranch}, then merge again.`
+        ? `merging would conflict in ${conflicted.slice(0, 5).join(", ")}${conflicted.length > 5 ? "…" : ""}. ${fix}`
         : `git merge failed: ${sq.stderr || sq.stdout}`,
     );
   }

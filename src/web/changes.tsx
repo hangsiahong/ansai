@@ -202,6 +202,9 @@ export function ChangesSheet(p: { taskId?: string; sessionId?: string; onClose: 
     (s) => !!p.taskId && s.sessions.some((x) => x.task_id === p.taskId && x.status === "running" && (x.agent_state === "working" || x.agent_state === "needs-input")),
   );
   const agentOpen = useStore((s) => !!p.taskId && s.sessions.some((x) => x.task_id === p.taskId && x.status === "running"));
+  // Only an agent that finished its turn ("waiting") is closed for you. One with no state yet may be
+  // working (a Codex on its first turn, agy), so it has to be closed by hand, as the server insists.
+  const agentUnsure = useStore((s) => !!p.taskId && s.sessions.some((x) => x.task_id === p.taskId && x.status === "running" && x.agent_state !== "waiting"));
   const [busy, setBusy] = useState(false);
   const title = task ? `Changes · ${task.title}` : session ? `Changes · ${session.title}` : "Changes";
   // Review comments go to the agent working on this (the task's running Claude/Codex, or this session).
@@ -217,7 +220,7 @@ export function ChangesSheet(p: { taskId?: string; sessionId?: string; onClose: 
     const n = c.files.length;
     const ok = await confirmDialog({
       title: `Merge into ${c.base.label}?`,
-      body: `${n} file${n === 1 ? "" : "s"} land on ${c.base.label} as one commit, “${task!.title}”. Anything the agent didn't commit is included. The worktree and branch are removed afterwards, and the task moves to Done.`,
+      body: `${n} file${n === 1 ? "" : "s"} land on ${c.base.label} as one commit, “${task!.title}”. Anything the agent didn't commit is included. The worktree and branch are removed afterwards, and the task moves to Done.${agentOpen ? " The agent's session is closed too." : ""}`,
       confirm: "Merge",
     });
     if (!ok) return;
@@ -235,7 +238,7 @@ export function ChangesSheet(p: { taskId?: string; sessionId?: string; onClose: 
   const discard = async () => {
     const ok = await confirmDialog({
       title: "Throw this work away?",
-      body: `The worktree folder and branch ${task!.worktree_branch} are deleted, including commits that were never merged. This can't be undone.`,
+      body: `The worktree folder and branch ${task!.worktree_branch} are deleted, including commits that were never merged. This can't be undone.${agentOpen ? " The agent's session is closed too." : ""}`,
       confirm: "Delete worktree",
       danger: true,
     });
@@ -255,16 +258,18 @@ export function ChangesSheet(p: { taskId?: string; sessionId?: string; onClose: 
   const actions = (c: Changes) =>
     task?.worktree_path && c.worktree ? (
       <div class="chg-actions">
-        <button class="btn primary" disabled={busy || agentOpen || !c.files.length} onClick={() => merge(c)}>
+        <button class="btn primary" disabled={busy || agentUnsure || !c.files.length} onClick={() => merge(c)}>
           <Icon name="check" size={15} stroke={2.4} /> Merge into {c.base.label}
         </button>
-        <button class="btn ghost danger-text" disabled={busy || agentOpen} onClick={discard}>
+        <button class="btn ghost danger-text" disabled={busy || agentUnsure} onClick={discard}>
           Discard
         </button>
         {agentBusy ? (
           <p class="chg-note">The agent is still working. Merge when it's done.</p>
-        ) : agentOpen ? (
+        ) : agentUnsure ? (
           <p class="chg-note">Close the agent's session to merge or discard: both remove its worktree folder.</p>
+        ) : agentOpen ? (
+          <p class="chg-note">Merging or discarding also closes the agent's session.</p>
         ) : null}
       </div>
     ) : null;
