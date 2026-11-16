@@ -2,6 +2,7 @@
   "name": "ansai",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "ANSAI_DEV=1 bun --hot src/server/index.ts",

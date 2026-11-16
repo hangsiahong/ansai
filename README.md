@@ -48,3 +48,7 @@ You don't need to write the code yourself:
 
 Our reviewer agent reads every pull request. If the change is good, it gets approved and merged.
 Bug reports and ideas are welcome as issues too.
+
+## License
+
+[MIT](LICENSE)
