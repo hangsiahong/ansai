@@ -78,10 +78,13 @@ const MAX_ENV_FILES = 40;
 const MAX_LINKS = 20;
 
 /**
+ * What a worktree is given must stay invisible to Git there, or a merge commits it.
  * A `node_modules/` rule (trailing slash) ignores folders only, not a symlink with
- * that name, which would then show up as a new file (and get committed on merge).
- * Exclude such links in the repo's info/exclude; the anchored rule matches what the
- * main checkout already ignores, so nothing changes there.
+ * that name; and an env file is only ignored in the worktree if the rule for it was
+ * committed (an unsaved .gitignore edit in the project folder isn't in the checkout),
+ * so a copied secret would show up as a new file. Exclude whichever of these files
+ * and links the worktree doesn't already ignore in the repo's info/exclude; each rule
+ * is anchored to one path the main checkout already ignores, so nothing changes there.
  */
 async function keepIgnored(path: string, rels: string[]) {
   const visible = [];
@@ -93,8 +96,9 @@ async function keepIgnored(path: string, rels: string[]) {
   try {
     mkdirSync(dirname(file), { recursive: true });
     const have = existsSync(file) ? readFileSync(file, "utf8") : "";
-    const add = visible.map((r) => `/${r}`).filter((l) => !have.split("\n").includes(l));
-    if (add.length) appendFileSync(file, `${have && !have.endsWith("\n") ? "\n" : ""}# ansai: task worktrees link these\n${add.join("\n")}\n`);
+    // A rule is a pattern: escape what would otherwise be read as a wildcard (a folder named "[id]").
+    const add = visible.map((r) => `/${r.replace(/[\\*?[\]]/g, "\\$&")}`).filter((l) => !have.split("\n").includes(l));
+    if (add.length) appendFileSync(file, `${have && !have.endsWith("\n") ? "\n" : ""}# ansai: task worktrees are given these (copied or linked)\n${add.join("\n")}\n`);
   } catch {}
 }
 
@@ -131,7 +135,7 @@ async function provision(repoRoot: string, path: string): Promise<string[]> {
         linked.push(rel);
       } catch {}
     }
-    await keepIgnored(path, linked);
+    await keepIgnored(path, [...copied, ...linked]);
     if (copied.length) notes.push(`Copied from the project folder (Git ignores them): ${copied.join(", ")}.`);
     if (linked.length)
       notes.push(
@@ -247,7 +251,9 @@ export async function discardTaskWorktree(task: TaskRef) {
  * on its branch, squash-merge the branch into the main checkout's branch as one
  * commit (titled after the task), then remove the worktree and branch.
  * Refuses rather than guessing: the main checkout must be on a branch with no
- * uncommitted changes to tracked files, and conflicts are rolled back.
+ * uncommitted changes to tracked files, and conflicts are rolled back. It also
+ * refuses when removing the worktree would delete work the merge didn't bring:
+ * the worktree isn't on the task's branch, or it holds a nested Git repository.
  */
 export async function mergeTaskWorktree(task: TaskRef): Promise<{ sha: string; into: string; files: number }> {
   const wt = task.worktree_path;
@@ -268,11 +274,42 @@ export async function mergeTaskWorktree(task: TaskRef): Promise<{ sha: string; i
     throw conflict(`the project folder has uncommitted changes in ${n} file${n === 1 ? "" : "s"}; commit or stash them first, then merge`);
   }
 
+  // Only the task's branch is merged, and the worktree is removed afterwards. If the
+  // agent left the worktree on anything else (a detached HEAD, a branch of its own),
+  // its newest commits and the WIP commit below would be on that instead: left out of
+  // the merge and then deleted.
+  const head = await gitIn(wt, ["symbolic-ref", "-q", "HEAD"]);
+  if (head.code !== 0 || head.stdout !== `refs/heads/${branch}`) {
+    if (head.code > 1) throw conflict(`git: ${head.stderr}`);
+    const at = (await gitIn(wt, ["rev-parse", "--short", "HEAD"])).stdout;
+    const where = head.code === 0 ? `is on branch ${head.stdout.replace(/^refs\/heads\//, "")}, not ${branch},` : `isn't on a branch (detached HEAD${at ? ` at ${at}` : ""}),`;
+    throw conflict(`the task's worktree ${where} so merging would leave its latest work behind. Ask the agent to put its work on ${branch} and switch back to that branch, then merge again.`);
+  }
+  // Same for a repository nested in the worktree that the agent already committed as a pointer.
+  const base = await gitIn(wt, ["merge-base", `refs/heads/${main.branch}`, `refs/heads/${branch}`]);
+  const committed = await gitIn(wt, ["diff-tree", "-r", "--raw", "-z", "--no-renames", base.code === 0 ? base.stdout : `refs/heads/${main.branch}`, `refs/heads/${branch}`]);
+  if (committed.code !== 0) throw conflict(`git: ${committed.stderr}`);
+  const pointers = newGitlinks(committed.stdout);
+  if (pointers.length) throw nestedRepository(pointers);
+
   // 1. Whatever the agent didn't commit becomes one commit on its branch.
   const pending = await gitIn(wt, ["status", "--porcelain"]);
   let wip = false;
   if (pending.stdout) {
-    await gitIn(wt, ["add", "-A"]);
+    const add = await gitIn(wt, ["add", "-A"]);
+    if (add.code !== 0) {
+      // Nothing was staged (git add is all or nothing). The usual cause is a nested
+      // repository with no commits yet (`git init`), which Git lists as a folder.
+      const others = await gitIn(wt, ["ls-files", "--others", "--exclude-standard", "-z"]);
+      const repos = others.stdout.split("\0").filter((p) => p.endsWith("/")).map((p) => p.slice(0, -1));
+      throw repos.length ? nestedRepository(repos) : conflict(`couldn't stage the task's work: ${add.stderr || add.stdout}`);
+    }
+    const index = await gitIn(wt, ["diff-index", "--cached", "--raw", "-z", "--no-renames", "HEAD"]);
+    const repos = newGitlinks(index.stdout);
+    if (index.code !== 0 || repos.length) {
+      await gitIn(wt, ["reset", "-q"]);
+      throw repos.length ? nestedRepository(repos) : conflict(`git: ${index.stderr}`);
+    }
     const c = await gitIn(wt, ["commit", "-q", "-m", `WIP: ${task.title}`, "-m", "Uncommitted work, committed by ansai before merging."]);
     if (c.code !== 0) {
       await gitIn(wt, ["reset", "-q"]);
@@ -295,6 +332,31 @@ export async function mergeTaskWorktree(task: TaskRef): Promise<{ sha: string; i
   // 3. The branch is merged (as one commit): drop the worktree and branch.
   await discardTaskWorktree(task).catch((e) => console.error("[ansai] worktree cleanup after merge:", e));
   return { sha, into: main.branch, files: staged.length };
+}
+
+/**
+ * Paths that a raw diff (`diff-index`/`diff-tree --raw -z --no-renames`) shows becoming
+ * a gitlink (mode 160000): a folder with its own Git repository, which Git records as
+ * a pointer to a commit, with none of its files. A submodule that was already tracked
+ * is 160000 on both sides and isn't listed.
+ */
+function newGitlinks(raw: string): string[] {
+  const parts = raw.split("\0");
+  const found: string[] = [];
+  for (let i = 0; i + 1 < parts.length; i += 2) {
+    const mode = /^:(\d+) (\d+) /.exec(parts[i]!);
+    if (mode && mode[2] === "160000" && mode[1] !== "160000") found.push(parts[i + 1]!);
+  }
+  return found;
+}
+
+/** Merging these would keep a pointer and then delete the only copy of the files with the worktree. */
+function nestedRepository(paths: string[]) {
+  const one = paths.length === 1;
+  return conflict(
+    `${paths.slice(0, 5).join(", ")}${paths.length > 5 ? "…" : ""} ${one ? "has its" : "have their"} own Git repository inside the task's worktree, and a merge would not carry ${one ? "its" : "their"} files over (only a pointer to ${one ? "it" : "them"}). ` +
+      `Ask the agent to make ${one ? "it an ordinary folder" : "them ordinary folders"} of the project (remove the .git inside) or move ${one ? "it" : "them"} out of the worktree, then merge again.`,
+  );
 }
 
 async function squash(mainPath: string, mainBranch: string, branch: string, task: TaskRef): Promise<{ sha: string; staged: string[] }> {
