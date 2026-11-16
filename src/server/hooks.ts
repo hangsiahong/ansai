@@ -309,6 +309,9 @@ export function handleHook(tool: string, event: string, sessionId: string, paylo
         const type = String(payload?.notification_type ?? "");
         const idle = type === "idle_prompt" || /waiting for your input/i.test(msg);
         if (idle) {
+          // It asked to be compacted and now sits at its prompt: the Stop that should have started
+          // the compaction never arrived (ansai was restarting). Start it now.
+          if (reads && startCompaction(s.id)) return;
           // Claude says it has sat at its prompt for a minute, yet ansai still has it mid-turn: the
           // turn's Stop hook never arrived (ansai was restarting, or the agent predates StopFailure).
           // End the turn now. On shift, "waiting" is enough: the next prompt gets typed in.

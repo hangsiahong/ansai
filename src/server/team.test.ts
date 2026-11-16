@@ -27,7 +27,7 @@ beforeAll(() => {
   project("p2");
 });
 beforeEach(() => {
-  // Claims live in memory, keyed by session: clear them with the sessions.
+  // Claims are keyed by session: clear them with the sessions.
   for (const { id } of db.query("SELECT id FROM sessions").all() as { id: string }[]) team.dropClaims(id);
   db.exec("DELETE FROM messages; DELETE FROM sessions; DELETE FROM tasks;");
 });
@@ -276,5 +276,28 @@ describe("file claims", () => {
     expect(team.claimFiles(b, ["one.ts"], "")).toContain("Claimed: one.ts");
     team.dropClaims("a");
     expect(team.claimFiles(b, ["two.ts"], "")).toContain("Claimed: two.ts");
+  });
+
+  // resumeClaims() is what a fresh start of ansai runs: memory is empty, the database isn't.
+  test("claims outlive a restart of ansai, for agents that are still running", () => {
+    const a = agent("a", "p1");
+    const b = agent("b", "p1");
+    const gone = agent("c", "p1");
+    team.claimFiles(a, ["one.ts", "two.ts"], "parser rewrite");
+    team.claimFiles(gone, ["three.ts"], "");
+    team.releaseFiles(a, ["two.ts"]);
+    db.query("UPDATE sessions SET status = 'exited' WHERE id = 'c'").run();
+    team.resumeClaims();
+
+    expect(team.claimsOf(a)).toEqual(["one.ts (parser rewrite)"]);
+    expect(team.claimFiles(b, ["one.ts"], "")).toContain("one.ts (claimed by Claude “Agent a”");
+    expect(handleHook("claude", "PostToolUse", "b", { tool_name: "Edit", tool_input: { file_path: "/tmp/one.ts" } })?.hookSpecificOutput?.additionalContext).toContain("one.ts is claimed by");
+    // What was released, and what belonged to an agent that ended meanwhile, is free again.
+    expect(team.claimFiles(b, ["two.ts", "three.ts"], "")).toContain("Claimed: two.ts, three.ts");
+    expect(db.query("SELECT 1 FROM settings WHERE key = 'claims:c'").get()).toBeNull();
+
+    team.releaseFiles(a);
+    team.resumeClaims();
+    expect(team.claimsOf(a)).toEqual([]);
   });
 });

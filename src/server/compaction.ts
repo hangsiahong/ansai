@@ -20,6 +20,11 @@ import { contextSize } from "./transcripts";
  *    the agent's next step as its next prompt (compacted). If it never reports one,
  *    the agent gets its next step anyway after a few minutes, uncompacted.
  * Only Claude: Codex compacts its own conversation and has no hooks to time this.
+ *
+ * A plan is also written to the database. ansai gets restarted while agents work (every
+ * update does it), and a plan that only lived in memory was lost with it: the agent's
+ * turn then ended as an ordinary one, or its compaction finished and nobody typed its
+ * next step, and the run it was meant to keep going sat idle until you looked.
  */
 
 /** First note to the agent, then one more every STEP as it keeps growing. */
@@ -35,8 +40,28 @@ const STEP = 100_000;
  */
 export const KEEP_MAX = 600;
 
-type Plan = { keep: string; next: string; phase: "asked" | "compacting"; timer?: ReturnType<typeof setTimeout> };
+type Plan = {
+  keep: string;
+  next: string;
+  phase: "asked" | "compacting";
+  /** When it was asked for, then when the compaction started. */
+  at: number;
+  /** /compact was typed (or is being typed): never type it a second time. */
+  sent?: boolean;
+  timer?: ReturnType<typeof setTimeout>;
+};
 const plans = new Map<string, Plan>();
+const PLAN_KEY = "compact-plan:";
+
+function keepPlan(sessionId: string, p: Plan) {
+  plans.set(sessionId, p);
+  setSetting(PLAN_KEY + sessionId, { keep: p.keep, next: p.next, phase: p.phase, at: p.at, sent: !!p.sent });
+}
+function forgetPlan(sessionId: string) {
+  clearTimeout(plans.get(sessionId)?.timer);
+  plans.delete(sessionId);
+  db.query("DELETE FROM settings WHERE key = ?").run(PLAN_KEY + sessionId);
+}
 const nudged = new Map<string, number>();
 
 /** Delays, in ms (tests shorten them). */
@@ -60,7 +85,7 @@ function markState(id: string, state: "working" | "waiting", message: string | n
 export function requestCompaction(sessionId: string, keep: string, next: string) {
   const p = plans.get(sessionId);
   if (p?.phase === "compacting") return;
-  plans.set(sessionId, { keep: oneLine(keep, KEEP_MAX), next: next.trim().slice(0, 4000), phase: "asked" });
+  keepPlan(sessionId, { keep: oneLine(keep, KEEP_MAX), next: next.trim().slice(0, 4000), phase: "asked", at: now() });
 }
 
 export const compactionAsked = (sessionId: string) => plans.get(sessionId)?.phase === "asked";
@@ -75,34 +100,81 @@ export function startCompaction(sessionId: string): boolean {
   const p = plans.get(sessionId);
   if (!p || p.phase !== "asked") return false;
   p.phase = "compacting";
+  p.at = now();
+  keepPlan(sessionId, p);
   markState(sessionId, "working", "Compacting the conversation");
+  typeCompact(sessionId, p);
+  p.timer = setTimeout(() => compacted(sessionId, "failed"), timing.giveUp);
+  return true;
+}
+
+function typeCompact(sessionId: string, p: Plan) {
   setTimeout(() => {
     if (plans.get(sessionId) !== p) return;
+    // Noted before typing: a restart in between must not type /compact into a compaction already running.
+    p.sent = true;
+    keepPlan(sessionId, p);
     send(sessionId, p.keep ? `/compact ${p.keep}` : "/compact").catch((e) => {
       console.error(`[ansai] couldn't start compacting ${sessionId}:`, e instanceof Error ? e.message : e);
       compacted(sessionId, "failed");
     });
   }, timing.afterStop);
-  p.timer = setTimeout(() => compacted(sessionId, "failed"), timing.giveUp);
-  return true;
+}
+
+/**
+ * ansai just started: pick up the plans the last run left. One still waiting for its
+ * turn to end needs nothing more. One already compacting gets its give-up timer back
+ * (what is left of it, a minute at least), and /compact if that was never typed. If
+ * the compaction finished while ansai was down, its report was lost: the agent then
+ * gets its next step when the timer runs out, told that ansai can't say how it went.
+ */
+export function resumeCompactions() {
+  for (const p of plans.values()) clearTimeout(p.timer);
+  plans.clear();
+  const rows = db.query("SELECT key, value FROM settings WHERE key LIKE ?").all(`${PLAN_KEY}%`) as { key: string; value: string }[];
+  for (const r of rows) {
+    const id = r.key.slice(PLAN_KEY.length);
+    let saved: Partial<Plan> | null = null;
+    try {
+      saved = JSON.parse(r.value);
+    } catch {}
+    const running = db.query("SELECT 1 FROM sessions WHERE id = ? AND status = 'running'").get(id);
+    if (!running || !saved || (saved.phase !== "asked" && saved.phase !== "compacting")) {
+      db.query("DELETE FROM settings WHERE key = ?").run(r.key);
+      continue;
+    }
+    const p: Plan = { keep: String(saved.keep ?? ""), next: String(saved.next ?? ""), phase: saved.phase, at: Number(saved.at) || now(), sent: !!saved.sent };
+    plans.set(id, p);
+    if (p.phase !== "compacting") continue;
+    const typedBefore = p.sent;
+    if (!typedBefore) typeCompact(id, p);
+    const left = Math.max(timing.giveUp - (now() - p.at), Math.min(60_000, timing.giveUp));
+    p.timer = setTimeout(() => compacted(id, typedBefore ? "lost" : "failed"), left);
+    console.log(`[ansai] ${id} was being compacted when ansai stopped; waiting for it to finish`);
+  }
 }
 
 /**
  * A compaction ended (Claude's SessionStart hook with source "compact"), or ansai gave
  * up waiting for one. Returns null when ansai didn't ask for it (yours, or Claude's own);
  * otherwise whether the agent was handed a next step (false: it waits for you).
+ * "lost": ansai restarted in the middle and never heard how it went.
  */
-export function compacted(sessionId: string, how: "done" | "failed" = "done"): { continues: boolean } | null {
+export function compacted(sessionId: string, how: "done" | "failed" | "lost" = "done"): { continues: boolean } | null {
   const p = plans.get(sessionId);
   if (!p || p.phase !== "compacting") return null;
-  plans.delete(sessionId);
-  clearTimeout(p.timer);
+  forgetPlan(sessionId);
   nudged.delete(sessionId);
   if (!p.next) {
-    if (how === "failed") markState(sessionId, "waiting", null);
+    if (how !== "done") markState(sessionId, "waiting", null);
     return { continues: false };
   }
-  const intro = how === "done" ? "ansai: your conversation was compacted, as you asked." : "ansai: the compaction you asked for didn't happen, so your conversation is as it was.";
+  const intro =
+    how === "done"
+      ? "ansai: your conversation was compacted, as you asked."
+      : how === "lost"
+        ? "ansai: ansai was restarted while your conversation was being compacted, so it can't tell whether that finished."
+        : "ansai: the compaction you asked for didn't happen, so your conversation is as it was.";
   setTimeout(() => {
     send(sessionId, `${intro} Carry on: ${p.next}`).catch((e) => {
       console.error(`[ansai] couldn't hand ${sessionId} its next step after compacting:`, e instanceof Error ? e.message : e);
@@ -148,8 +220,7 @@ export function contextNudge(sessionId: string): string | null {
 
 /** Forget a session (it ended). */
 export function dropCompaction(sessionId: string) {
-  clearTimeout(plans.get(sessionId)?.timer);
-  plans.delete(sessionId);
+  forgetPlan(sessionId);
   nudged.delete(sessionId);
   db.query("DELETE FROM settings WHERE key = ?").run(`compact-tool:${sessionId}`);
 }

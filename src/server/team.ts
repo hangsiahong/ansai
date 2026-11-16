@@ -326,11 +326,38 @@ export function describeHistory(me: SessionRow, limit = 20): string {
  * Advisory file claims: "I'm changing these, please don't." Agents still see
  * every file; claims show up in list_agents, and an agent that edits a file
  * someone else claimed (or recently edited) is told right after the edit.
- * Kept in memory: they belong to running sessions and lapse when those end.
+ * They belong to running sessions and lapse when those end. Also written to the
+ * database: ansai restarts while agents work, and a claim that vanished with it let
+ * a second agent claim and change the same files with no warning to either.
  */
 type Claim = { reason: string; at: number };
 const claims = new Map<string, Map<string, Claim>>(); // session id → path (relative to its cwd) → claim
 const MAX_CLAIMS = 50;
+const CLAIMS_KEY = "claims:";
+
+function saveClaims(sessionId: string) {
+  const mine = claims.get(sessionId);
+  if (mine?.size) setSetting(CLAIMS_KEY + sessionId, Object.fromEntries(mine));
+  else {
+    claims.delete(sessionId);
+    db.query("DELETE FROM settings WHERE key = ?").run(CLAIMS_KEY + sessionId);
+  }
+}
+
+/** ansai just started: the claims of agents that are still running are still theirs. */
+export function resumeClaims() {
+  claims.clear();
+  const rows = db.query("SELECT key, value FROM settings WHERE key LIKE ?").all(`${CLAIMS_KEY}%`) as { key: string; value: string }[];
+  for (const r of rows) {
+    const id = r.key.slice(CLAIMS_KEY.length);
+    const mine = new Map<string, Claim>();
+    try {
+      for (const [path, c] of Object.entries(JSON.parse(r.value) as Record<string, Partial<Claim>>)) mine.set(path, { reason: String(c?.reason ?? ""), at: Number(c?.at) || now() });
+    } catch {}
+    if (mine.size && db.query("SELECT 1 FROM sessions WHERE id = ? AND status = 'running'").get(id)) claims.set(id, mine);
+    else db.query("DELETE FROM settings WHERE key = ?").run(r.key);
+  }
+}
 
 /** A path as the agent's project sees it: relative to its working folder when inside it. */
 export function relPath(s: Pick<SessionRow, "cwd">, p: string): string {
@@ -368,6 +395,7 @@ export function claimFiles(me: SessionRow, paths: string[], reason: string): str
   }
   while (mine.size > MAX_CLAIMS) mine.delete(mine.keys().next().value!);
   claims.set(me.id, mine);
+  saveClaims(me.id);
   const out = [];
   if (got.length) out.push(`Claimed: ${got.join(", ")}. Other agents see this in list_agents; release_files when you're done.`);
   if (taken.length) out.push(`Already claimed, so not yours: ${taken.join("; ")}. Ask that agent with send_message before changing these.`);
@@ -377,11 +405,9 @@ export function claimFiles(me: SessionRow, paths: string[], reason: string): str
 export function releaseFiles(me: SessionRow, paths?: string[]): string {
   const mine = claims.get(me.id);
   if (!mine?.size) return "You have no claims.";
-  if (!paths?.length) {
-    claims.delete(me.id);
-    return "Released all your claims.";
-  }
-  for (const p of paths) mine.delete(relPath(me, p));
+  if (!paths?.length) mine.clear();
+  else for (const p of paths) mine.delete(relPath(me, p));
+  saveClaims(me.id);
   return mine.size ? `Still claimed: ${[...mine.keys()].join(", ")}.` : "Released all your claims.";
 }
 
@@ -423,6 +449,7 @@ export function editWarning(me: SessionRow, file: string): string | null {
 /** Forget a finished session's claims (called when it exits or closes). */
 export function dropClaims(sessionId: string) {
   claims.delete(sessionId);
+  saveClaims(sessionId);
 }
 
 // --------------------------------------------------------------------- board

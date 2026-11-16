@@ -148,6 +148,85 @@ describe("the compact tool", () => {
   });
 });
 
+// ansai is restarted while agents work (every update does it). resumeCompactions() is what
+// a fresh start runs: it forgets what was in memory and reads the plans back from the database.
+describe("ansai restarts in the middle", () => {
+  const planSaved = (id: string) => !!db.query("SELECT 1 FROM settings WHERE key = ?").get(`compact-plan:${id}`);
+
+  test("a compaction asked for before the restart still happens when the turn ends", async () => {
+    agent("r1", { task: "tr1" });
+    await compactTool("r1", { keep: "the plan", next: "Write the tests." });
+    compaction.resumeCompactions();
+
+    expect(handleHook("claude", "Stop", "r1", {})).toBeUndefined();
+    expect(state("r1")).toEqual({ agent_state: "working", agent_message: "Compacting the conversation" });
+    expect(taskStatus("tr1")).toBe("doing");
+    await settle();
+    expect(typed).toEqual([["r1", "/compact the plan"]]);
+  });
+
+  test("one already running still hands the agent its next step, and /compact isn't typed twice", async () => {
+    agent("r2", { task: "tr2" });
+    await compactTool("r2", { keep: "the plan", next: "Write the tests." });
+    handleHook("claude", "Stop", "r2", {});
+    await settle();
+    compaction.resumeCompactions();
+    await settle();
+    expect(typed.map((t) => t[1])).toEqual(["/compact the plan"]);
+
+    handleHook("claude", "SessionStart", "r2", { source: "compact" });
+    await settle();
+    expect(typed[1]![1]).toBe("ansai: your conversation was compacted, as you asked. Carry on: Write the tests.");
+    expect(taskStatus("tr2")).toBe("doing");
+    expect(planSaved("r2")).toBe(false);
+  });
+
+  test("a restart before /compact was typed types it afterwards, once", async () => {
+    agent("r3");
+    await compactTool("r3", { keep: "the plan", next: "go on" });
+    handleHook("claude", "Stop", "r3", {});
+    compaction.resumeCompactions(); // before the pause that lets Claude get back to its prompt
+    await settle();
+    expect(typed.map((t) => t[1])).toEqual(["/compact the plan"]);
+  });
+
+  test("if the compaction's report was lost while ansai was down, the agent still gets its next step, told so", async () => {
+    compaction.timing.giveUp = 40;
+    try {
+      agent("r4");
+      await compactTool("r4", { keep: "k", next: "keep going" });
+      handleHook("claude", "Stop", "r4", {});
+      await settle();
+      compaction.resumeCompactions();
+      await Bun.sleep(80);
+      expect(typed[1]![1]).toBe("ansai: ansai was restarted while your conversation was being compacted, so it can't tell whether that finished. Carry on: keep going");
+    } finally {
+      compaction.timing.giveUp = 60_000;
+    }
+  });
+
+  test("the turn ended while ansai was down: the compaction starts when Claude says it's idle", async () => {
+    agent("r5", { task: "tr5" });
+    await compactTool("r5", { keep: "the plan", next: "go on" });
+    compaction.resumeCompactions();
+    handleHook("claude", "Notification", "r5", { notification_type: "idle_prompt", message: "Claude is waiting for your input" });
+    expect(state("r5")).toEqual({ agent_state: "working", agent_message: "Compacting the conversation" });
+    expect(taskStatus("tr5")).toBe("doing");
+    await settle();
+    expect(typed).toEqual([["r5", "/compact the plan"]]);
+  });
+
+  test("the plan of an agent that ended meanwhile is dropped", async () => {
+    agent("r6");
+    await compactTool("r6", { keep: "the plan", next: "go on" });
+    expect(planSaved("r6")).toBe(true);
+    db.query("UPDATE sessions SET status = 'exited' WHERE id = 'r6'").run();
+    compaction.resumeCompactions();
+    expect(planSaved("r6")).toBe(false);
+    expect(compaction.compactionAsked("r6")).toBe(false);
+  });
+});
+
 describe("other compactions", () => {
   test("Claude's own, mid-turn, leaves it working", () => {
     agent("o1");

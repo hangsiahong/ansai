@@ -41,7 +41,8 @@ import { getPrefs, publicKey, subscribe, testPush, unsubscribe } from "./push";
 import { setViewer } from "./viewers";
 import { startBackgroundTails, subscribeChat, unsubscribeChat } from "./transcripts";
 import { mcpHttp } from "./mcp";
-import { deliverIdle, getPlaybook, listMessages, postMessage, setPlaybook, teamBoard } from "./team";
+import { deliverIdle, getPlaybook, listMessages, postMessage, resumeClaims, setPlaybook, teamBoard } from "./team";
+import { resumeCompactions } from "./compaction";
 import { digest, markSeen } from "./digest";
 import { endProjectShift, endShift, nudgeIdle, stopPressed, shiftView, startProjectShift, startShift } from "./shifts";
 import { autopilotTick, getSettings, setProjectAutopilot, startAutopilot, updateSettings } from "./autopilot";
@@ -783,6 +784,9 @@ const server = Bun.serve<WSData>({
 });
 
 onChange((t) => server.publish("events", snapshot(t)));
+// What agents asked for before this restart still holds: their file claims and their compactions.
+resumeClaims();
+resumeCompactions();
 startReconcileLoop();
 startUsageLoop();
 startHealthLoop();
