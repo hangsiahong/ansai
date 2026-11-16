@@ -49,7 +49,7 @@ import { resumeCompactions } from "./compaction";
 import { digest, markSeen } from "./digest";
 import { endProjectShift, endShift, nudgeIdle, stopPressed, shiftView, startProjectShift, startShift } from "./shifts";
 import { autopilotTick, getSettings, setProjectAutopilot, startAutopilot, updateSettings } from "./autopilot";
-import { STATUSES, createTask, deleteTask, getTask, listTasks, runTask, startTaskReview, updateTask } from "./tasks";
+import { STATUSES, createTask, deleteTask, getTask, listTasks, patchTask, runTask, startTaskReview, updateTask } from "./tasks";
 import { changesIn, taskDir } from "./changes";
 import { discardTaskWorktreeClosingAgents, mergeTaskWorktree } from "./worktrees";
 import { db } from "./db";
@@ -333,7 +333,7 @@ const server = Bun.serve<WSData>({
             dependencies: v.optional(v.array(v.string({ min: 1, max: 100 }), { max: 100 })),
           }),
         );
-        return json(updateTask(req.params.id!, b));
+        return json(await patchTask(req.params.id!, b));
       }),
       DELETE: guard(async (req) => {
         await deleteTask(req.params.id!);
@@ -390,7 +390,7 @@ const server = Bun.serve<WSData>({
     "/api/settings": {
       GET: guard(() => json(getSettings())),
       PUT: guard(async (req) => {
-        const b = await parseBody(req, v.object({ autopilotMax: v.optional(v.number({ int: true, min: 1, max: 6 })), trackSessions: optBool }));
+        const b = await parseBody(req, v.object({ autopilotMax: v.optional(v.number({ int: true, min: 1, max: 6 })), trackSessions: optBool, closeFinished: optBool }));
         return json(updateSettings(b));
       }),
     },

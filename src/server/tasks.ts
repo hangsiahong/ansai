@@ -3,7 +3,7 @@ import { badRequest, conflict, notFound } from "./errors";
 import { emit } from "./events";
 import { getProject } from "./projects";
 import { closeSession, createSession, getSession } from "./sessions";
-import { ensureTaskWorktree, removeTaskWorktreeSafely } from "./worktrees";
+import { cleanUpDoneTask, ensureTaskWorktree, removeTaskWorktreeSafely, type DoneCleanup } from "./worktrees";
 import { changesIn, taskDir } from "./changes";
 import type { ToolId } from "./tools";
 import { checkAgySignIn } from "./accounts";
@@ -254,6 +254,22 @@ export function updateTask(
   emit("tasks");
   const deps = dependencyList(id);
   return { ...next, dependencies: deps, blocked_by: deps.filter((d) => d.status !== "done") };
+}
+
+/**
+ * `updateTask`, as `PATCH /api/tasks/:id` calls it. Marking a task Done also clears what it
+ * no longer needs, when nothing can be lost (worktrees.ts `cleanUpDoneTask`): its idle agents,
+ * its worktree and its branch. `cleanup` says what went, so the web UI can tell you; it is
+ * left out when nothing did. Merge sets Done itself and has already cleaned up, so it calls
+ * `updateTask` and doesn't come through here.
+ */
+export async function patchTask(id: string, patch: Parameters<typeof updateTask>[1], close: (sessionId: string) => Promise<void> = closeSession) {
+  const was = getTask(id)?.status;
+  const task = updateTask(id, patch);
+  if (task.status !== "done" || was === "done") return task;
+  const cleanup: DoneCleanup | null = await cleanUpDoneTask(task, close);
+  if (!cleanup) return task;
+  return { ...task, ...(cleanup.worktree ? { worktree_path: null, worktree_branch: null } : {}), cleanup };
 }
 
 export async function deleteTask(id: string) {

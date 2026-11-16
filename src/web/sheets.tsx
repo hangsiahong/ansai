@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { api, STATUS_LABEL, TASK_STATUSES, type DeviceList, type ModelPick, type Settings, type ToolId } from "./api";
-import { confirmDialog, getState, openSheet, patchTaskLocal, refreshProjects, setTheme, toast, toastError, useStore, type ThemePref } from "./store";
+import { confirmDialog, getState, openSheet, patchTaskLocal, refreshProjects, setTheme, toast, toastCleanup, toastError, useStore, type ThemePref } from "./store";
 import { AGENTS, Icon, Sheet, StatusPill, TOOL_LABEL, TOOL_SHORT, ToolBadge, ago, compact, nav, shortPath, until } from "./ui";
 import { AccountPicker } from "./accounts";
 import { NotifyPanel } from "./notify";
@@ -283,6 +283,7 @@ function TaskSheet(p: { taskId: string; onClose: () => void }) {
     try {
       const updated = await api.updateTask(p.taskId, patch);
       if (patch.dependencies !== undefined) patchTaskLocal(p.taskId, { dependencies: updated.dependencies, blocked_by: updated.blocked_by });
+      toastCleanup(updated);
     } catch (e) {
       toastError(e);
     }
@@ -581,7 +582,7 @@ function TaskSheet(p: { taskId: string; onClose: () => void }) {
               >
                 {busy ? "Starting…" : live || last ? `New run with ${TOOL_LABEL[agent]}` : `Run now with ${TOOL_LABEL[agent]}`}
               </button>
-              {(live || last) && <p class="muted small">A new run gets the last summary and the branch's commits as a handoff.</p>}
+              {(live || last || task.summary) && <p class="muted small">A new run gets the last summary and the branch's commits as a handoff.</p>}
             </>
           )}
         </div>
@@ -722,6 +723,16 @@ function BacklogSettings() {
           </button>
         </div>
       </div>
+      <label class="switch-row">
+        <span class="tile teal">
+          <Icon name="stop" size={16} />
+        </span>
+        <span class="switch-text">
+          <b>Close finished agents</b>
+          <em>Close an autopilot agent an hour after it finished its task. Its work stays for you to review.</em>
+        </span>
+        <input type="checkbox" class="switch" checked={st.closeFinished} onChange={(e) => save({ closeFinished: (e.target as HTMLInputElement).checked })} />
+      </label>
     </div>
   );
 }

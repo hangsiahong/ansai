@@ -327,7 +327,7 @@ export async function createSession(o: CreateOpts) {
 
 // Within this, the agent's prompt cache is still warm: resuming its conversation is cheap.
 // Past it, resuming re-writes the whole context at full price, so a fresh start is better.
-const WARM_MS = 55 * 60_000;
+export const WARM_MS = 55 * 60_000;
 
 /**
  * The agent's own conversation id, if resuming it is worth it: taken from its log's

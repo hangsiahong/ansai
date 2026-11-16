@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { api, STATUS_LABEL, TASK_STATUSES, type Session, type Task, type TaskStatus, type TeamBoard } from "../api";
 import { overlapsByTask, overlapText, overlapTitle, type TaskOverlap } from "../overlaps";
-import { getState, loadTeam, openSheet, patchTaskLocal, toastError, useStore } from "../store";
+import { getState, loadTeam, openSheet, patchTaskLocal, toastCleanup, toastError, useStore } from "../store";
 import { Icon, Link, ToolBadge } from "../ui";
 
 const byPos = (a: Task, b: Task) => a.position - b.position;
@@ -105,7 +105,7 @@ function StatusDot({ task }: { task: Task }) {
       onClick={(e) => {
         e.stopPropagation();
         patchTaskLocal(task.id, { status: next });
-        api.updateTask(task.id, { status: next }).catch(toastError);
+        api.updateTask(task.id, { status: next }).then(toastCleanup).catch(toastError);
       }}
     >
       {task.status === "done" && <Icon name="check" size={12} />}
@@ -270,7 +270,7 @@ export function Board(p: { tasks: Task[]; showProject?: boolean; addProjectId: s
       position = prev ? (prev.position + next.position) / 2 : next.position - 1;
     }
     patchTaskLocal(id, { status, position });
-    api.updateTask(id, { status, position }).catch(toastError);
+    api.updateTask(id, { status, position }).then(toastCleanup).catch(toastError);
   };
 
   return (

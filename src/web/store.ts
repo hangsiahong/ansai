@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "preact/hooks";
-import { api, wsUrl, type Account, type HealthSummary, type Me, type Message, type Project, type Session, type Task, type TeamBoard, type Tool, type ToolId } from "./api";
+import { api, wsUrl, type Account, type HealthSummary, type Me, type Message, type Project, type Session, type Task, type TaskCleanup, type TeamBoard, type Tool, type ToolId } from "./api";
 
 export type SheetState =
   | null
@@ -168,6 +168,13 @@ export function toast(msg: string, kind: "error" | "info" = "info") {
 }
 export function toastError(e: unknown) {
   toast(e instanceof Error ? e.message : String(e), "error");
+}
+/** After a task was saved: say what marking it Done cleared away on its own, if anything did. */
+export function toastCleanup(saved: { cleanup?: TaskCleanup }) {
+  const c = saved.cleanup;
+  if (!c) return;
+  const agents = c.agents ? (c.agents === 1 ? "Closed its agent" : `Closed its ${c.agents} agents`) : "";
+  toast(c.worktree ? (agents ? `${agents} and removed its worktree` : "Removed its worktree") : agents);
 }
 
 // --------------------------------------------------------------------- data

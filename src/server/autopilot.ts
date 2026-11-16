@@ -7,6 +7,7 @@ import { heldUntil, isHeld, resumeHeld, when } from "./holds";
 import { agySignInHint } from "./agyauth";
 import { notify } from "./push";
 import { getTask, projectAutopilot, runTask as startTask, type Autopilot, type Task } from "./tasks";
+import { closeSession } from "./sessions";
 import { scheduleTick, updateOccurrence } from "./schedules";
 import { usesWorktrees } from "./worktrees";
 
@@ -22,18 +23,20 @@ export function setTaskStarter(fn: typeof startTask) {
  * `autopilotMax` autopilot agents overall.
  */
 
-export type Settings = { autopilotMax: number; trackSessions: boolean };
+export type Settings = { autopilotMax: number; trackSessions: boolean; closeFinished: boolean };
 
 export function getSettings(): Settings {
   return {
     autopilotMax: Math.max(1, Math.min(6, getSetting<number>("autopilot_max", 2))),
     trackSessions: getSetting<boolean>("track_sessions", true),
+    closeFinished: getSetting<boolean>("close_finished", true),
   };
 }
 
 export function updateSettings(patch: Partial<Settings>) {
   if (patch.autopilotMax !== undefined) setSetting("autopilot_max", Math.max(1, Math.min(6, Math.floor(Number(patch.autopilotMax) || 2))));
   if (patch.trackSessions !== undefined) setSetting("track_sessions", !!patch.trackSessions);
+  if (patch.closeFinished !== undefined) setSetting("close_finished", !!patch.closeFinished);
   return getSettings();
 }
 
@@ -233,9 +236,67 @@ export async function autopilotTick() {
   }
 }
 
+/**
+ * How long a finished autopilot agent sits idle before it is closed. An hour, because past
+ * about that (sessions.ts WARM_MS) its conversation is no longer worth resuming: the next run
+ * of the task starts from the task's summary and branch instead, so closing loses nothing.
+ */
+export const CLOSE_AFTER_MS = 60 * 60_000;
+const SWEEP_MS = 60_000;
+
+/**
+ * Close the agents autopilot (and scheduled runs) started that finished their task and have
+ * waited for an hour: each idle one holds around 500 MB, and nothing else ever closes them.
+ * Only closes the session. The worktree, the branch and the task stay as they are, so the
+ * work is still there to review and merge.
+ *
+ * A session qualifies when it is:
+ * - unattended (`auto`) and not a shell; one you started by hand is never closed;
+ * - known idle: `agent_state` is "waiting", since the hooks set it when a turn ends (and
+ *   `agent_state_at` is then when it entered that state). A state of none (agy always, a
+ *   Codex on its first turn) may mean working, so those stay;
+ * - finished from its own side: its task is Done, or is in Review with the summary it filed
+ *   by calling finish_task. An agent that stopped to ask something has no summary;
+ * - not on an active shift, not held for a usage limit, and not an independent reviewer
+ *   (those close themselves when they finish).
+ * Returns the ids it closed.
+ */
+export async function closeFinishedAgents(at = Date.now(), close: (sessionId: string) => Promise<void> = closeSession): Promise<string[]> {
+  if (!getSettings().closeFinished) return [];
+  const rows = db
+    .query(
+      `SELECT s.id, s.title FROM sessions s JOIN tasks t ON t.id = s.task_id
+       WHERE s.status = 'running' AND s.auto = 1 AND s.tool != 'shell'
+         AND s.agent_state = 'waiting' AND s.agent_state_at <= ?
+         AND (t.status = 'done' OR (t.status = 'review' AND t.summary IS NOT NULL))
+         AND s.title NOT LIKE 'Review · %'
+         AND NOT EXISTS (SELECT 1 FROM task_reviews r WHERE r.session_id = s.id)
+         AND NOT EXISTS (SELECT 1 FROM shifts sh WHERE sh.session_id = s.id AND sh.ended_at IS NULL)`,
+    )
+    .all(at - CLOSE_AFTER_MS) as { id: string; title: string }[];
+  const closed: string[] = [];
+  for (const s of rows) {
+    if (isHeld(s.id)) continue;
+    try {
+      await close(s.id);
+      closed.push(s.id);
+      console.log(`[ansai] closed "${s.title}" (${s.id}): its task is finished and the agent had been idle for an hour. Its work stays on the task.`);
+    } catch (e) {
+      console.error(`[ansai] couldn't close finished agent ${s.id}:`, e);
+    }
+  }
+  return closed;
+}
+
 export function startAutopilot(ms = 4000) {
+  let swept = 0;
   const tick = () => {
     try { scheduleTick(); } catch (e) { console.error("[ansai] schedules:", e); }
+    // Closing finished agents is slow-moving housekeeping: once a minute is plenty.
+    if (Date.now() - swept >= SWEEP_MS) {
+      swept = Date.now();
+      closeFinishedAgents().catch((e) => console.error("[ansai] closing finished agents:", e));
+    }
     autopilotTick().catch((e) => console.error("[ansai] autopilot:", e)).finally(() => setTimeout(tick, ms));
   };
   setTimeout(tick, 3000);

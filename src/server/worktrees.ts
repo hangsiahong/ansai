@@ -315,15 +315,36 @@ const midTurn = (s: OpenSession) => s.agent_state === "working" || s.agent_state
 const idle = (s: OpenSession) => s.agent_state === "waiting";
 const STILL_WORKING = "the agent is still working on this task; wait for it to finish (or stop it) first";
 
-/** Close these sessions; one that won't close is logged and the rest still are. */
+/** Close these sessions; one that won't close is logged and the rest still are. Returns how many closed. */
 async function closeAll(sessions: OpenSession[], close: (sessionId: string) => Promise<void>) {
+  let closed = 0;
   for (const s of sessions) {
     try {
       await close(s.id);
+      closed++;
     } catch (e) {
       console.error(`[ansai] couldn't close session ${s.id}:`, e);
     }
   }
+  return closed;
+}
+
+/**
+ * What removing the task's worktree would lose, in words (null: nothing): uncommitted or
+ * untracked files in the folder, or commits that no other branch or remote has (on the
+ * task's branch or at the worktree's HEAD). Git failing to answer throws. The folder must
+ * exist and be connected to its repository.
+ */
+async function unsavedWork(wt: string, branch: string): Promise<string | null> {
+  const status = await gitIn(wt, ["status", "--porcelain"]);
+  if (status.code !== 0) throw conflict(`git: ${status.stderr}`);
+  if (status.stdout) return "this task's worktree has uncommitted changes; merge or discard it first";
+  const tips = ["HEAD"];
+  if ((await gitIn(wt, ["rev-parse", "--verify", "-q", `refs/heads/${branch}`])).code === 0) tips.push(`refs/heads/${branch}`);
+  const unmerged = await gitIn(wt, ["rev-list", "--count", ...tips, "--not", `--exclude=${branch}`, "--branches", "--remotes"]);
+  if (unmerged.code !== 0) throw conflict(`git: ${unmerged.stderr}`);
+  if (unmerged.stdout !== "0") return "this task's branch has unmerged commits; merge or discard it first";
+  return null;
 }
 
 /**
@@ -345,15 +366,47 @@ export async function removeTaskWorktreeSafely(task: TaskRef) {
     console.warn(`[ansai] deleted task "${task.title}" left its worktree folder behind (its project folder moved or is gone): ${wt}`);
     return forget(task.id);
   }
-  const status = await gitIn(wt, ["status", "--porcelain"]);
-  if (status.code !== 0) throw conflict(`git: ${status.stderr}`);
-  if (status.stdout) throw conflict("this task's worktree has uncommitted changes; merge or discard it first");
-  const tips = ["HEAD"];
-  if ((await gitIn(wt, ["rev-parse", "--verify", "-q", `refs/heads/${branch}`])).code === 0) tips.push(`refs/heads/${branch}`);
-  const unmerged = await gitIn(wt, ["rev-list", "--count", ...tips, "--not", `--exclude=${branch}`, "--branches", "--remotes"]);
-  if (unmerged.code !== 0) throw conflict(`git: ${unmerged.stderr}`);
-  if (unmerged.stdout !== "0") throw conflict("this task's branch has unmerged commits; merge or discard it first");
+  const lost = await unsavedWork(wt, branch);
+  if (lost) throw conflict(lost);
   await discardTaskWorktree(task);
+}
+
+/** What `cleanUpDoneTask` cleared: how many agents it closed, and whether the worktree (and its branch) went too. */
+export type DoneCleanup = { agents: number; worktree: boolean };
+
+/**
+ * A task was marked Done. Its worktree and branch are no longer needed, and neither are its
+ * idle agents (each holds around 500 MB), but only when nothing can be lost:
+ * - every agent session open on the task is known to be idle (a finished turn, waiting). One
+ *   that is mid-turn, or whose state ansai doesn't know, may still be working: everything stays;
+ * - the folder holds nothing unsaved (see `unsavedWork`), so a worktree with work in it stays;
+ * - a folder that is gone or cut off from its repository stays as it is: git can't say what
+ *   is in it, and a rerun of the task needs the branch it names.
+ * All of that is decided before anything is closed, so an agent is never closed for a
+ * worktree that then stays. An agent that won't close keeps the worktree too (it is in there).
+ *
+ * Returns what it cleared (null: nothing). It never throws: marking a task Done has to
+ * succeed whatever happens here, so trouble is logged.
+ */
+export async function cleanUpDoneTask(task: TaskRef, close: (sessionId: string) => Promise<void>): Promise<DoneCleanup | null> {
+  const wt = task.worktree_path;
+  const branch = task.worktree_branch;
+  if (!wt || !branch) return null;
+  let closed = 0;
+  try {
+    const open = openSessions(task.id);
+    if (!open.every(idle)) return null;
+    if (!existsSync(wt) || !(await connected(wt))) return null;
+    if (await unsavedWork(wt, branch)) return null;
+    closed = await closeAll(open, close);
+    if (closed === open.length) {
+      await discardTaskWorktree(task);
+      return { agents: closed, worktree: true };
+    }
+  } catch (e) {
+    console.error(`[ansai] couldn't clear the worktree of "${task.title}" after it was marked done:`, e);
+  }
+  return closed ? { agents: closed, worktree: false } : null;
 }
 
 /** Remove the task's worktree folder and its branch (whatever is in them is gone). */

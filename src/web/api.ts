@@ -24,7 +24,7 @@ export type Project = {
   lean?: boolean;
 };
 export type Plan = { done: number; total: number; current: string | null; items: { content: string; status: string }[] };
-export type Settings = { autopilotMax: number; trackSessions: boolean };
+export type Settings = { autopilotMax: number; trackSessions: boolean; closeFinished: boolean };
 
 export type Session = {
   id: string;
@@ -126,6 +126,9 @@ export type Task = {
   blocked_by?: { id: string; title: string; status: TaskStatus }[];
   review: null | { session_id: string | null; reviewer_tool: "claude" | "codex"; status: "running" | "complete" | "stopped"; summary: string | null; findings: { file: string; line: number; severity: "high" | "medium" | "low"; message: string }[] };
 };
+
+/** What marking a task Done cleared on its own (only present when something went): agents closed, and its worktree removed. */
+export type TaskCleanup = { agents: number; worktree: boolean };
 
 export type UsageLimit = { id: string; label: string; used_percent: number; resets_at: number | null; reset: boolean };
 export type Account = {
@@ -257,7 +260,7 @@ export const api = {
   createTask: (o: { title: string; body?: string; projectId?: string | null; status?: TaskStatus; priority?: number }) =>
     call<Task>("POST", "/api/tasks", o),
   updateTask: (id: string, patch: { title?: string; body?: string; status?: TaskStatus; projectId?: string | null; priority?: number; position?: number; queued?: boolean; dependencies?: string[] }) =>
-    call<Task>("PATCH", `/api/tasks/${id}`, patch),
+    call<Task & { cleanup?: TaskCleanup }>("PATCH", `/api/tasks/${id}`, patch),
   deleteTask: (id: string) => call<{ ok: true }>("DELETE", `/api/tasks/${id}`),
   taskChanges: (id: string) => call<Changes>("GET", `/api/tasks/${id}/changes`),
   reviewTask: (id: string, tool?: "claude" | "codex") => call<Session>("POST", `/api/tasks/${id}/review`, { tool }),
