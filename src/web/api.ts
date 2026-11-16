@@ -89,6 +89,13 @@ export type Message = {
   delivered_at: number | null;
 };
 
+/** Who's on what in a project (GET /api/projects/:id/team): each running agent's files and claims, and files two of them touch. */
+export type TeamBoard = {
+  agents: { id: string; tool: ToolId; title: string; state: string | null; task: string | null; branch: string | null; files: string[]; claims: string[] }[];
+  /** `agents` are session ids. */
+  overlaps: { path: string; agents: string[] }[];
+};
+
 export type TaskStatus = "todo" | "doing" | "review" | "done";
 export const TASK_STATUSES: TaskStatus[] = ["todo", "doing", "review", "done"];
 export const STATUS_LABEL: Record<TaskStatus, string> = { todo: "To do", doing: "Doing", review: "Review", done: "Done" };
@@ -269,6 +276,7 @@ export const api = {
   messages: (q: { project?: string; session?: string } = {}) =>
     call<Message[]>("GET", `/api/messages?${new URLSearchParams(q as Record<string, string>)}`),
   postMessage: (o: { body: string; to?: string | null; projectId?: string | null }) => call<Message>("POST", "/api/messages", o),
+  team: (projectId: string) => call<TeamBoard>("GET", `/api/projects/${projectId}/team`),
 
   sessions: () => call<Session[]>("GET", "/api/sessions"),
   session: (id: string) => call<Session>("GET", `/api/sessions/${id}`),

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "preact/hooks";
-import { api, wsUrl, type Account, type Me, type Message, type Project, type Session, type Task, type Tool, type ToolId } from "./api";
+import { api, wsUrl, type Account, type Me, type Message, type Project, type Session, type Task, type TeamBoard, type Tool, type ToolId } from "./api";
 
 export type SheetState =
   | null
@@ -26,6 +26,8 @@ type State = {
   tasks: Task[];
   accounts: Account[];
   messages: Message[];
+  /** Per project: who's on what (Team panel, and file overlaps on task cards). Fetched, not pushed. */
+  teams: Record<string, TeamBoard>;
   tools: Tool[];
   me: Me | null;
   connected: boolean;
@@ -51,6 +53,7 @@ let state: State = {
   tasks: [],
   accounts: [],
   messages: [],
+  teams: {},
   tools: [],
   me: null,
   connected: false,
@@ -177,6 +180,23 @@ export async function refreshProjects() {
 /** Optimistic local patch; the server's push brings the authoritative copy right after. */
 export function patchTaskLocal(id: string, patch: Partial<Task>) {
   setState({ tasks: state.tasks.map((t) => (t.id === id ? { ...t, ...patch } : t)) });
+}
+
+const teamSig = new Map<string, string>();
+/**
+ * Fetch a project's team board into the store. With `sig` (a summary of its running
+ * agents), only when that changed since the last fetch, so the many task rows that
+ * ask about the same project cost one request per change.
+ */
+export function loadTeam(projectId: string, sig?: string) {
+  if (sig !== undefined) {
+    if (teamSig.get(projectId) === sig) return;
+    teamSig.set(projectId, sig);
+  }
+  api
+    .team(projectId)
+    .then((b) => setState({ teams: { ...state.teams, [projectId]: b } }))
+    .catch(() => {});
 }
 
 function connectEvents() {
