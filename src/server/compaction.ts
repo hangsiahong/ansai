@@ -26,6 +26,15 @@ import { contextSize } from "./transcripts";
 export const COMPACT_AT = 150_000;
 const STEP = 100_000;
 
+/**
+ * How much of `keep` is typed after /compact. Claude Code turns a long paste into an
+ * attachment and submits it as an ordinary prompt, so a 1,500-character note never ran
+ * /compact at all: the agent got its own note back as a message. Short enough to stay
+ * typed text; the summary is written from the whole conversation anyway, and this only
+ * says what it must not drop.
+ */
+export const KEEP_MAX = 600;
+
 type Plan = { keep: string; next: string; phase: "asked" | "compacting"; timer?: ReturnType<typeof setTimeout> };
 const plans = new Map<string, Plan>();
 const nudged = new Map<string, number>();
@@ -50,7 +59,7 @@ function markState(id: string, state: "working" | "waiting", message: string | n
 export function requestCompaction(sessionId: string, keep: string, next: string) {
   const p = plans.get(sessionId);
   if (p?.phase === "compacting") return;
-  plans.set(sessionId, { keep: oneLine(keep, 1500), next: next.trim().slice(0, 4000), phase: "asked" });
+  plans.set(sessionId, { keep: oneLine(keep, KEEP_MAX), next: next.trim().slice(0, 4000), phase: "asked" });
 }
 
 export const compactionAsked = (sessionId: string) => plans.get(sessionId)?.phase === "asked";

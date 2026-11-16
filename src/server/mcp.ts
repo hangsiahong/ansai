@@ -108,7 +108,7 @@ const TOOLS = [
       properties: {
         keep: {
           type: "string",
-          description: "What the summary must keep: your task and its acceptance criteria, decisions made and why, files changed, what's verified, open problems, ids and paths you'll need.",
+          description: "What the summary must keep, in at most 600 characters (longer is cut off): your task and its acceptance criteria, decisions made and why, what's verified, open problems, ids and paths you'll need. The summary is written from the whole conversation, so name what matters; don't retell it.",
         },
         next: { type: "string", description: "What you'll do right after, sent back to you as your next prompt. Leave it empty only if you're waiting for the user." },
       },

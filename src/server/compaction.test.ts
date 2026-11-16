@@ -108,6 +108,18 @@ describe("the compact tool", () => {
     expect(taskStatus("t2")).toBe("review");
   });
 
+  test("a long note is cut to what Claude Code still takes as a typed command", async () => {
+    agent("c6");
+    await compactTool("c6", { keep: "Keep the plan. ".repeat(400), next: "carry on" });
+    handleHook("claude", "Stop", "c6", {});
+    await settle();
+    const cmd = typed[0]![1];
+    expect(cmd.startsWith("/compact Keep the plan.")).toBe(true);
+    expect(cmd.length).toBeLessThanOrEqual("/compact ".length + compaction.KEEP_MAX);
+    expect(cmd).not.toContain("\n");
+    compaction.dropCompaction("c6");
+  });
+
   test("if the compaction never reports back, the agent still gets its next step", async () => {
     compaction.timing.giveUp = 40;
     try {
