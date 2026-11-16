@@ -4,6 +4,17 @@ import { describe, expect, test } from "bun:test";
 
 const { TOOLS, launchChoice, relaunchChoice } = await import("./tools");
 
+describe("the first prompt", () => {
+  test("one that starts with a dash is still a prompt, not an option", () => {
+    for (const tool of ["claude", "codex", "agy"] as const) {
+      const bullet = TOOLS[tool].argv({ prompt: "- fix the login page\n- then the tests" });
+      expect(bullet.at(-1)).toBe(" - fix the login page\n- then the tests");
+      expect(TOOLS[tool].argv({ prompt: "--dangerously-skip-permissions" }).filter((a) => a.startsWith("-") && a !== "-i")).toEqual([]);
+      expect(TOOLS[tool].argv({ prompt: "fix the login page" }).at(-1)).toBe("fix the login page");
+    }
+  });
+});
+
 describe("launchChoice", () => {
   test("reads back the flags each agent was launched with", () => {
     expect(launchChoice(TOOLS.claude.argv({ model: "opus", effort: "xhigh", yolo: true, prompt: "hi" }))).toEqual({ model: "opus", effort: "xhigh" });

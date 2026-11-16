@@ -28,6 +28,14 @@ export const isModelId = (m: string) => /^[A-Za-z0-9][A-Za-z0-9._:/@[\]-]{0,99}$
 
 const modelFlags = (flag: string, o: LaunchOpts) => (o.model ? [flag, o.model] : []);
 
+/**
+ * The first prompt as a command-line argument. One that starts with "-" (a Markdown bullet,
+ * "--help me with…") was read as an option: the agent died at launch with "unknown option",
+ * or a real flag in it was applied. A leading space keeps it a prompt for every CLI's
+ * parser (checked against claude and codex), and the agent doesn't mind the space.
+ */
+const promptArg = (prompt: string) => (prompt.startsWith("-") ? ` ${prompt}` : prompt);
+
 export const TOOLS: Record<ToolId, ToolDef> = {
   claude: {
     id: "claude",
@@ -53,7 +61,7 @@ export const TOOLS: Record<ToolId, ToolDef> = {
       ...(o.yolo ? ["--dangerously-skip-permissions"] : []),
       ...modelFlags("--model", o),
       ...(o.effort ? ["--effort", o.effort] : []),
-      ...(o.prompt ? [o.prompt] : []),
+      ...(o.prompt ? [promptArg(o.prompt)] : []),
     ],
   },
   codex: {
@@ -66,7 +74,7 @@ export const TOOLS: Record<ToolId, ToolDef> = {
       ...(o.yolo ? ["--dangerously-bypass-approvals-and-sandbox"] : []),
       ...modelFlags("-m", o),
       ...(o.effort ? ["-c", `model_reasoning_effort="${o.effort}"`] : []),
-      ...(o.prompt ? [o.prompt] : []),
+      ...(o.prompt ? [promptArg(o.prompt)] : []),
     ],
   },
   agy: {
@@ -78,7 +86,7 @@ export const TOOLS: Record<ToolId, ToolDef> = {
       ...(o.yolo ? ["--dangerously-skip-permissions"] : []),
       ...modelFlags("--model", o),
       ...(o.effort ? ["--effort", o.effort] : []),
-      ...(o.prompt ? ["-i", o.prompt] : []),
+      ...(o.prompt ? ["-i", promptArg(o.prompt)] : []),
     ],
   },
   shell: {
