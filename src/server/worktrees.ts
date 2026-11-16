@@ -1,4 +1,4 @@
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, symlinkSync } from "node:fs";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import { join, relative, resolve } from "node:path";
 import { config, cleanEnv } from "./config";
@@ -55,6 +55,8 @@ async function ensure(task: WorktreeTask, projectPath: string): Promise<Worktree
   }
   if (path) {
     if (!branch) throw new Error("task worktree metadata is incomplete");
+    // The agent would start in a folder where every git command fails.
+    if (!(await connected(path))) throw conflict(`${CUT_OFF} Discard the task's worktree to start it afresh (its files are in ${path} until then).`);
   } else {
     const base = resolve(config.dataDir, "worktrees");
     mkdirSync(base, { recursive: true });
@@ -200,6 +202,30 @@ async function mainCheckout(worktree: string): Promise<{ path: string; branch: s
   return { path, branch: first.match(/^branch refs\/heads\/(.+)$/m)?.[1] ?? null };
 }
 
+const CUT_OFF = "This task's worktree is cut off from its project: the project folder was moved, renamed or deleted.";
+
+/**
+ * Whether the task's worktree still belongs to a repository. Its `.git` file names the
+ * project's repository by path, so moving, renaming or deleting the project folder cuts it
+ * off: every git command in it fails, and Merge, Discard and deleting the task answered
+ * "gitfile does not point to a valid repository" for ever. If the repository is at one of
+ * ansai's projects now (the folder is back, or was added again where it moved to), git
+ * repairs the link from that side; it refuses a repository the worktree isn't from.
+ */
+async function connected(wt: string): Promise<boolean> {
+  const probe = () => gitIn(wt, ["rev-parse", "--git-dir"]);
+  const first = await probe();
+  if (first.code === 0) return true;
+  // Anything else (git timed out, a permissions complaint) says nothing about the link: carry
+  // on as before and let the command that needs git report it.
+  if (!/not a git repository|gitfile does not point/i.test(first.stderr)) return true;
+  for (const p of db.query("SELECT path FROM projects").all() as { path: string }[]) {
+    if (!existsSync(p.path)) continue;
+    if ((await gitIn(p.path, ["worktree", "repair", wt])).code === 0 && (await probe()).code === 0) return true;
+  }
+  return false;
+}
+
 function forget(taskId: string) {
   db.query("UPDATE tasks SET worktree_path = NULL, worktree_branch = NULL WHERE id = ?").run(taskId);
   emit("tasks");
@@ -224,6 +250,12 @@ export async function removeTaskWorktreeSafely(task: TaskRef) {
   if (openSessions(task.id).length) throw conflict("an agent session is still open on this task; close it first (deleting the task removes its worktree)");
   // The folder is already gone: Discard then only forgets it and leaves the branch alone.
   if (!existsSync(wt)) return discardTaskWorktree(task);
+  // Cut off from its project: git can't say what is unmerged, and the branch (in the project's
+  // repository, wherever that is now) isn't ours to reach. Forget it and leave the files be.
+  if (!(await connected(wt))) {
+    console.warn(`[ansai] deleted task "${task.title}" left its worktree folder behind (its project folder moved or is gone): ${wt}`);
+    return forget(task.id);
+  }
   const status = await gitIn(wt, ["status", "--porcelain"]);
   if (status.code !== 0) throw conflict(`git: ${status.stderr}`);
   if (status.stdout) throw conflict("this task's worktree has uncommitted changes; merge or discard it first");
@@ -239,6 +271,12 @@ export async function removeTaskWorktreeSafely(task: TaskRef) {
 export async function discardTaskWorktree(task: TaskRef) {
   if (!task.worktree_path || !task.worktree_branch) throw conflict("this task has no worktree");
   if (!existsSync(task.worktree_path)) return forget(task.id);
+  if (!(await connected(task.worktree_path))) {
+    // No repository to remove it from: throw the folder away ourselves (only one ansai made).
+    const mine = resolve(config.dataDir, "worktrees");
+    if (resolve(task.worktree_path).startsWith(`${mine}/`)) rmSync(task.worktree_path, { recursive: true, force: true });
+    return forget(task.id);
+  }
   const { path: main } = await mainCheckout(task.worktree_path);
   const rm = await gitIn(main, ["worktree", "remove", "--force", task.worktree_path]);
   if (rm.code !== 0) throw conflict(`couldn't remove the worktree: ${rm.stderr}`);
@@ -266,6 +304,8 @@ export async function mergeTaskWorktree(task: TaskRef): Promise<{ sha: string; i
   if (open.some((s) => s.agent_state === "working" || s.agent_state === "needs-input"))
     throw conflict("the agent is still working on this task; wait for it to finish (or stop it) first");
   if (open.length) throw conflict("close the agent's session first: merging removes its worktree folder");
+  if (!(await connected(wt)))
+    throw conflict(`${CUT_OFF} There is nothing to merge into until the folder is back where it was, or added to ansai where it is now. The task's files are still in ${wt}.`);
   const main = await mainCheckout(wt);
   if (!main.branch) throw conflict("the project folder isn't on a branch (detached HEAD), so there's nothing to merge into");
   const dirty = await gitIn(main.path, ["status", "--porcelain", "--untracked-files=no"]);

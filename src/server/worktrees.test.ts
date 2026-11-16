@@ -2,12 +2,12 @@
 // and deleting a task removes its worktree and branch, but never unmerged work.
 // Runs against a throwaway Git repo under the test ANSAI_HOME.
 import { beforeAll, describe, expect, test } from "bun:test";
-import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const { db, now } = await import("./db");
 const { deleteTask, getTask } = await import("./tasks");
-const { discardTaskWorktree, ensureTaskWorktree } = await import("./worktrees");
+const { discardTaskWorktree, ensureTaskWorktree, mergeTaskWorktree } = await import("./worktrees");
 
 const repo = join(process.env.ANSAI_HOME!, "wt-repo");
 
@@ -143,5 +143,73 @@ describe("deleting a task", () => {
     rmSync(wt.path, { recursive: true, force: true });
     await deleteTask(id);
     expect(getTask(id)).toBeNull();
+  });
+});
+
+// A worktree names its project's repository by path. Before, once the project folder moved
+// or was deleted, Merge, Discard and deleting the task all failed for ever with
+// "gitfile does not point to a valid repository".
+describe("a project folder that moved or was deleted", () => {
+  const home = process.env.ANSAI_HOME!;
+  let m = 0;
+  /** A project of its own (so moving it disturbs nothing else) with one task in a worktree. */
+  async function movable() {
+    const name = `mv${++m}`;
+    const at = join(home, name);
+    mkdirSync(at);
+    git(at, "init", "-q", "-b", "main");
+    writeFileSync(join(at, "a.txt"), "a\n");
+    git(at, "add", "-A");
+    git(at, "commit", "-q", "-m", "init");
+    db.query("INSERT INTO projects (id, name, path, created_at) VALUES (?, ?, ?, 0)").run(name, name, at);
+    const id = `task-${name}`;
+    db.query("INSERT INTO tasks (id, project_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)").run(id, name, `Task ${id}`, now(), now());
+    const wt = (await ensureTaskWorktree(getTask(id)!, at))!;
+    writeFileSync(join(wt.path, "work.txt"), "the agent's work\n");
+    const moved = join(home, `${name}-moved`);
+    renameSync(at, moved);
+    return { name, id, wt, at, moved };
+  }
+
+  test("the task can still be deleted; its files are left where they are", async () => {
+    const { id, wt } = await movable();
+    await deleteTask(id);
+    expect(getTask(id)).toBeNull();
+    expect(readFileSync(join(wt.path, "work.txt"), "utf8")).toBe("the agent's work\n");
+  });
+
+  test("Discard throws the folder away and frees the task", async () => {
+    const { id, wt } = await movable();
+    await discardTaskWorktree(getTask(id)!);
+    expect(existsSync(wt.path)).toBe(false);
+    expect(getTask(id)!.worktree_path).toBeNull();
+  });
+
+  test("Merge says what happened instead of a git error, and keeps the files", async () => {
+    const { id, wt } = await movable();
+    const e = await rejection(mergeTaskWorktree(getTask(id)!));
+    expect(e.status).toBe(409);
+    expect(e.message).toContain("moved, renamed or deleted");
+    expect(e.message).not.toContain("gitfile");
+    expect(existsSync(join(wt.path, "work.txt"))).toBe(true);
+    // a rerun doesn't put an agent in the broken folder either
+    expect((await rejection(ensureTaskWorktree(getTask(id)!, repo))).message).toContain("Discard the task's worktree");
+  });
+
+  test("once the folder is back, or added to ansai where it is now, Merge works again", async () => {
+    const { name, id, wt, moved } = await movable();
+    db.query("INSERT INTO projects (id, name, path, created_at) VALUES (?, ?, ?, 0)").run(`${name}-again`, name, moved);
+    const r = await mergeTaskWorktree(getTask(id)!);
+    expect(r.into).toBe("main");
+    expect(readFileSync(join(moved, "work.txt"), "utf8")).toBe("the agent's work\n");
+    expect(existsSync(wt.path)).toBe(false);
+  });
+
+  test("a repository the worktree isn't from is never taken for its project", async () => {
+    const { id } = await movable();
+    db.query("DELETE FROM projects WHERE id LIKE 'mv%-again'").run();
+    // `repo` (the other tests' project) is a real repository among ansai's projects, but not this worktree's
+    db.query("INSERT OR IGNORE INTO projects (id, name, path, created_at) VALUES ('wt-repo', 'wt-repo', ?, 0)").run(repo);
+    expect((await rejection(mergeTaskWorktree(getTask(id)!))).message).toContain("moved, renamed or deleted");
   });
 });
