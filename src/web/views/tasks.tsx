@@ -1,9 +1,59 @@
-import { useMemo, useRef, useState } from "preact/hooks";
-import { api, STATUS_LABEL, TASK_STATUSES, type Task, type TaskStatus } from "../api";
-import { openSheet, patchTaskLocal, toastError } from "../store";
+import { useEffect, useMemo, useRef, useState } from "preact/hooks";
+import { api, STATUS_LABEL, TASK_STATUSES, type Session, type Task, type TaskStatus, type TeamBoard } from "../api";
+import { overlapsByTask, overlapText, overlapTitle, type TaskOverlap } from "../overlaps";
+import { getState, loadTeam, openSheet, patchTaskLocal, toastError, useStore } from "../store";
 import { Icon, Link, ToolBadge } from "../ui";
 
 const byPos = (a: Task, b: Task) => a.position - b.position;
+
+/**
+ * A summary of a project's running agents, "" when fewer than two (nothing to overlap).
+ * It moves when one starts, stops or changes state, or spends tokens (pushed every few
+ * seconds while it works), which is when its files are likely to have changed.
+ */
+function teamSig(sessions: Session[], projectId: string): string {
+  const live = sessions.filter((s) => s.project_id === projectId && s.status === "running" && (s.tool === "claude" || s.tool === "codex"));
+  return live.length < 2 ? "" : live.map((s) => `${s.id}:${s.agent_state}:${s.tokens?.fresh ?? 0}`).join();
+}
+
+const byTaskMemo = new WeakMap<TeamBoard, { sessions: Session[]; map: Map<string, TaskOverlap[]> }>();
+function overlapsFor(b: TeamBoard, sessions: Session[]) {
+  const m = byTaskMemo.get(b);
+  if (m?.sessions === sessions) return m.map;
+  const map = overlapsByTask(b.overlaps, sessions);
+  byTaskMemo.set(b, { sessions, map });
+  return map;
+}
+
+/** The overlap badge's text (or tooltip) for a task, "" if none. Strings, so a row only re-renders when its badge changes. */
+function clashLabel(s: ReturnType<typeof getState>, taskId: string, projectId: string | null, fmt: typeof overlapText) {
+  const board = projectId ? s.teams[projectId] : undefined;
+  const list = board && overlapsFor(board, s.sessions).get(taskId);
+  if (!list?.length) return "";
+  return fmt(list, (id) => {
+    const x = s.sessions.find((y) => y.id === id);
+    const t = x?.task_id ? s.tasks.find((y) => y.id === x.task_id) : null;
+    return t?.title ?? x?.title ?? "another agent";
+  });
+}
+
+/**
+ * Files this task's agent shares with another running agent's task, from the project's
+ * team board. Refetched when those agents move (see teamSig), never polled; the Team
+ * panel's own refresh lands in the same store.
+ */
+function useOverlaps(task: Task): { text: string; title: string } | null {
+  const pid = task.project_id;
+  const live = task.sessions.some((s) => s.status === "running");
+  const sig = useStore((s) => (pid && live ? teamSig(s.sessions, pid) : ""));
+  useEffect(() => {
+    if (pid && sig) loadTeam(pid, sig);
+  }, [pid, sig]);
+  const from = sig ? pid : null;
+  const text = useStore((s) => clashLabel(s, task.id, from, overlapText));
+  const title = useStore((s) => clashLabel(s, task.id, from, overlapTitle));
+  return text ? { text, title } : null;
+}
 
 export function QuickAdd(p: { projectId: string | null; placeholder?: string; status?: TaskStatus; autopilot?: boolean }) {
   const [title, setTitle] = useState("");
@@ -76,6 +126,7 @@ function TaskMeta({ task, showProject }: { task: Task; showProject?: boolean }) 
   const live = task.sessions.filter((s) => s.status === "running");
   const asking = live.find((s) => s.agent_state === "needs-input");
   const plan = task.plan && task.plan.total > 0 && task.status !== "done" ? task.plan : null;
+  const clash = useOverlaps(task);
   return (
     <div class="tmeta">
       {asking ? (
@@ -114,6 +165,12 @@ function TaskMeta({ task, showProject }: { task: Task; showProject?: boolean }) 
         ))}
       {task.source === "agent" && <span class="tsrc">from an agent</span>}
       {task.summary && task.status === "review" && <span class="tsrc">summary ready</span>}
+      {clash && (
+        <span class="tsrc tclash" title={clash.title}>
+          <Icon name="branch" size={11} stroke={2.4} />
+          <span>{clash.text}</span>
+        </span>
+      )}
       {task.body.trim() && !task.summary && <span class="tnote" title="Has details">≡</span>}
     </div>
   );

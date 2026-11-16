@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { api, type Message, type Session } from "./api";
-import { toastError, useStore } from "./store";
+import { loadTeam, toastError, useStore } from "./store";
 import { Empty, haptic, Icon, Link, TOOL_SHORT, ToolBadge, ago, sessionState } from "./ui";
 
 /** Direct messages: has the agent been given it yet (between steps, typed in, or on its next turn)? */
@@ -82,29 +82,18 @@ export function useSessionMessages(s: Session): Message[] {
   );
 }
 
-type Board = {
-  agents: { id: string; tool: Session["tool"]; title: string; state: string | null; task: string | null; branch: string | null; files: string[]; claims: string[] }[];
-  overlaps: { path: string; agents: string[] }[];
-};
-
-/** Who's on what: each running agent here, the files it edited or claimed, and files two of them touch. Polled while open. */
+/**
+ * Who's on what: each running agent here, the files it edited or claimed, and files two of them touch.
+ * Polled while open, into the store, so this project's task cards show the same overlaps.
+ */
 function WhoBoard({ projectId }: { projectId: string }) {
   const sessions = useStore((s) => s.sessions);
-  const [b, setB] = useState<Board | null>(null);
+  const b = useStore((s) => s.teams[projectId] ?? null);
   const [showAll, setShowAll] = useState<Set<string>>(new Set());
   useEffect(() => {
-    let alive = true;
-    const load = () =>
-      fetch(`/api/projects/${projectId}/team`)
-        .then((r) => (r.ok ? r.json() : null))
-        .then((x) => alive && x && setB(x))
-        .catch(() => {});
-    load();
-    const t = setInterval(() => document.visibilityState === "visible" && load(), 5000);
-    return () => {
-      alive = false;
-      clearInterval(t);
-    };
+    loadTeam(projectId);
+    const t = setInterval(() => document.visibilityState === "visible" && loadTeam(projectId), 5000);
+    return () => clearInterval(t);
   }, [projectId]);
   if (!b?.agents.length) return null;
   const hot = new Set(b.overlaps.map((o) => o.path));

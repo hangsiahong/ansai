@@ -1580,3 +1580,8 @@ i.del { color: var(--danger); }
   .welcome-actions { width: 100%; }
   .welcome-actions .btn { flex: 1 1 130px; }
 }
+
+/* Task cards: file overlaps */
+.tsrc.tclash { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%; color: var(--warn); font-style: normal; font-weight: 500; }
+.tsrc.tclash > svg { flex: none; }
+.tsrc.tclash > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
