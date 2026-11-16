@@ -1,8 +1,9 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { api, wsUrl, type ChatItem, type Message, type Session } from "./api";
 import { toastError } from "./store";
-import { haptic, Icon, TOOL_LABEL, TOOL_SHORT, ToolBadge, compact, sessionState } from "./ui";
+import { haptic, Icon, TOOL_LABEL, TOOL_SHORT, ToolBadge, compact, sessionState, useTick } from "./ui";
 import { Markdown } from "./md";
+import { elapsed } from "./elapsed";
 import { TeamBubble, useSessionMessages } from "./team";
 
 type ToolItem = Extract<ChatItem, { k: "tool" }>;
@@ -288,15 +289,30 @@ function QuestionCard({ s, t }: { s: Session; t: ToolItem }) {
 }
 
 function WorkingRow({ s }: { s: Session }) {
+  // Counted from when it set to work: the start of the turn, or your answer to its last question.
+  const since = s.agent_state === "working" ? s.agent_state_at : null;
+  useTick(1000);
+  const ms = since ? Date.now() - since : 0;
   return (
     <div class="working-row">
-      <ToolBadge tool={s.tool} size={22} />
-      <span>
-        {s.agent_message ? `${TOOL_SHORT[s.tool]} · ${s.agent_message}` : `${TOOL_SHORT[s.tool]} is working`}
-        <span class="dots" />
+      <span class="working-badge">
+        <ToolBadge tool={s.tool} size={24} />
       </span>
-      <button class="btn sm ghost" onClick={() => press(s.id, ["Escape"])}>
-        <Icon name="stop" size={13} /> Stop
+      <span class="working-text">
+        <span>{s.agent_message ? `${TOOL_SHORT[s.tool]} · ${s.agent_message}` : `${TOOL_SHORT[s.tool]} is working`}</span>
+        <span class="dots" aria-hidden="true">
+          <i />
+          <i />
+          <i />
+        </span>
+      </span>
+      {ms >= 1000 && (
+        <span class="working-time" role="timer" title="Working for this long">
+          {elapsed(ms)}
+        </span>
+      )}
+      <button class="btn sm stop-btn" onClick={() => press(s.id, ["Escape"])} title="Stop what it is doing (Esc)">
+        <i class="stop-glyph" /> Stop
       </button>
     </div>
   );

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { api, type Session } from "../api";
 import { confirmDialog, openSheet, promptDialog, toast, toastError, useStore } from "../store";
 import { TerminalView, type TermHandle, type TermStatus } from "../Terminal";
-import { compact, haptic, Icon, Link, StatusPill, TOOL_LABEL, ToolBadge, goBack, isTouch, modelLabel, nav, sessionState, until, useTick } from "../ui";
+import { compact, haptic, Icon, Link, StatusPill, TOOL_LABEL, ToolBadge, goBack, isTouch, modelLabel, nav, until, useTick } from "../ui";
 import { ChatView } from "../chat";
 import { ShiftBar, canShift } from "../shift";
 import { addFiles, carriesFiles, readClipboard, transferFiles } from "../paste";
@@ -109,7 +109,6 @@ export function SessionPane({ id }: { id: string }) {
   const closed = s.status === "closed";
   const canChat = s.tool === "claude" || s.tool === "codex";
   const view: View = canChat ? viewPref : "terminal";
-  const working = sessionState(s).cls === "working";
   const task = s.task_id ? tasks.find((t) => t.id === s.task_id) : null;
   const account = s.account_id ? accounts.find((a) => a.id === s.account_id) : null;
 
@@ -438,11 +437,6 @@ export function SessionPane({ id }: { id: string }) {
         <div class="dock">
           {view === "chat" ? (
             <div class="chips-row">
-              {working && (
-                <button class="chip-btn danger" onClick={() => api.keys(id, ["Escape"]).catch(toastError)}>
-                  <Icon name="stop" size={12} /> Stop
-                </button>
-              )}
               {s.tool === "claude" && (
                 <button class="chip-btn" onClick={() => api.keys(id, ["BTab"]).catch(toastError)} title="Shift+Tab: cycle Claude's mode (normal → accept edits → plan)">
                   Mode ⇧⇥
