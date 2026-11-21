@@ -4,7 +4,7 @@
 // KOOMPI ID through KOOMPI Cloud's add_koompi_login (it sets KOOMPI_ID_LOGIN_URL and KOOMPI_ID_USERINFO_URL);
 // the person comes back to /api/auth/callback?access_token=…, and only what KOOMPI_ID_USERINFO_URL says about that
 // token counts. GATE_PASSWORD instead (or as well) shows a password form. With neither set, nobody gets in.
-//   env: GATE_PORT=8080 ANSAI_PORT=7777 ALLOWED="email or id, …" GATE_PASSWORD= SECRET= (sessions survive restarts only with SECRET)
+//   env: GATE_PORT=8080 ANSAI_PORT=7777 PUBLIC_URL=https://… ALLOWED="email or id, …" GATE_PASSWORD= SECRET= (sessions survive restarts only with SECRET)
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import http from "node:http";
@@ -25,13 +25,15 @@ function upHeaders(req) {
     return h;
 }
 // The browser only sends cross-site Origins we must refuse here, before rewriting them for ansai.
-// Behind KOOMPI Cloud's proxy the Host can be internal; the public name is then in X-Forwarded-Host.
+// KOOMPI Cloud's proxy passes an internal Host (172.30.x.x:8080) and no X-Forwarded-Host, so the app's public
+// address (PUBLIC_URL, else where KOOMPI ID sends people back) counts as our own origin too.
+const PUBLIC = [process.env.PUBLIC_URL, process.env.KOOMPI_ID_REDIRECT_URI].map(u => { try { return new URL(u).host; } catch { return ""; } }).filter(Boolean);
 function sameOrigin(req) {
     const o = req.headers.origin;
     if (!o) return true;
     let host = "";
     try { host = new URL(o).host; } catch {}
-    const ok = !!host && [req.headers.host, ...String(req.headers["x-forwarded-host"] || "").split(",")].some(h => h?.trim() === host);
+    const ok = !!host && [req.headers.host, ...PUBLIC, ...String(req.headers["x-forwarded-host"] || "").split(",")].some(h => h?.trim() === host);
     if (!ok) console.log(`[gate] refused cross-origin ${req.method} ${req.url.split("?")[0]}: origin ${o}, host ${req.headers.host}, x-forwarded-host ${req.headers["x-forwarded-host"] || "-"}`);
     return ok;
 }
