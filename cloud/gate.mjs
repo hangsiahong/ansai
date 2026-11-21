@@ -25,7 +25,16 @@ function upHeaders(req) {
     return h;
 }
 // The browser only sends cross-site Origins we must refuse here, before rewriting them for ansai.
-const sameOrigin = req => { try { return !req.headers.origin || new URL(req.headers.origin).host === req.headers.host; } catch { return false; } };
+// Behind KOOMPI Cloud's proxy the Host can be internal; the public name is then in X-Forwarded-Host.
+function sameOrigin(req) {
+    const o = req.headers.origin;
+    if (!o) return true;
+    let host = "";
+    try { host = new URL(o).host; } catch {}
+    const ok = !!host && [req.headers.host, ...String(req.headers["x-forwarded-host"] || "").split(",")].some(h => h?.trim() === host);
+    if (!ok) console.log(`[gate] refused cross-origin ${req.method} ${req.url.split("?")[0]}: origin ${o}, host ${req.headers.host}, x-forwarded-host ${req.headers["x-forwarded-host"] || "-"}`);
+    return ok;
+}
 const LOGIN = process.env.KOOMPI_ID_LOGIN_URL || "", USERINFO = process.env.KOOMPI_ID_USERINFO_URL || "";
 const ALLOWED = (process.env.ALLOWED || "").split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
 const PASSWORD = process.env.GATE_PASSWORD || "", SECRET = process.env.SECRET || randomBytes(32).toString("hex");
@@ -82,7 +91,7 @@ const server = http.createServer((req, res) => {
     if (url.pathname === "/api/auth/callback") return void koompi(res, url);
     if (url.pathname === "/__gate/logout") { res.writeHead(302, { location: "/", "set-cookie": `${NAME}=; Path=/; Secure; Max-Age=0` }); return res.end(); }
     if (url.pathname === "/__gate/password" && req.method === "POST" && PASSWORD) {
-        if (req.headers.origin && new URL(req.headers.origin).host !== req.headers.host) { res.writeHead(403); return res.end(); }
+        if (!sameOrigin(req)) { res.writeHead(403); return res.end(); }
         let body = "";
         req.on("data", d => { body += d; if (body.length > 4096) req.destroy(); });
         req.on("end", () => same(sign(new URLSearchParams(body).get("p") || ""), sign(PASSWORD)) ? grant(res, "password") : setTimeout(() => loginPage(res, "Wrong password."), 800));
@@ -90,7 +99,10 @@ const server = http.createServer((req, res) => {
     }
     if (!OPEN && !session(req)) return loginPage(res);
     if (!sameOrigin(req)) { res.writeHead(403); return res.end(); }
-    const up = http.request({ ...UP, method: req.method, path: req.url, headers: upHeaders(req) }, r => { res.writeHead(r.statusCode, r.headers); r.pipe(res); });
+    const up = http.request({ ...UP, method: req.method, path: req.url, headers: upHeaders(req) }, r => {
+        if (r.statusCode >= 400) console.log(`[gate] ansai answered ${r.statusCode} to ${req.method} ${req.url.split("?")[0]}`);
+        res.writeHead(r.statusCode, r.headers); r.pipe(res);
+    });
     up.on("error", () => { if (!res.headersSent) page(res, 502, "Starting…", "<p>ansai is still starting. Reload in a few seconds.</p>"); else res.destroy(); });
     req.pipe(up);
 });
